@@ -1,0 +1,72 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Poetry
+poetry.lock
+
+# pipenv
+Pipfile.lock
+
+# FastAPI logs / uvicorn logs
+*.log
+
+# Environment variables
+.env
+.env.*
+
+# Pytest
+.cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# mypy
+.mypy_cache/
+
+# Pyre type checker
+.pyre/
+
+# pytype
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VSCode settings
+.vscode/
+
+# MacOS files
+.DS_Store
+
+# Database files
+*.sqlite3
+*.db
+
+# Docker
+*.pid
+*.sock
+
+# Coverage reports
+coverage.xml
+
+# Bandit security scanner
+bandit.json
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# PyInstaller
+*.spec
+
+# Others
+logs/

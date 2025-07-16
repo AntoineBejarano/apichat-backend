@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+openai
+python-dotenv
+pydantic
+httpx
+authlib
+asyncpg
+pydantic[email]
+langchain-community
+psycopg2-binary
+pymysql
+langchain-experimental
+python-multipart
+art
