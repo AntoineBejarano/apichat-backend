@@ -1,8 +1,10 @@
+# app/routers/user_router.py
+
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.servicefactory import ServiceFactory
+from app.core.service_factory import ServiceFactory
 from app.models.user_model import User
 from app.schemas.user_schema import UserCreate, UserOut, UserDetail
 
@@ -15,7 +17,7 @@ router = APIRouter(
     }
 )
 
-# Dependency centralizada
+# 🧩 Inyector del ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
@@ -32,10 +34,12 @@ def register_user(
 ):
     existing = factory.db.query(User).filter(User.email == user_data.email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=400,
+            detail="❌ El email ya está registrado"
+        )
 
     return factory.get_user_service().create_user(user_data)
-
 
 @router.get(
     "/{user_id}",
@@ -49,9 +53,11 @@ def get_user_by_id_route(
 ):
     user = factory.get_user_service().get_user_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=404,
+            detail="❌ Usuario no encontrado"
+        )
     return user
-
 
 @router.get(
     "/me",

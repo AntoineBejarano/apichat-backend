@@ -1,9 +1,11 @@
+# app/routers/openapi_router.py
+
 from fastapi import APIRouter, UploadFile, File, Depends, Request, HTTPException, status
 import json
-
-from app.core.servicefactory import ServiceFactory
-from app.core.database import get_db
 from sqlalchemy.orm import Session
+
+from app.core.service_factory import ServiceFactory
+from app.core.database import get_db
 
 router = APIRouter(
     prefix="/openapi",
@@ -12,9 +14,10 @@ router = APIRouter(
         400: {"description": "Archivo inválido o contenido JSON incorrecto"},
         422: {"description": "Error de validación en el contenido del OpenAPI"},
         500: {"description": "Error interno del servidor"},
-    }
+    },
 )
 
+# 🔧 Inyector del ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
@@ -22,7 +25,8 @@ def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFacto
     "/upload",
     summary="📤 Subir archivo OpenAPI",
     description="""
-Sube un archivo `.json` con especificaciones OpenAPI.  
+Sube un archivo `.json` con especificaciones OpenAPI.
+
 El sistema lo parseará y generará funciones disponibles automáticamente.
 
 **Requisitos:**
@@ -39,7 +43,7 @@ async def upload_openapi(
     if not file.filename.endswith(".json"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El archivo debe ser un JSON (.json)"
+            detail="❌ El archivo debe ser un JSON (.json)"
         )
 
     try:
@@ -48,24 +52,25 @@ async def upload_openapi(
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Contenido JSON inválido"
+            detail="❌ Contenido JSON inválido"
         )
 
     try:
         processor = factory.get_openapi_processor()
         result = processor.process(openapi_dict)
         return {
-            "message": f"{len(result)} funciones creadas correctamente.",
+            "message": f"✅ {len(result)} funciones creadas correctamente.",
             "functions": [f.name for f in result]
         }
 
     except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(ve)
+            detail=f"⚠️ Error de validación: {str(ve)}"
         )
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error procesando el archivo: {str(e)}"
+            detail=f"💥 Error procesando el archivo: {str(e)}"
         )

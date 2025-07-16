@@ -4,8 +4,10 @@ from fastapi import HTTPException
 
 from app.models.agent_model import Agent
 from app.schemas.agent_schema import AgentCreate, AgentUpdate
-from app.core.servicefactory import ServiceFactory
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 class AgentService:

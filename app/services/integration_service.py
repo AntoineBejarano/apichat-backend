@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.models.integration_model import Integration
 from app.schemas.integration_schema import IntegrationCreate
-from app.core.servicefactory import ServiceFactory  # ✅ Import centralizado
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 

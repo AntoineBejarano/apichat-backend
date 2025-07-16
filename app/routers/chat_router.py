@@ -1,9 +1,11 @@
+# app/routers/chat_router.py
+
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.servicefactory import ServiceFactory
+from app.core.service_factory import ServiceFactory
 from app.schemas.chat_schema import ChatMessage
 
 router = APIRouter(
@@ -12,31 +14,29 @@ router = APIRouter(
     responses={404: {"description": "No encontrado"}},
 )
 
+# 🧩 Inyección de ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
+
 
 @router.post(
     "/{database_id}/{app_id}/{agent_id}",
     summary="Enviar mensaje al asistente de IA",
     description="""
-Envía un mensaje a tu agente de inteligencia artificial, quien puede usar funciones, bases de datos o simplemente responder.
-
-- `database_id`: ID de la base de datos conectada
-- `app_id`: ID de la App donde están las funciones
-- `agent_id`: ID del agente que contiene el system prompt y estrategia
+Envía un mensaje a tu agente de IA, quien puede usar funciones, estrategias y bases de datos para responder inteligentemente.
 """,
-    response_description="Respuesta generada por el asistente",
+    response_description="Respuesta generada por el asistente"
 )
 async def chat_with_agent(
     database_id: int,
     app_id: int,
     agent_id: int,
     message: ChatMessage,
-    factory: ServiceFactory = Depends(get_factory)
+    factory: ServiceFactory = Depends(get_factory),
 ):
     """
-    Procesa un mensaje desde el usuario hacia el agente inteligente.
-    Este endpoint es útil como alternativa a WebSocket cuando quieres llamadas HTTP simples.
+    Endpoint para enviar un mensaje a través de HTTP (alternativa a WebSocket).
+    Orquestado por OrchestratorService.
     """
     try:
         orchestrator = factory.get_orchestrator_service()
@@ -48,6 +48,7 @@ async def chat_with_agent(
             message=message
         )
         return JSONResponse(content=response)
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

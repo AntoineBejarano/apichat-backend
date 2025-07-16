@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.models.function_model import Function
 from app.schemas.function_schema import FunctionCreate, FunctionUpdate
-from app.core.servicefactory import ServiceFactory  # ✅ nuevo import
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 

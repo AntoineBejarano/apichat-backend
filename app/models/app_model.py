@@ -11,11 +11,16 @@ class App(Base):
 
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    openapi_json = Column(Text, nullable=True)  # Puede contener el raw OpenAPI si se desea
+    openapi_json = Column(Text, nullable=True)
+
+    is_public = Column(Boolean, default=False)
+
+    # 🔗 Relación opcional a una integración MCP
+    mcp_integration_id = Column(Integer, ForeignKey("mcp_integrations.id"), nullable=True)
+    mcp_integration = relationship("MCPIntegration", backref="apps")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="apps")
     functions = relationship("Function", back_populates="app", cascade="all, delete-orphan")
-    is_public = Column(Boolean, default=False)

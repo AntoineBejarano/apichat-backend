@@ -5,7 +5,10 @@ from langchain_experimental.sql import SQLDatabaseChain
 from langchain.sql_database import SQLDatabase
 
 from app.models.database_model import DatabaseConnection
-from app.core.servicefactory import ServiceFactory
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+
 from app.core.config import settings  # ✅ Importamos configuración
 
 logger = logging.getLogger(__name__)

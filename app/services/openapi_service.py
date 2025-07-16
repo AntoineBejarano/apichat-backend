@@ -1,24 +1,20 @@
-# app/services/openapi_service.py
+# app/services/openapi_processor.py
 
 from typing import List, Dict
-from sqlalchemy.orm import Session
 from app.integrations.openapi_parser import parse_openapi_to_functions
-from app.models.user_model import User
 from app.models.openapi_model import OpenAPIIntegration
 from app.schemas.function_schema import FunctionCreate
-from app.services.function_service import FunctionService  # versión en clase
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 class OpenAPIProcessor:
-    def __init__(self, db: Session, user: User):
-        self.db = db
-        self.user = user
-        self.function_service = FunctionService(db)
+    def __init__(self, factory: ServiceFactory):
+        self.db = factory.db
+        self.user = factory.user
+        self.function_service = factory.get_function_service()
 
     def process(self, openapi_dict: Dict) -> List[Dict]:
-        """
-        Procesa un archivo OpenAPI, lo transforma en funciones y las guarda en DB.
-        También guarda la integración como entidad propia.
-        """
         title = openapi_dict.get("info", {}).get("title", "Untitled")
         version = openapi_dict.get("info", {}).get("version", "")
         base_url = openapi_dict.get("servers", [{}])[0].get("url", "")
@@ -46,7 +42,6 @@ class OpenAPIProcessor:
                 definition=func_def["parameters"],
                 code=None
             )
-
             new_func = self.function_service.create_function(
                 user_id=self.user.id,
                 data=function_create

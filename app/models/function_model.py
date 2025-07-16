@@ -30,3 +30,5 @@ class Function(Base):
     app = relationship("App", back_populates="functions")
     integration = relationship("Integration", back_populates="functions")
     groups = relationship("FunctionGroup", secondary="function_group_association", back_populates="functions")
+    proxy_id   = Column(Integer, ForeignKey("proxies.id"), nullable=True)
+    proxy      = relationship("Proxy", back_populates="functions")

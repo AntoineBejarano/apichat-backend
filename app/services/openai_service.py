@@ -1,137 +1,184 @@
-import openai
+import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+import openai
 from fastapi import HTTPException
 
 from app.core.config import settings
 from app.schemas.chat_schema import ChatMessage
 from app.models.function_model import Function
-from app.core.servicefactory import ServiceFactory
+from app.utils.text import truncate_words
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+
+# ---------------------------------------------------------------------------
+# Config & logger
+# ---------------------------------------------------------------------------
 openai.api_key = settings.OPENAI_API_KEY
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cabeceras y sufijo fijos (no-parametrizables en .env) ----------------------
+# ---------------------------------------------------------------------------
+PROMPT_SQL_HEADER = "### SQL Schema (read‑only)"
+PROMPT_FUNCTIONS_HEADER = "### Functions disponibles"
+PROMPT_MCP_HEADER = "### MCP Tools disponibles"
+PROMPT_SUFFIX = (
+    "---\n"
+    "Devuelve SIEMPRE la llamada de función `return_plan` y un JSON con `actions[]` "
+    "y `assistant_response`. No incluyas texto fuera del JSON."
+)
 
 
 class OpenAIService:
-    def __init__(self, factory: ServiceFactory):
+    """Servicio que envuelve la API de OpenAI y genera *planes de acción*.
+
+    *Las cabeceras y el sufijo son constantes en el código para evitar
+    modificaciones accidentales; el único texto dinámico es el
+    `system_prompt` que llega por petición.*
+    """
+
+    RETURN_PLAN_FUNC: Dict[str, Any] = {
+        "name": "return_plan",
+        "description": (
+            "Devuelve el plan de acciones (array `actions`) y el texto final "
+            "(`assistant_response`) que el asistente mostrará al usuario."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Pasos secuenciales a realizar antes de responder al usuario.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["db_query", "api_function", "mcp_tool"],
+                            },
+                            "sql": {"type": "string"},
+                            "function_id": {"type": "integer"},
+                            "tool_name": {"type": "string"},
+                            "params": {"type": "object"},
+                            "store_as": {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "assistant_response": {
+                    "type": "string",
+                    "description": "Respuesta final que verá el usuario.",
+                },
+            },
+            "required": ["actions", "assistant_response"],
+        },
+    }
+
+    # ------------------------------------------------------------------
+    def __init__(self, factory: "ServiceFactory") -> None:
         self.factory = factory
         self.db = factory.db
         self.user = factory.user
-        self.langchain_service = factory.get_langchain_service()
-        self.model = settings.OPENAI_MODEL
         self.history_service = factory.get_chat_history_service()
         self.function_service = factory.get_function_service()
-        self.executor_service = factory.get_executor_service()
-        self.database_service = factory.get_database_service()
+        self.model = settings.OPENAI_MODEL
 
-    async def chat_with_openai(
+        logger.info("[OpenAIService] Instanciado para user=%s", self.user.email)
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+    async def plan_actions(
         self,
-        message: Dict[str, Any],
-        group_id: Optional[int] = None
-    ) -> Dict[str, Any]:
-        try:
-            history = self.history_service.get_chat_history(self.user.id)
-            user_message = ChatMessage(**message)
-            self.history_service.append_to_history(self.user.id, user_message)
-
-            messages = [msg.model_dump() for msg in history] + [user_message.model_dump()]
-            functions: List[Function] = self.function_service.get_functions_by_group(group_id)
-            openai_functions = [f.to_openai_format() for f in functions]
-
-            logger.info(f"[{self.user.email}] Sending message to OpenAI with {len(openai_functions)} functions")
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=messages,
-                functions=openai_functions,
-                function_call="auto"
-            )
-
-            choice = response.choices[0]
-            message = choice.message
-
-            if choice.finish_reason == "function_call":
-                fn_name = message["function_call"]["name"]
-                arguments = message["function_call"].get("arguments", "{}")
-
-                try:
-                    result = self.executor_service.execute_by_name(self.user.id, fn_name, arguments)
-                    result_msg = {
-                        "role": "function",
-                        "name": fn_name,
-                        "content": str(result)
-                    }
-                    self.history_service.append_to_history(self.user.id, ChatMessage(**result_msg))
-                    return {"choices": [{"message": result_msg}]}
-                except Exception as e:
-                    logger.exception(f"❌ Error ejecutando función {fn_name}: {e}")
-                    error_msg = {
-                        "role": "assistant",
-                        "content": f"❌ Error ejecutando la función: {str(e)}"
-                    }
-                    self.history_service.append_to_history(self.user.id, ChatMessage(**error_msg))
-                    return {"choices": [{"message": error_msg}]}
-
-            self.history_service.append_to_history(self.user.id, ChatMessage(**message))
-            return response.to_dict()
-
-        except Exception as e:
-            logger.exception(f"❌ Error general en chat_with_openai: {str(e)}")
-            return {"choices": [{"message": {"role": "assistant", "content": f"❌ Error interno: {str(e)}"}}]}
-
-    async def detect_intent_and_respond(
-        self,
-        db_id: Optional[int],
-        app_id: Optional[int],
+        user_id: int,
         system_prompt: str,
-        message: ChatMessage
+        user_message: ChatMessage,
+        db_schema: Optional[str],
+        available_functions: List[Function],
+        available_mcp_tools: Optional[dict],
     ) -> Dict[str, Any]:
+        """Genera y devuelve un *plan de acciones* estructurado."""
         try:
-            history = self.history_service.get_chat_history(self.user.id)
-            self.history_service.append_to_history(self.user.id, message)
-            messages = [{"role": "system", "content": system_prompt}] + \
-                       [msg.model_dump() for msg in history] + [message.model_dump()]
+            # 1️⃣  Historial limitado (últimos 8)
+            history = self.history_service.get_chat_history(user_id)[-8:]
+            messages = [
+                {
+                    "role": "system",
+                    "content": self._build_system_prompt(
+                        system_prompt, db_schema, available_functions, available_mcp_tools
+                    ),
+                },
+                *[msg.model_dump() for msg in history],
+                user_message.model_dump(),
+            ]
 
-            db_conn = self.database_service.get_sql_database_by_id(db_id) if db_id else None
-            functions = self.function_service.get_functions_by_app_id(app_id) if app_id else []
+            logger.debug("[OpenAIService] Contexto · %s", truncate_words(str(messages), 60))
 
-            logger.info(f"[{self.user.email}] detect_intent_and_respond con {len(functions)} funciones y prompt: {system_prompt}")
-            response = openai.ChatCompletion.create(
+            # 2️⃣  Llamada ChatCompletion
+            resp = openai.ChatCompletion.create(
                 model=self.model,
+                functions=[self.RETURN_PLAN_FUNC],
+                function_call={"name": "return_plan"},
+                temperature=settings.OPENAI_TEMPERATURE,
                 messages=messages,
-                functions=[f.to_openai_format() for f in functions],
-                function_call="auto"
             )
 
-            choice = response.choices[0]
-            ai_msg = choice.message
+            choice = resp.choices[0]
+            if choice.message.get("function_call"):
+                args_raw = choice.message["function_call"].get("arguments", "{}")
+                plan = json.loads(args_raw)
+                logger.info(
+                    "[OpenAIService] Plan recibido con %d acciones", len(plan.get("actions", []))
+                )
+                return plan
 
-            if ai_msg.get("function_call"):
-                fn_name = ai_msg["function_call"]["name"]
-                arguments = ai_msg["function_call"].get("arguments", "{}")
-                try:
-                    result = self.executor_service.execute_by_name(self.user.id, fn_name, arguments)
-                    result_msg = {
-                        "role": "function",
-                        "name": fn_name,
-                        "content": str(result)
-                    }
-                    self.history_service.append_to_history(self.user.id, ChatMessage(**result_msg))
-                    return result_msg
-                except Exception as e:
-                    logger.exception(f"❌ Error ejecutando función {fn_name}: {str(e)}")
-                    return {"role": "assistant", "content": f"❌ Error ejecutando función: {str(e)}"}
+            # Fallback: el modelo no llamó a la función
+            return {
+                "actions": [],
+                "assistant_response": choice.message.get(
+                    "content", "Lo siento, no pude entender la petición."
+                ),
+            }
 
-            if db_conn and "SELECT" in ai_msg.get("content", "").upper():
-                try:
-                    result = self.langchain_service.ask_database_question(db_conn, ai_msg["content"])
-                    return {"role": "db", "content": result}
-                except Exception as e:
-                    logger.exception(f"❌ Error al consultar DB: {str(e)}")
-                    return {"role": "assistant", "content": f"❌ Error en consulta DB: {str(e)}"}
+        except json.JSONDecodeError as decode_err:
+            logger.error("[OpenAIService] JSON inválido: %s", decode_err)
+            raise HTTPException(status_code=500, detail="LLM devolvió JSON inválido")
+        except Exception as exc:
+            logger.exception("[OpenAIService] ❌ Error en plan_actions: %s", exc)
+            raise HTTPException(status_code=500, detail=f"OpenAI error: {exc}")
 
-            self.history_service.append_to_history(self.user.id, ChatMessage(**ai_msg))
-            return ai_msg
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _build_system_prompt(
+        self,
+        custom_prompt: str,
+        db_schema: Optional[str],
+        functions: List[Function],
+        mcp_tools: Optional[dict],
+    ) -> str:
+        """Construye el prompt de sistema combinando:
+        - Prompt del agente (dinámico)
+        - Resumen de esquema SQL
+        - Lista de funciones del App
+        - Lista de tools MCP
+        - Sufijo con la instrucción JSON
+        """
+        parts: List[str] = [custom_prompt.strip() or "You are a helpful assistant."]
 
-        except Exception as e:
-            logger.exception(f"❌ Error general en detect_intent_and_respond: {str(e)}")
-            return {"role": "assistant", "content": f"❌ Error interno: {str(e)}"}
+        if db_schema:
+            parts.append(f"{PROMPT_SQL_HEADER}\n" + db_schema[:600])
+
+        if functions:
+            fx_lines = [f"• {f.name}: {truncate_words(f.description or '', 12)}" for f in functions]
+            parts.append(f"{PROMPT_FUNCTIONS_HEADER}\n" + "\n".join(fx_lines))
+
+        if mcp_tools and mcp_tools.get("tools"):
+            tool_lines = [f"• {t['name']}: {t.get('description', '')}" for t in mcp_tools["tools"]]
+            parts.append(f"{PROMPT_MCP_HEADER}\n" + "\n".join(tool_lines))
+
+        parts.append(PROMPT_SUFFIX)
+        return "\n\n".join(parts)

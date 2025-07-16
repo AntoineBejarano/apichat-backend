@@ -4,8 +4,10 @@ from typing import List
 
 from app.models.app_model import App
 from app.schemas.app_schema import AppCreate, AppUpdate
-from app.core.servicefactory import ServiceFactory
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 class AppService:

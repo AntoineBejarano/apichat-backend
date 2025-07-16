@@ -2,8 +2,10 @@ import logging
 from typing import List, Optional
 from app.models.strategy_model import Strategy
 from app.schemas.strategy_schema import StrategyCreate, StrategyUpdate
-from app.core.servicefactory import ServiceFactory
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 

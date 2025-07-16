@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from app.models.function_model import Function
-from app.core.servicefactory import ServiceFactory  # ✅ nuevo import
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
+    
 logger = logging.getLogger(__name__)
 
 
@@ -94,3 +96,15 @@ class FunctionExecutor:
             return val
 
         return {k: _render(v) for k, v in template_dict.items()}
+
+    def execute_by_id(self, fn_id: int, arguments: dict | str) -> Any:
+        fn: Function = (
+            self.db.query(Function)
+            .filter(Function.user_id == self.user_id, Function.id == fn_id, Function.active == True)
+            .first()
+        )
+        if not fn:
+            raise HTTPException(status_code=404, detail=f"Function id={fn_id} no encontrada.")
+
+        args_json = json.dumps(arguments) if not isinstance(arguments, str) else arguments
+        return self.execute_by_name(fn.name, args_json)

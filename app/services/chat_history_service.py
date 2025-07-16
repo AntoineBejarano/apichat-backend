@@ -1,7 +1,9 @@
 import logging
 from typing import List
 
-from app.core.servicefactory import ServiceFactory
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.core.service_factory import ServiceFactory
 from app.models.chat_history_model import ChatHistory
 from app.schemas.chat_history_schema import ChatHistoryCreate
 

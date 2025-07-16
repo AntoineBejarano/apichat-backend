@@ -1,20 +1,23 @@
+# app/routers/strategy_router.py
+
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 
 from app.core.database import get_db
-from app.core.servicefactory import ServiceFactory
+from app.core.service_factory import ServiceFactory
 from app.schemas.strategy_schema import StrategyCreate, StrategyOut, StrategyUpdate
 
 router = APIRouter(
     prefix="/strategies",
     tags=["📈 Strategies"],
     responses={
-        404: {"description": "Strategy no encontrada"},
+        404: {"description": "Estrategia no encontrada"},
         500: {"description": "Error interno del servidor"},
     }
 )
 
+# 🧩 Inyector del ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
@@ -32,8 +35,10 @@ def create_strategy_route(
     try:
         return factory.get_strategy_service().create_strategy(factory.user.id, user_data)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating strategy: {str(e)}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"💥 Error al crear estrategia: {str(e)}"
+        )
 
 @router.get(
     "/",
@@ -44,7 +49,6 @@ def create_strategy_route(
 def list_strategies(factory: ServiceFactory = Depends(get_factory)):
     return factory.get_strategy_service().get_user_strategies(factory.user.id)
 
-
 @router.get(
     "/{strategy_id}",
     response_model=StrategyOut,
@@ -54,9 +58,11 @@ def list_strategies(factory: ServiceFactory = Depends(get_factory)):
 def get_strategy_route(strategy_id: int, factory: ServiceFactory = Depends(get_factory)):
     strategy = factory.get_strategy_service().get_strategy_by_id(factory.user.id, strategy_id)
     if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
+        raise HTTPException(
+            status_code=404,
+            detail="❌ Estrategia no encontrada"
+        )
     return strategy
-
 
 @router.put(
     "/{strategy_id}",
@@ -71,9 +77,11 @@ def update_strategy_route(
 ):
     updated = factory.get_strategy_service().update_strategy(factory.user.id, strategy_id, updates)
     if not updated:
-        raise HTTPException(status_code=404, detail="Strategy not found or not updated")
+        raise HTTPException(
+            status_code=404,
+            detail="❌ Estrategia no encontrada o sin cambios"
+        )
     return updated
-
 
 @router.delete(
     "/{strategy_id}",
@@ -84,4 +92,7 @@ def update_strategy_route(
 def delete_strategy_route(strategy_id: int, factory: ServiceFactory = Depends(get_factory)):
     success = factory.get_strategy_service().delete_strategy(factory.user.id, strategy_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Strategy not found")
+        raise HTTPException(
+            status_code=404,
+            detail="❌ Estrategia no encontrada"
+        )
