@@ -9,6 +9,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.login_schema import LoginRequest
+from app.schemas.login_schema import RegisterRequest
+from app.models.user_model import User
 
 router = APIRouter(
     prefix="/auth",
@@ -123,3 +125,37 @@ def me(factory: ServiceFactory = Depends(get_factory)):
         "email": user.email,
         "name": user.name,
     }
+
+
+
+@router.post("/register", summary="Registrar nuevo usuario")
+def register(
+    data: RegisterRequest,
+    request: Request,
+    response: Response,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    db = factory.db
+    session_service = factory.get_session_service()
+
+    existing = db.query(User).filter_by(email=data.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="El email ya está registrado")
+
+    user = User(email=data.email, name=data.name)
+    user.set_password(data.password)
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    session = session_service.create_session(user.id, request)
+    response.set_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        value=session.session_token,
+        httponly=True,
+        secure=settings.SESSION_COOKIE_SECURE,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+        max_age=settings.SESSION_COOKIE_MAX_AGE,
+    )
+    return {"message": "✅ Registro y login exitoso"}

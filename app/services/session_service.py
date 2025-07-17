@@ -1,5 +1,3 @@
-# app/services/session_service.py
-
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
@@ -18,6 +16,7 @@ class SessionService:
 
     def create_session(self, user_id: int, request: Request) -> SessionModel:
         token = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
         logger.info(f"🆕 Creando sesión para user_id={user_id}")
 
         session = SessionModel(
@@ -25,7 +24,9 @@ class SessionService:
             session_token=token,
             ip_address=request.client.host,
             user_agent=request.headers.get("user-agent"),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=30)
+            created_at=now,
+            expires_at=now + timedelta(days=30),
+            last_used_at=now
         )
 
         self.db.add(session)
@@ -53,6 +54,10 @@ class SessionService:
             logger.warning("⚠️ Token expirado")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
 
+        # ✅ Actualizar last_used_at
+        session.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
+
         user = self.db.query(User).filter(User.id == session.user_id).first()
         if not user:
             logger.error(f"❌ Usuario con ID {session.user_id} no encontrado")
@@ -72,4 +77,50 @@ class SessionService:
         self.db.delete(session)
         self.db.commit()
         logger.info("✅ Sesión eliminada correctamente")
+        return True
+
+    def get_user_sessions(self, user_id: int) -> list[SessionModel]:
+        logger.info(f"📄 Obteniendo sesiones activas para user_id={user_id}")
+        return self.db.query(SessionModel).filter(SessionModel.user_id == user_id).all()
+
+    def revoke_all_except(self, user_id: int, current_token: str) -> int:
+        logger.info(f"🧹 Revocando todas las sesiones de user_id={user_id} excepto la actual")
+        sessions = self.db.query(SessionModel).filter(SessionModel.user_id == user_id).all()
+        revoked_count = 0
+
+        for session in sessions:
+            if session.session_token != current_token:
+                self.db.delete(session)
+                revoked_count += 1
+
+        self.db.commit()
+        logger.info(f"✅ {revoked_count} sesiones revocadas")
+        return revoked_count
+
+    def validate_session(self, token: str) -> SessionModel:
+        logger.info(f"🔍 Validando sesión con token={token}")
+        session = self.db.query(SessionModel).filter(SessionModel.session_token == token).first()
+
+        if not session:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session token")
+
+        if session.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+
+        # Opcional: actualizar `last_used_at` si se desea al validar sin autenticar
+        return session
+
+    def revoke_session_by_token(self, token: str, user_id: int) -> bool:
+        logger.info(f"🗑️ Revocando sesión específica token={token} para user_id={user_id}")
+        session = self.db.query(SessionModel).filter(SessionModel.session_token == token).first()
+
+        if not session:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+        if session.user_id != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this session")
+
+        self.db.delete(session)
+        self.db.commit()
+        logger.info("✅ Sesión específica revocada")
         return True

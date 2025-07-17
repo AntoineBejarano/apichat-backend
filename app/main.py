@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import (
     auth_router, chat_router, functions_router, agent_router, database_router,
     chat_history_router, openapi_router, strategy_router, user_router, proxy_router, mcp_integration_router,
-    meta_router
+    meta_router, session_router
 )
 from app.routers.chat_ws_router import router as ws_router
 
@@ -61,6 +61,8 @@ app.include_router(strategy_router.router); logger.info("📊 Strategies router 
 app.include_router(user_router.router); logger.info("👤 User router loaded.")
 app.include_router(proxy_router.router); logger.info("🔌 Proxy router loaded.")
 app.include_router(mcp_integration_router.router); logger.info("🔌 MCP Integration router loaded.")
+app.include_router(session_router.router); logger.info("🔌 Session router loaded.")
+
 
 
 app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")

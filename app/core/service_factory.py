@@ -4,6 +4,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 from fastapi import Request, HTTPException, status
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
 from app.models.user_model import User
 from app.models.session_model import Session as SessionModel
@@ -74,12 +75,17 @@ class ServiceFactory:
             )
 
         session = self.db.query(SessionModel).filter_by(session_token=token).first()
-        if not session or session.expires_at < session.created_at:
+
+        if not session or session.expires_at < datetime.now(timezone.utc):
             logger.warning("❌ Sesión inválida o expirada")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired session"
             )
+
+        # ✅ Actualizar last_used_at
+        session.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
 
         user = self.db.query(User).filter_by(id=session.user_id).first()
         if not user:
@@ -91,6 +97,7 @@ class ServiceFactory:
 
         logger.info(f"✅ Usuario autenticado: {user.email}")
         return user
+
 
     # 🧠 Orquestador principal
     def get_orchestrator_service(self) -> "OrchestratorService":

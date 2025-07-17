@@ -8,9 +8,9 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "APIchat"
+    PROJECT_NAME: str = os.getenv("PROJECT_NAME")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
-    APP_VERSION: str = "/api/v1"
+    APP_VERSION: str = os.getenv("APP_VERSION")
 
     # Base de datos (Neon o cualquier otra URL de SQLAlchemy)
     DATABASE_URL: str = os.getenv("DATABASE_URL")
