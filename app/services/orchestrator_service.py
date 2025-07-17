@@ -1,14 +1,12 @@
 import logging
 from typing import List, Dict, Optional, Any, TYPE_CHECKING
 
-from sqlalchemy.orm import Session
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
 
-from app.schemas.chat_schema import ChatMessage
 from app.models.app_model import App
 from app.models.database_model import DatabaseConnection
-from app.models.function_model import Function
-from app.services.mcp.manager import MCPConnectorManager
+from app.schemas.chat_schema import ChatMessage
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -17,33 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 class OrchestratorService:
-    """Servicio central que resuelve la intención del usuario y ejecuta
-    las acciones necesarias (consultas SQL, funciones HTTP o herramientas
-    MCP) devolviendo una respuesta final y un listado de *steps* para
-    trazabilidad en frontend.
+    """
+    Central orchestrator that processes user input and coordinates execution
+    across databases, functions, and LLMs to generate assistant responses.
     """
 
-    # ------------------------------------------------------------------
-    # Construcción
-    # ------------------------------------------------------------------
     def __init__(self, factory: "ServiceFactory") -> None:
         self.factory = factory
         self.db: Session = factory.db
         self.user_id: int = factory.user.id
-
-        # Servicios hijos obtenidos perezosamente del factory -----------------
-        self.openai = factory.get_openai_service()
-        self.agents = factory.get_agent_service()
-        self.databases = factory.get_database_service()
-        self.functions = factory.get_function_service()
-        self.apps = factory.get_apps_service()
-        self.mcp_integrations = factory.get_mcp_integration_service()
-        self.executor = factory.get_executor_service
-
-        logger.info("[OrchestratorService] Inicializado para user_id=%s", self.user_id)
+        logger.info("[OrchestratorService] Initialized for user_id=%s", self.user_id)
 
     # ------------------------------------------------------------------
-    # API pública
+    # Main entry point
     # ------------------------------------------------------------------
     async def handle_user_message(
         self,
@@ -52,111 +36,105 @@ class OrchestratorService:
         agent_id: Optional[int],
         message: ChatMessage,
     ) -> Dict[str, Any]:
-        """Punto de entrada principal desde los routers HTTP/WebSocket.
-        Resuelve un mensaje de usuario y devuelve:
-
-        ```json
-        {
-          "assistant_response": "...texto final...",
-          "steps": ["step1", "step2", ...]
-        }
-        ```
-        """
-
+        """Main entry point to handle a user message and return assistant response with trace steps."""
         steps: List[str] = []
-        ctx: Dict[str, Any] = {}  # almacena resultados intermedios
+        ctx: Dict[str, Any] = {}
 
         try:
-            logger.info("[%s] 📥 Mensaje: %s", self.user_id, message.content)
-            steps.append("Mensaje recibido")
+            logger.info("[%s] 📥 Received user message: %s", self.user_id, message.content)
+            steps.append("📩 Message received")
 
-            # 1️⃣  Prompt del agente (opcional) -----------------------------
+            # 1. Load agent system prompt
             system_prompt = ""
             if agent_id:
-                system_prompt = self.agents.get_prompt(agent_id)
-                steps.append(f"Prompt cargado del agente {agent_id}")
+                system_prompt = self.factory.get_agent_service().get_prompt(agent_id)
+                steps.append(f"🤖 Agent {agent_id} prompt loaded")
 
-            # 2️⃣  Conección DB (opcional) ---------------------------------
+            # 2. Load database connection (optional)
             db_conn: Optional[DatabaseConnection] = None
             if database_id:
-                db_conn = self.databases.get_sql_instance(database_id)
-                steps.append(f"Conexión a DB {database_id} establecida")
+                db_conn = self.factory.get_database_service().get_sql_instance(database_id)
+                steps.append(f"🔗 Connected to database {database_id}")
 
-            # 3️⃣  Localizar App o MCPIntegration ---------------------------
-            functions: List[Function] = []
-            mcp_metadata: Optional[dict] = None
+            # 3. Load app and associated functions
+            app: Optional[App] = self.factory.get_apps_service().get_by_id(app_id)
+            if not app:
+                raise HTTPException(status_code=404, detail="App not found")
+            steps.append(f"📦 App {app_id} loaded → {app.name}")
 
-            app: Optional[App] = self.apps.get_by_id(app_id)
-            if app:
-                steps.append(f"App {app_id} encontrada → {app.name}")
-                functions = self.functions.get_by_app(app_id)
-            else:
-                mcp = self.mcp_integrations.get_by_id(app_id)
-                if not mcp:
-                    raise HTTPException(status_code=404, detail="App o MCPIntegration no encontrada")
-                mcp_metadata = mcp.mcp_metadata
-                steps.append(f"MCPIntegration {app_id} encontrada → {mcp.name}")
+            functions = self.factory.get_function_service().get_functions_by_app(app)
+            steps.append(f"🔧 {len(functions)} functions loaded from app")
 
-            # 4️⃣  LLM: generar plan de acciones ---------------------------
-            logger.debug("[%s] 🧠 Llamando LLM para generar plan", self.user_id)
-            plan: Dict[str, Any] = await self.openai.plan_actions(
+            # 4. Determine proxy (if app has one)
+            proxy = None
+            if app.proxy_id:
+                proxy = self.factory.get_proxy_service().get_by_id(app.proxy_id)
+                if proxy:
+                    steps.append(f"🛡️ Proxy {proxy.id} loaded for app")
+                    logger.info("[OrchestratorService] Proxy ID %s loaded for app ID %s", proxy.id, app.id)
+                else:
+                    steps.append("⚠️ App has proxy_id but not found or not owned by user")
+
+            # 5. Ask OpenAI for execution plan
+            plan = await self.factory.get_openai_service().plan_actions(
                 user_id=self.user_id,
                 system_prompt=system_prompt,
                 user_message=message,
                 db_schema=db_conn.schema if db_conn else None,
                 available_functions=functions,
-                available_mcp_tools=mcp_metadata,
             )
-            steps.append("Plan generado por IA")
+            steps.append("🧠 Plan generated by LLM")
 
-            # 5️⃣  Ejecutar acciones secuenciales --------------------------
+            # 6. Execute plan actions
             for idx, action in enumerate(plan.get("actions", []), start=1):
                 tag = f"Step {idx}: {action['type']}"
-
                 try:
+                    logger.debug("[%s] ▶️ Executing %s", self.user_id, tag)
+
                     if action["type"] == "db_query":
-                        
-                        sql_rendered = action["sql"].format(**ctx)
-                        result = self.databases.execute_sql(db_conn, sql_rendered)
+                        sql = action["sql"].format(**ctx)
+                        result = self.factory.get_database_service().execute_sql(db_conn, sql)
                         ctx[action.get("store_as", f"result_{idx}")] = result
-                        steps.append(f"{tag} ✅")
+                        steps.append(f"{tag} ✅ SQL executed")
+
                     elif action["type"] == "api_function":
                         params = self._render_params(action["params"], ctx)
-                        result = self.executor.execute_by_id(action["function_id"], params)
-                        ctx[action.get("store_as", f"result_{idx}")] = result
-                        steps.append(f"{tag} ✅")
-                    elif action["type"] == "mcp_tool":
-                        params = self._render_params(action["params"], ctx)
-                        result = self.execute_decision(
-                            {"tool_name": action["tool_name"], "params": params},
-                            mcp_metadata,
+                        func_id = action["function_id"]
+
+                        # Auto-select executor
+                        result = self.factory.get_executor_service().execute_by_id(
+                            function_id=func_id,
+                            params=params,
+                            proxy=proxy  # used by HTTPExecutor
                         )
                         ctx[action.get("store_as", f"result_{idx}")] = result
-                        steps.append(f"{tag} ✅")
-                    else:
-                        raise ValueError("Tipo de acción desconocido")
-                except Exception as action_exc:
-                    logger.exception("%s ❌ %s", tag, action_exc)
-                    steps.append(f"{tag} ❌ {action_exc}")
-                    return self._error_response(steps, action_exc)
+                        steps.append(f"{tag} ✅ Function executed")
 
-            # 6️⃣  Respuesta final del asistente ---------------------------
-            final_text = plan.get("assistant_response", "He terminado las acciones solicitadas.")
-            steps.append("Respuesta final generada")
-            logger.info("[%s] ✅ Flujo completo", self.user_id)
+                    else:
+                        raise ValueError(f"Unknown action type: {action['type']}")
+
+                except Exception as step_exc:
+                    logger.exception("[%s] ❌ Error in %s", self.user_id, tag)
+                    steps.append(f"{tag} ❌ {str(step_exc)}")
+                    return self._error_response(steps, step_exc)
+
+            # 7. Final response from assistant
+            final_text = plan.get("assistant_response", "✅ All steps completed successfully.")
+            steps.append("🧾 Final assistant response generated")
+            logger.info("[%s] ✅ Message handled successfully", self.user_id)
 
             return {"assistant_response": final_text, "steps": steps}
 
         except Exception as exc:
-            logger.exception("[%s] ❌ Error general: %s", self.user_id, exc)
+            logger.exception("[%s] ❌ Fatal error handling message: %s", self.user_id, exc)
             return self._error_response(steps, exc)
 
     # ------------------------------------------------------------------
-    # Helpers internos
+    # Helpers
     # ------------------------------------------------------------------
     @staticmethod
     def _render_params(params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Sustituye placeholders {{var}} en los params por valores en *context*."""
+        """Replace {{placeholders}} in parameters using context."""
         import re, json
 
         def _replace(value):
@@ -164,7 +142,8 @@ class OrchestratorService:
                 matches = re.findall(r"{{(.*?)}}", value)
                 for m in matches:
                     if m in context:
-                        value = value.replace(f"{{{{{m}}}}}", json.dumps(context[m]) if not isinstance(context[m], str) else str(context[m]))
+                        v = context[m]
+                        value = value.replace(f"{{{{{m}}}}}", json.dumps(v) if not isinstance(v, str) else str(v))
             return value
 
         return {k: _replace(v) for k, v in params.items()}
@@ -172,20 +151,7 @@ class OrchestratorService:
     @staticmethod
     def _error_response(steps: List[str], exc: Exception) -> Dict[str, Any]:
         return {
-            "error": "Ocurrió un error procesando tu mensaje.",
+            "error": "Something went wrong while processing your message.",
             "details": str(exc),
-            "steps": steps + ["Error detectado"],
+            "steps": steps + ["⚠️ Error encountered"]
         }
-
-    # ------------------------------------------------------------------
-    # Ejecución de herramientas MCP
-    # ------------------------------------------------------------------
-    def execute_decision(self, decision: dict, mcp_metadata: dict) -> dict:
-        logger.debug("[%s] Ejecutando herramienta MCP %s", self.user_id, decision["tool_name"])
-        mcp = MCPConnectorManager(mcp_metadata)
-        available = [t["name"] for t in mcp.get_tools()]
-
-        if decision["tool_name"] not in available:
-            raise HTTPException(status_code=404, detail="Herramienta MCP no disponible")
-
-        return mcp.execute_tool(decision["tool_name"], decision.get("params", {}))

@@ -1,21 +1,23 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 
 class ChatHistoryBase(BaseModel):
-    session_id: str
-    message: str
-    response: str
-    model_used: Optional[str]
-    tokens_used: Optional[int]
+    role: str
+    content: str
+    name: Optional[str] = None
+    token_count: Optional[int] = None
+
 
 class ChatHistoryCreate(ChatHistoryBase):
-    pass
+    chat_id: int
+
 
 class ChatHistoryOut(ChatHistoryBase):
     id: int
-    user_id: int
-    created_at: Optional[str]
+    chat_id: int
+    timestamp: datetime
 
     class Config:
         orm_mode = True

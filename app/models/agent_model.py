@@ -17,3 +17,4 @@ class Agent(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="agents")
+    chats = relationship("Chat", back_populates="agent", cascade="all, delete-orphan")

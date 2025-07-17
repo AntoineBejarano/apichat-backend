@@ -42,6 +42,15 @@ def register_user(
     return factory.get_user_service().create_user(user_data)
 
 @router.get(
+    "/me",
+    response_model=UserDetail,
+    summary="🙋 Perfil actual",
+    description="Obtiene la información del usuario autenticado actual."
+)
+def get_current_profile(factory: ServiceFactory = Depends(get_factory)):
+    return factory.user
+
+@router.get(
     "/{user_id}",
     response_model=UserDetail,
     summary="🔍 Obtener usuario por ID",
@@ -58,12 +67,3 @@ def get_user_by_id_route(
             detail="❌ Usuario no encontrado"
         )
     return user
-
-@router.get(
-    "/me",
-    response_model=UserDetail,
-    summary="🙋 Perfil actual",
-    description="Obtiene la información del usuario autenticado actual."
-)
-def get_current_profile(factory: ServiceFactory = Depends(get_factory)):
-    return factory.user

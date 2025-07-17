@@ -8,8 +8,8 @@ from app.core.service_factory import ServiceFactory
 from app.schemas.chat_history_schema import ChatHistoryCreate, ChatHistoryOut
 
 router = APIRouter(
-    prefix="/chat",
-    tags=["💬 Chat History"],
+    prefix="/chat-history",
+    tags=["🕓 Chat History"],
     responses={
         400: {"description": "Petición inválida"},
         404: {"description": "No encontrado"},
@@ -20,55 +20,34 @@ router = APIRouter(
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  POST ▸ /chat/  ➜  Guardar mensaje
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/",
     response_model=ChatHistoryOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Añadir mensaje al historial",
-    response_description="Mensaje guardado correctamente",
+    summary="📝 Añadir mensaje al historial",
+    description="Guarda un nuevo mensaje en el historial de chat del usuario autenticado.",
 )
 def add_message_to_history(
     data: ChatHistoryCreate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    Guarda un nuevo mensaje en el historial de chat del usuario autenticado.
-    """
-    history_srv = factory.get_chat_history_service()
-    return history_srv.create_message(data)
+    return factory.get_chat_history_service().create_message(data)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  GET ▸ /chat/  ➜  Listar historial
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get(
     "/",
     response_model=List[ChatHistoryOut],
-    summary="Obtener historial de chat",
-    response_description="Listado de mensajes del usuario",
+    summary="📜 Obtener historial completo",
+    description="Devuelve todo el historial de chat del usuario autenticado.",
 )
 def get_chat_history(factory: ServiceFactory = Depends(get_factory)):
-    """
-    Devuelve todo el historial de chat del usuario autenticado.
-    """
-    history_srv = factory.get_chat_history_service()
-    return history_srv.get_history()
+    return factory.get_chat_history_service().get_history()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DELETE ▸ /chat/  ➜  Borrar historial
-# ─────────────────────────────────────────────────────────────────────────────
 @router.delete(
     "/",
     status_code=status.HTTP_200_OK,
-    summary="Eliminar historial de chat",
-    response_description="Historial eliminado correctamente",
+    summary="🗑️ Eliminar historial",
+    description="Elimina todo el historial de chat del usuario autenticado.",
 )
 def delete_chat_history(factory: ServiceFactory = Depends(get_factory)):
-    """
-    Elimina todo el historial de chat del usuario autenticado.
-    """
-    history_srv = factory.get_chat_history_service()
-    deleted = history_srv.delete_all()
+    deleted = factory.get_chat_history_service().delete_all()
     return {"deleted": deleted}

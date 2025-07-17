@@ -4,10 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import (
     auth_router, chat_router, functions_router, agent_router, database_router,
-    chat_history_router, openapi_router, strategy_router, user_router, proxy_router, mcp_integration_router,
-    meta_router, session_router
+    chat_history_router, openapi_router, strategy_router, user_router, proxy_router,
+    mcp_integration_router, meta_router, session_router, user_role_router, role_router,
+    billing_router, integration_router, permission_router  # ✅ añadidos
 )
 from app.routers.chat_ws_router import router as ws_router
+from app.utils.error_handler import register_error_handlers
 
 import logging
 from art import tprint
@@ -61,10 +63,15 @@ app.include_router(strategy_router.router); logger.info("📊 Strategies router 
 app.include_router(user_router.router); logger.info("👤 User router loaded.")
 app.include_router(proxy_router.router); logger.info("🔌 Proxy router loaded.")
 app.include_router(mcp_integration_router.router); logger.info("🔌 MCP Integration router loaded.")
-app.include_router(session_router.router); logger.info("🔌 Session router loaded.")
-
-
-
-app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")
+app.include_router(session_router.router); logger.info("🕒 Session router loaded.")
+app.include_router(user_role_router.router); logger.info("👥 User_Role router loaded.")
+app.include_router(role_router.router); logger.info("🧩 Role Router loaded.")
+app.include_router(billing_router.router); logger.info("💳 Billing router loaded.")  # ✅
+app.include_router(integration_router.router); logger.info("🧩 Integration router loaded.")  # ✅
+app.include_router(permission_router.router); logger.info("🔐 Permission router loaded.")  # ✅
+app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")  # ✅
 
 logger.info("🚀 APIchat is up and running.")
+
+register_error_handlers(app)
+

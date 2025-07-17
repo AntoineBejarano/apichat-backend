@@ -22,5 +22,9 @@ class App(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    proxy_id = Column(Integer, ForeignKey("proxies.id"), nullable=True)
+
     user = relationship("User", back_populates="apps")
     functions = relationship("Function", back_populates="app", cascade="all, delete-orphan")
+    chats = relationship("Chat", back_populates="app", cascade="all, delete-orphan")
+    proxy = relationship("Proxy", backref="apps")

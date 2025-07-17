@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.models.base_model import Base
+from app.models.role_model import user_roles
 
 from passlib.context import CryptContext
 
@@ -26,13 +27,15 @@ class User(Base):
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     apps = relationship("App", back_populates="user", cascade="all, delete-orphan")
     databases = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
-    functions = relationship("Function", back_populates="user", cascade="all, delete-orphan")
     strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
-    chat_histories = relationship("ChatHistory", back_populates="user", cascade="all, delete-orphan")
     integrations = relationship("Integration", back_populates="user", cascade="all, delete-orphan")
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")
     token_usages = relationship("TokenUsage", back_populates="user", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    roles = relationship("Role", secondary=user_roles, back_populates="users")
+    chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
+    subscriptions = relationship("Subscription", back_populates="user")
+    strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
 
     # ✅ Métodos de autenticación
     def set_password(self, password: str):

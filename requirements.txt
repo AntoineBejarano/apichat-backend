@@ -13,3 +13,5 @@ pymysql
 langchain-experimental
 python-multipart
 art
+stripe
+croniter

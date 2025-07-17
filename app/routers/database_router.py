@@ -8,7 +8,7 @@ from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.database_schema import (
     DatabaseConnectionCreate,
-    DatabaseConnectionOut
+    DatabaseConnectionOut,
 )
 
 router = APIRouter(
@@ -41,7 +41,7 @@ def create_connection(
     🔌 Crear una nueva conexión a una base de datos externa para su uso en sesiones de IA.
     """
     db_service = factory.get_database_service()
-    return db_service.create_connection(factory.user.id, data)
+    return db_service.create_connection(data)
 
 
 @router.get(
@@ -55,7 +55,7 @@ def list_connections(factory: ServiceFactory = Depends(get_factory)):
     📋 Listar todas las conexiones de bases de datos del usuario autenticado.
     """
     db_service = factory.get_database_service()
-    return db_service.get_user_databases(factory.user.id)
+    return db_service.get_user_databases()
 
 
 @router.delete(
@@ -72,6 +72,25 @@ def delete_connection(
     🧹 Eliminar una conexión de base de datos por su ID.
     """
     db_service = factory.get_database_service()
-    success = db_service.delete_database(factory.user.id, db_id)
+    success = db_service.delete_connection(db_id)
     if not success:
         raise HTTPException(status_code=404, detail="Base de datos no encontrada")
+
+
+@router.post(
+    "/validate",
+    summary="Validar conexión",
+    response_description="Validez de la conexión comprobada"
+)
+def validate_connection(
+    data: DatabaseConnectionCreate,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    """
+    🧪 Valida si los datos de conexión proporcionados son correctos.
+    """
+    db_service = factory.get_database_service()
+    success = db_service.validate_connection(data)
+    if not success:
+        raise HTTPException(status_code=400, detail="Conexión inválida")
+    return {"message": "Conexión válida ✅"}

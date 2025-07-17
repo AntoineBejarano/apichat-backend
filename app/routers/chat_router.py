@@ -1,12 +1,12 @@
 # app/routers/chat_router.py
-
 from fastapi import APIRouter, Depends, Request, HTTPException, status
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from typing import List
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
-from app.schemas.chat_schema import ChatMessage
+from app.schemas.chat_schema import ChatMessage, ChatCreate, ChatOut
+from app.schemas.chat_history_schema import ChatHistoryOut
 
 router = APIRouter(
     prefix="/chat",
@@ -14,41 +14,64 @@ router = APIRouter(
     responses={404: {"description": "No encontrado"}},
 )
 
-# 🧩 Inyección de ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
+@router.post(
+    "/",
+    response_model=ChatOut,
+    summary="🧠 Crear nuevo chat",
+    description="Crea una nueva sesión de chat del usuario con IA.",
+)
+def create_chat(chat: ChatCreate, factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_chat_service().create_chat(chat)
+
+@router.get(
+    "/",
+    response_model=List[ChatOut],
+    summary="📚 Listar chats del usuario",
+    description="Devuelve todos los chats del usuario autenticado.",
+)
+def list_user_chats(factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_chat_service().get_user_chats()
+
+@router.delete(
+    "/{chat_id}",
+    response_model=dict,
+    summary="🗑️ Eliminar un chat",
+    description="Elimina un chat específico por ID.",
+)
+def delete_chat(chat_id: int, factory: ServiceFactory = Depends(get_factory)):
+    deleted = factory.get_chat_service().delete_chat(chat_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="❌ Chat no encontrado")
+    return {"deleted": True}
+
+@router.get(
+    "/{chat_id}/history",
+    response_model=List[ChatHistoryOut],
+    summary="🕓 Historial de un chat",
+    description="Obtiene el historial de mensajes de un chat específico.",
+)
+def get_chat_history(chat_id: int, factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_chat_history_service().get_chat_history(chat_id)
 
 @router.post(
-    "/{database_id}/{app_id}/{agent_id}",
-    summary="Enviar mensaje al asistente de IA",
-    description="""
-Envía un mensaje a tu agente de IA, quien puede usar funciones, estrategias y bases de datos para responder inteligentemente.
-""",
-    response_description="Respuesta generada por el asistente"
+    "/{chat_id}/message",
+    response_model=ChatHistoryOut,
+    summary="✉️ Enviar mensaje a IA",
+    description="Envía un mensaje a la IA dentro de un chat específico.",
 )
-async def chat_with_agent(
-    database_id: int,
-    app_id: int,
-    agent_id: int,
+def send_message_to_chat(
+    chat_id: int,
     message: ChatMessage,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    Endpoint para enviar un mensaje a través de HTTP (alternativa a WebSocket).
-    Orquestado por OrchestratorService.
-    """
     try:
-        orchestrator = factory.get_orchestrator_service()
-        response = await orchestrator.handle_user_message(
-            user_id=factory.user.id,
-            database_id=database_id,
-            app_id=app_id,
-            agent_id=agent_id,
-            message=message
+        return factory.get_orchestrator_service().handle_chat_message(
+            chat_id=chat_id,
+            message=message,
         )
-        return JSONResponse(content=response)
-
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -1,21 +1,34 @@
+# app/schemas/chat_schema.py
+
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime
 
-class ChatMessage(BaseModel):
-    role: str  # "user", "assistant", "system"
-    content: str
 
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
-    contextai: Optional[str] = None  # Prompt opcional
+class ChatBase(BaseModel):
+    system_prompt: Optional[str] = None
+    title: Optional[str] = None
     app_id: Optional[int] = None
     agent_id: Optional[int] = None
     database_id: Optional[int] = None
-    user_id: Optional[int] = None  # Lo necesitas si no usas JWT
 
-class ChatResponse(BaseModel):
+
+class ChatCreate(ChatBase):
+    pass
+
+
+class ChatOut(ChatBase):
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        orm_mode = True
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user", "assistant", "system", "function"
     content: str
-    function_call: Optional[dict] = None
-    tokens_used: Optional[int] = None
-    timestamp: datetime
+    name: Optional[str] = None
+    timestamp: Optional[datetime] = None

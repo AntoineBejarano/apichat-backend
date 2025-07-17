@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = os.getenv("SECRET_KEY")
     DEFAULT_API_KEY: str = os.getenv("DEFAULT_API_KEY")
 
+    # Stripe
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
+
     class Config:
         case_sensitive = True
 
