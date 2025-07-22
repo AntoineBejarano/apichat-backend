@@ -1,13 +1,24 @@
-from sqlalchemy import Column, Integer, String
+# app/models/permission_model.py
+
+from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.models.base_model import Base
-from app.models.role_model import role_permissions
+from app.models.base_model import Base   # ← Importa Base desde aquí
 
 class Permission(Base):
-    __tablename__ = "permissions"
+    __tablename__ = "permissions"  # tabla en plural
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False)
-    description = Column(String, nullable=True)
+    id          = Column(Integer, primary_key=True, index=True)
+    code        = Column(String, unique=True, index=True, nullable=False)
+    name        = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
 
-    roles = relationship("Role", secondary=role_permissions, back_populates="permissions")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # ↔ Relación bidireccional con Role.permissions
+    roles = relationship(
+        "Role",
+        secondary="role_permissions",
+        back_populates="permissions"
+    )

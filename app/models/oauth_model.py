@@ -14,7 +14,7 @@ class OAuthAccount(Base):
     refresh_token = Column(String, nullable=True)
     expires_at = Column(DateTime, nullable=True)
 
-    metadata = Column(JSON, nullable=True)  # Info adicional: workspace_id, user_email, etc.
+    oauth_metadata = Column(JSON, nullable=True)  # Info adicional: workspace_id, user_email, etc.
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

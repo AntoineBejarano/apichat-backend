@@ -1,8 +1,9 @@
-### app/models/database_model.py
+# app/models/database_model.py
+
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.core.database import Base
+from app.models.base_model import Base
 
 class DatabaseConnection(Base):
     __tablename__ = "database_connections"
@@ -20,4 +21,5 @@ class DatabaseConnection(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    user = relationship("User", back_populates="database_connections")
+    # 🔗 Relación en STRING para evitar import circular
+    user = relationship("User", back_populates="databases")

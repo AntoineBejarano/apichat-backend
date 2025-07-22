@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 
 class PermissionService:
     def __init__(self, factory: "ServiceFactory"):
+        self.factory = factory
         self.db: Session = factory.db
-        self.user = factory.user
-        logger.info("[PermissionService] ✅ Initialized for user_id=%s", self.user.id)
+        logger.info("[PermissionService] ✅ Initialized")
+
+    def get_current_user(self):
+        return self.factory.user  # Solo cuando realmente se necesita
 
     def create(self, permission_data: PermissionCreate) -> Permission:
         logger.info("[PermissionService] ➕ Creating permission: %s", permission_data.name)
@@ -52,3 +55,16 @@ class PermissionService:
         logger.warning("[PermissionService] 🗑️ Deleting permission ID=%s", permission_id)
         self.db.delete(permission)
         self.db.commit()
+
+    def get_or_create(self, code: str, description: str = "") -> Permission:
+        existing = self.db.query(Permission).filter(Permission.code == code).first()
+        if existing:
+            logger.debug("[PermissionService] ✅ Found existing permission: %s", code)
+            return existing
+
+        logger.info("[PermissionService] ➕ Creating new permission: %s", code)
+        new_permission = Permission(code=code, description=description, name=code)
+        self.db.add(new_permission)
+        self.db.commit()
+        self.db.refresh(new_permission)
+        return new_permission

@@ -1,14 +1,13 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.core.database import Base
-
+from app.models.base_model import Base  # Importa Base de models, no de core.database
 
 class Session(Base):
     __tablename__ = "sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    session_token = Column(String, unique=True, index=True)
+    session_token = Column(String, unique=True, index=True, nullable=False)
     
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     user = relationship("User", back_populates="sessions")

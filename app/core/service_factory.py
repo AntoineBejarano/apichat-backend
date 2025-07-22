@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 class ServiceFactory:
-    def __init__(self, db: Session, request: Request):
+    def __init__(self, db: Session, request: Optional[Request] = None):
         self.db = db
         self.request = request
         logger.info("🧪 Inicializando ServiceFactory...")
@@ -71,6 +71,9 @@ class ServiceFactory:
         return self._user
 
     def _load_user(self) -> User:
+        if self.request is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Request not available")
+
         logger.debug("🔍 Cargando usuario desde session_token...")
         token = self.request.cookies.get("session_token") or self.request.headers.get("Authorization")
 
