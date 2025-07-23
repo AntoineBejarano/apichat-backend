@@ -10,6 +10,7 @@ from app.schemas.database_schema import (
     DatabaseConnectionCreate,
     DatabaseConnectionUpdate,
 )
+from app.services.base_service import BaseService
 from app.utils.build_sqlalchemy_uri import build_sqlalchemy_uri
 
 if TYPE_CHECKING:
@@ -18,13 +19,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class DatabaseService:
+class DatabaseService(BaseService):
     """Gestión de conexiones y consultas SQL para cada usuario."""
 
     def __init__(self, factory: "ServiceFactory") -> None:
-        self.factory = factory
-        self.db: Session = factory.db
-        self.user_id: int = factory.user.id
+        super().__init__(factory)
         logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user_id)
 
     # ---------------------------------------------------------

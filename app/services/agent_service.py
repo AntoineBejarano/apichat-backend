@@ -4,20 +4,25 @@ from fastapi import HTTPException
 
 from app.models.agent_model import Agent
 from app.schemas.agent_schema import AgentCreate, AgentUpdate
+from app.services.base_service import BaseService  # 👈 Hereda de BaseService
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
-    
+
 logger = logging.getLogger(__name__)
 
-class AgentService:
-    def __init__(self, factory: ServiceFactory):
+class AgentService(BaseService):  # 👈 Hereda BaseService
+    def __init__(self, factory: 'ServiceFactory'):
+        super().__init__(factory)  # 👈 Inicializa BaseService
         self.factory = factory
         self.db = factory.db
         self.user_id = factory.user.id
         logger.info(f"[AgentService] Inicializado para user_id={self.user_id}")
 
     def create(self, data: AgentCreate) -> Agent:
+        self.check_plan_limit("agents", Agent)  # 👈 Checkea límite de agentes
+
         logger.info(f"[AgentService] Creando nuevo agente para user_id={self.user_id}")
         agent = Agent(user_id=self.user_id, **data.dict())
         self.db.add(agent)

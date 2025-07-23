@@ -1,10 +1,9 @@
-# app/models/user_model.py
-
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey  # 👈 añade ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.models.base_model import Base
 from app.models.role_model import user_roles
+from app.models.plan_model import Plan  # 👈 importa el modelo Plan
 from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -21,6 +20,10 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # 🔗 NUEVO: relación con Plan
+    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=True)
+    plan = relationship("Plan")
+
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     apps   = relationship("App", back_populates="user", cascade="all, delete-orphan")
     databases  = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
@@ -33,19 +36,18 @@ class User(Base):
     chats          = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
     subscriptions  = relationship("Subscription", back_populates="user")
 
-    # ← Aquí la nueva relación:
     openapi_integrations = relationship(
         "OpenAPIIntegration",
         back_populates="user",
         cascade="all, delete-orphan"
     )
 
-    # 🔗 Añade esto:
     proxies = relationship(
         "Proxy",
         back_populates="user",
         cascade="all, delete-orphan"
     )
+
     def set_password(self, password: str):
         self.hashed_password = pwd_context.hash(password)
 

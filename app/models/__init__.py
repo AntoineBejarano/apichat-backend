@@ -10,6 +10,7 @@ from app.models.user_model import User
 from app.models.agent_model import Agent
 from app.models.chat_model import Chat
 from app.models.chat_history_model import ChatHistory
+from app.models.function_call_log_model import FunctionCallLog
 from app.models.app_model import App
 from app.models.database_model import DatabaseConnection
 from app.models.function_model import Function
@@ -29,7 +30,7 @@ from app.models.function_group_model import FunctionGroup
 
 __all__ = [
     "Base",
-    "User", "Agent", "Chat", "ChatHistory", "App",
+    "User", "Agent", "Chat", "ChatHistory", "FunctionCallLog", "App",
     "DatabaseConnection", "Function", "Integration", "MCPIntegration",
     "OpenAPIIntegration", "Permission", "Plan", "Proxy", "Role",
     "Session", "Strategy", "TokenUsage", "Subscription",

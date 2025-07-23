@@ -3,8 +3,11 @@ from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
+
 from app.models.proxy_model import Proxy
 from app.schemas.proxy_schema import ProxyCreate, ProxyUpdate
+from app.services.base_service import BaseService  # ✅
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -12,24 +15,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ProxyService:
+class ProxyService(BaseService):  # ✅ Hereda de BaseService
     """Service to manage user proxies and return configurations."""
 
     def __init__(self, factory: "ServiceFactory") -> None:
-        self.db: Session = factory.db
-        self.user_id: int = factory.user.id
-        logger.info("[ProxyService] Initialized for user_id=%s", self.user_id)
+        super().__init__(factory)  # ✅ Usa inicialización del padre
+        logger.info("[ProxyService] ✅ Initialized for user_id=%s", self.user_id)
 
     # ---------------------------------------------------------------- #
     # CREATE                                                           #
     # ---------------------------------------------------------------- #
     def create(self, data: ProxyCreate) -> Proxy:
         logger.info("[ProxyService] ➕ Creating proxy: «%s»", data.name)
-        proxy = Proxy(user_id=self.user_id, **data.model_dump())
+        proxy = Proxy(user_id=self.user_id, **data.model_dump())  # ✅ model_dump
         self.db.add(proxy)
         self.db.commit()
         self.db.refresh(proxy)
-        logger.debug("[ProxyService] Proxy created with ID=%s", proxy.id)
+        logger.debug("[ProxyService] ✅ Proxy created with ID=%s", proxy.id)
         return proxy
 
     # ---------------------------------------------------------------- #
@@ -48,9 +50,7 @@ class ProxyService:
         return self.db.query(Proxy).filter_by(user_id=self.user_id, database=database_name).first()
 
     def get_proxy_for_app(self, app_id: int) -> Optional[Proxy]:
-        """
-        Returns the proxy configured for a given app, ensuring it belongs to the user.
-        """
+        """Returns the proxy configured for a given app, ensuring it belongs to the user."""
         logger.debug("[ProxyService] 🧭 Getting proxy for app_id=%s", app_id)
 
         from app.models.app_model import App  # avoid circular import
@@ -82,12 +82,13 @@ class ProxyService:
             raise ValueError("Proxy not found")
 
         logger.info("[ProxyService] ♻️ Updating proxy_id=%s", proxy_id)
-        for field, value in updates.model_dump(exclude_unset=True).items():
+        for field, value in updates.model_dump(exclude_unset=True).items():  # ✅ model_dump
             setattr(proxy, field, value)
+
         proxy.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(proxy)
-        logger.debug("[ProxyService] Proxy updated successfully.")
+        logger.debug("[ProxyService] ✅ Proxy updated successfully.")
         return proxy
 
     # ---------------------------------------------------------------- #

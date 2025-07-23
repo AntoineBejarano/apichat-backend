@@ -10,7 +10,7 @@ from app.routers import (
     auth_router, chat_router, functions_router, agent_router, database_router,
     chat_history_router, openapi_router, strategy_router, user_router, proxy_router,
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
-    billing_router, integration_router, permission_router
+    billing_router, integration_router, permission_router, usage_router
 )
 from app.routers.chat_ws_router import router as ws_router
 from app.utils.error_handler import register_error_handlers
@@ -98,6 +98,7 @@ app.include_router(role_router.router); logger.info("🧩 Role router loaded.")
 app.include_router(billing_router.router); logger.info("💳 Billing router loaded.")
 app.include_router(integration_router.router); logger.info("🧩 Integration router loaded.")
 app.include_router(permission_router.router); logger.info("🔐 Permission router loaded.")
+app.include_router(usage_router.router);("📊 Usage router loaded")
 app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")
 
 logger.info("🚀 APIchat is up and running.")

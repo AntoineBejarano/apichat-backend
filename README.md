@@ -1,116 +1,190 @@
-
 # 🧠 APIchat: AI-Powered Automation Platform
 
-Welcome to **APIchat**, a platform designed to orchestrate and automate function calls using OpenAI and user-defined APIs. It includes MCP integrations, function execution, proxy management, session tracking, and user-based access control.
+Bienvenido a **APIchat**, tu centro de automatización inteligente: combina chat, ejecución de funciones y conexión con bases de datos en un único servicio optimizado para desarrolladores.
 
 ---
 
 ## 📦 Project Structure
 
-```
+```text
 app/
 ├─ core/
-│  ├─ service_factory.py     # Main DI container
-│  └─ ...
-├─ models/                   # SQLAlchemy models
-├─ schemas/                  # Pydantic schemas
+│  ├─ service_factory.py       # Main DI container
+├─ models/                     # SQLAlchemy models
+├─ schemas/                    # Pydantic schemas
 ├─ services/
-│  ├─ orchestrator_service.py   👑 Main brain of the app
-│  ├─ openai_service.py         💬 Manages OpenAI calls
-│  ├─ function_service.py       🔧 Function CRUD
-│  ├─ executor.py               ⚙️ Executes Python or HTTP functions
-│  ├─ database_service.py       🧬 LangChain database integration
-│  ├─ chat_history_service.py   💭 Chat memory
-│  ├─ proxy_service.py          🌐 Proxy CRUD + link to functions
-│  ├─ mcp/                      🔌 Modular Connector Providers
-│  │  ├─ mcp_integration_service.py
-│  │  └─ ...
-│  └─ ...
+│  ├─ orchestrator_service.py  👑 Main brain of the app
+│  ├─ openai_service.py        💬 OpenAI function calling & chat
+│  ├─ usage_service.py         📊 Tracks token & usage limits
+│  ├─ function_service.py      🔧 CRUD para funciones definidas por usuario
+│  ├─ database_service.py      🧬 Conexiones SQL & ejecución segura
+│  ├─ executor.py              ⚙️ Ejecuta funciones HTTP o Python
+│  ├─ proxy_service.py         🌐 Gestión de proxies
+│  ├─ chat_history_service.py  💭 Historial de mensajes
+│  ├─ mcp/                     🔌 Conectores externos
 ├─ routers/
-│  ├─ openai.py, functions.py, mcp.py, etc.
-└─ main.py
+│  ├─ chat.py, usage.py, auth.py, etc.
+└─ main.py                     # Entry point
 ```
 
 ---
 
-## 🔄 Execution Flow
+## 🧠 Cómo Funciona: `OrchestratorService`
+
+`OrchestratorService` es el **cerebro principal** que transforma cualquier mensaje del usuario en acciones inteligentes, validando límites, cargando contexto y ejecutando funciones paso a paso.
+
+### Flujo de trabajo:
+
+1. **✅ Verificación de Límite de Tokens**  
+   Se verifica si el usuario ha alcanzado el límite mensual según su plan (`UsageService.check_plan_limit()`). Si es así, el mensaje se detiene.
+
+2. **💬 Registro del Mensaje**  
+   El mensaje se guarda con rol `user` en `ChatHistoryService`.
+
+3. **📦 Carga de Contexto**  
+   - Prompt del agente  
+   - Conexión de base de datos  
+   - Proxy, funciones disponibles, etc.
+
+4. **🧠 Planificación con LLM**  
+   Se genera un plan estructurado de pasos (`OpenAIService.plan_actions`).  
+   Si no hay plan, se responde con `chat_completion()`.
+
+5. **🔁 Ejecución de Pasos**  
+   Cada paso se ejecuta: SQL, HTTP, Python, etc., y se registra en el historial.
+
+6. **🧾 Respuesta Final**  
+   Se genera una respuesta final con rol `assistant` y se devuelve con los pasos realizados.
 
 ```mermaid
 graph TD
-A[User Request] --> B[Router]
-B --> C[ServiceFactory]
-C --> D[OrchestratorService]
-D --> E[OpenAIService]
-D --> F[FunctionExecutor]
-F --> G[Exec Python/HTTP]
+  A[User Message] --> B[Persist in ChatHistory]
+  B --> C[Load Context (Agent, DB, App)]
+  C --> D{Plan Actions?}
+  D -->|Yes| E[Execute Plan Steps]
+  D -->|No| F[ChatCompletion]
+  E --> G[Persist Function Calls & DB Results]
+  E --> H[Persist Final Assistant Response]
+  F --> H
+  H --> I[Return Response + Trace]
 ```
 
 ---
 
-## ⚙️ Main Services
+## 🚦 Control de Límite por Usuario
 
-### OrchestratorService 👑
-- Main control service
-- Connects user, DB, app, agent, OpenAI, and function execution
-- Triggers FunctionExecutor when OpenAI requests function calling
+### 🔧 Base Técnica
 
-### FunctionExecutor ⚙️
-- Executes local Python code via `exec()` securely
-- Or sends HTTP requests with templated headers/body
-- Supports rendering arguments in headers/body using `.format()`
+- Cada servicio hereda de `BaseService` y accede a `self.user_id` y `self.db`.
+- El `ServiceFactory` centraliza dependencias por usuario y request.
 
-### OpenAIService 💬
-- Handles prompt creation and token usage
-- Decides whether to call a function
-- Returns assistant responses or triggers executions
-
-### MCPIntegrationService 🔌
-- CRUD for MCP tools (external connectors)
-- Stores metadata and type of integration
-- Injected dynamically at runtime
-
-### ProxyService 🌐
-- Manages proxy definitions
-- Linked to functions to route HTTP requests properly
+```python
+class MyService(BaseService):
+    def __init__(self, factory: ServiceFactory):
+        super().__init__(factory)
+```
 
 ---
 
-## 🧑‍💻 Authentication & Factory
+### 🧮 1. Tokens & Llamadas API
 
-- `ServiceFactory` handles:
-  - Database session
-  - User resolution from cookies/session
-  - Dependency injection per request
+**Servicio:** `UsageService`
 
----
-
-## 🛡️ Roles & Permissions (Coming Soon)
-
-- Roles will define allowed scopes:
-  - `admin`, `developer`, `viewer`, etc.
-- Permissions will be attached to:
-  - Strategies
-  - Apps
-  - MCP Integrations
-  - Proxies
-- User roles will be stored in DB
+- Guarda el uso por usuario (tokens, mensajes).
+- Llama a `check_plan_limit("tokens")`, `register_token_use`, etc.
 
 ---
 
-## 📋 Healthcheck & Versioning
+### 🛰️ 2. Proxies
 
-- `GET /health`: Checks DB and service status ✅
-- `GET /version`: Returns current API version 🔖
+**Servicio:** `ProxyService`
+
+- Limita cantidad de proxies por usuario según el plan.
 
 ---
 
-## 💳 Stripe Integration (Planned)
+### 🗄️ 3. Conexiones SQL
 
-- Will be added under `services/payments/stripe_service.py`
-- Used for billing, usage tracking, and limits
+**Servicio:** `DatabaseService`
+
+- Se limita el número de conexiones por usuario.
+
+---
+
+### 🤖 4. Agentes / Apps
+
+**Servicio:** `AppService`
+
+- Limita la cantidad de agentes o apps por usuario.
+
+---
+
+### 🧠 5. Estrategias (Function Strategies)
+
+**Servicio:** `StrategyService`
+
+- Limita cuántas estrategias puede guardar un usuario y cuántos pasos por estrategia.
+
+---
+
+### 📈 6. Panel de Uso
+
+**Servicio:** `UsageService`
+
+Muestra al usuario:
+
+- Tokens usados vs. total mensual.
+- Proxies creados.
+- Conexiones SQL activas.
+- Funciones ejecutadas.
+
+---
+
+## 💳 Ejemplo de Límites por Plan
+
+| Plan      | Tokens/mes | Proxies | DB Connections | Apps | Estrategias |
+|-----------|------------|---------|----------------|------|-------------|
+| Free      | 10K        | 1       | 1              | 1    | 2           |
+| Pro       | 100K       | 5       | 3              | 5    | 10          |
+| Business  | 1M         | ∞       | ∞              | ∞    | ∞           |
+
+---
+
+## 🧩 DI & ServiceFactory
+
+```python
+ServiceFactory
+  ├─ user
+  ├─ db
+  ├─ get_usage_service()
+  ├─ get_database_service()
+  ├─ get_openai_service()
+  └─ ...
+```
+
+- Se pasa una única instancia de `ServiceFactory` a cada servicio por request.
+- `BaseService` accede a `factory.db`, `factory.user`, etc.
+
+---
+
+## 📋 Endpoints Principales
+
+- `POST /chat/{chat_id}/message` → Envia mensaje y ejecuta IA
+- `GET /usage` → Ver estado de uso del usuario
+- `GET /logs` → Logs de ejecución
+- `GET /health` → Healthcheck
+- `GET /version` → Info de versión
+
+---
+
+## 🔐 Futuras Mejoras
+
+- Alertas de límite por email/Slack.
+- Cache en Redis para contador de tokens.
+- Integración directa con Stripe para upgrade de plan dinámico.
 
 ---
 
 ## 📜 License
 
-This project is proprietary and intended for internal use or enterprise deployment only.
+Este proyecto es privado y está pensado para despliegue empresarial y SaaS.

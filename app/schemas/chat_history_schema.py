@@ -7,6 +7,8 @@ class ChatHistoryBase(BaseModel):
     content: str
     name: Optional[str] = None
     token_count: Optional[int] = None
+    is_function_call: bool = False
+    function_call_id: Optional[int] = None
 
     model_config = {
         "from_attributes": False

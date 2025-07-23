@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, NamedTuple
 
 import openai
 from fastapi import HTTPException
@@ -13,15 +13,9 @@ from app.utils.text import truncate_words
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
-# ---------------------------------------------------------------------------
-# Config & logger
-# ---------------------------------------------------------------------------
 openai.api_key = settings.OPENAI_API_KEY
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Cabeceras y sufijo fijos (no-parametrizables en .env) ----------------------
-# ---------------------------------------------------------------------------
 PROMPT_SQL_HEADER = "### SQL Schema (read‑only)"
 PROMPT_FUNCTIONS_HEADER = "### Functions disponibles"
 PROMPT_MCP_HEADER = "### MCP Tools disponibles"
@@ -31,19 +25,17 @@ PROMPT_SUFFIX = (
     "y `assistant_response`. No incluyas texto fuera del JSON."
 )
 
+class CompletionResult(NamedTuple):
+    content: str
+    token_count: int
 
 class OpenAIService:
-    """Servicio que envuelve la API de OpenAI y genera *planes de acción*.
-
-    *Las cabeceras y el sufijo son constantes en el código para evitar
-    modificaciones accidentales; el único texto dinámico es el
-    `system_prompt` que llega por petición.*
-    """
+    """Servicio que envuelve la API de OpenAI y genera planes de acción o chat libre."""
 
     RETURN_PLAN_FUNC: Dict[str, Any] = {
         "name": "return_plan",
         "description": (
-            "Devuelve el plan de acciones (array `actions`) y el texto final "
+            "Devuelve el plan de acciones (`actions`) y el texto final "
             "(`assistant_response`) que el asistente mostrará al usuario."
         ),
         "parameters": {
@@ -77,7 +69,6 @@ class OpenAIService:
         },
     }
 
-    # ------------------------------------------------------------------
     def __init__(self, factory: "ServiceFactory") -> None:
         self.factory = factory
         self.db = factory.db
@@ -85,25 +76,21 @@ class OpenAIService:
         self.history_service = factory.get_chat_history_service()
         self.function_service = factory.get_function_service()
         self.model = settings.OPENAI_MODEL
-
         logger.info("[OpenAIService] Instanciado para user=%s", self.user.email)
 
-    # ------------------------------------------------------------------
-    # API pública
-    # ------------------------------------------------------------------
     async def plan_actions(
         self,
-        user_id: int,
+        chat_id: int,
         system_prompt: str,
         user_message: ChatMessage,
         db_schema: Optional[str],
         available_functions: List[Function],
-        available_mcp_tools: Optional[dict],
+        available_mcp_tools: Optional[dict] = None,
     ) -> Dict[str, Any]:
-        """Genera y devuelve un *plan de acciones* estructurado."""
+        """Genera y devuelve un plan de acciones estructurado."""
         try:
-            # 1️⃣  Historial limitado (últimos 8)
-            history = self.history_service.get_chat_history(user_id)[-8:]
+            # 1️⃣ Historial limitado (últimos 8 mensajes)
+            history = self.history_service.get_history(chat_id)[-8:]
             messages = [
                 {
                     "role": "system",
@@ -117,13 +104,20 @@ class OpenAIService:
 
             logger.debug("[OpenAIService] Contexto · %s", truncate_words(str(messages), 60))
 
-            # 2️⃣  Llamada ChatCompletion
+            # 2️⃣ Llamada ChatCompletion con función return_plan
             resp = openai.ChatCompletion.create(
                 model=self.model,
                 functions=[self.RETURN_PLAN_FUNC],
                 function_call={"name": "return_plan"},
                 temperature=settings.OPENAI_TEMPERATURE,
                 messages=messages,
+            )
+
+            # ✅ Registrar uso de tokens
+            self.factory.get_usage_service().register_token_usage(
+                model=self.model,
+                prompt_tokens=resp.usage.prompt_tokens,
+                completion_tokens=resp.usage.completion_tokens,
             )
 
             choice = resp.choices[0]
@@ -135,7 +129,6 @@ class OpenAIService:
                 )
                 return plan
 
-            # Fallback: el modelo no llamó a la función
             return {
                 "actions": [],
                 "assistant_response": choice.message.get(
@@ -150,9 +143,45 @@ class OpenAIService:
             logger.exception("[OpenAIService] ❌ Error en plan_actions: %s", exc)
             raise HTTPException(status_code=500, detail=f"OpenAI error: {exc}")
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    async def chat_completion(
+        self,
+        chat_id: int,
+        system_prompt: str,
+        user_message: ChatMessage,
+    ) -> CompletionResult:
+        """Chat libre sin funciones. Devuelve contenido + tokens usados."""
+        try:
+            history = self.history_service.get_history(chat_id)[-8:]
+            messages = [
+                {"role": "system", "content": system_prompt or "You are a helpful assistant."},
+                *[msg.model_dump() for msg in history],
+                user_message.model_dump(),
+            ]
+
+            logger.debug("[OpenAIService] Chat context · %s", truncate_words(str(messages), 60))
+
+            resp = openai.ChatCompletion.create(
+                model=self.model,
+                messages=messages,
+                temperature=settings.OPENAI_TEMPERATURE,
+            )
+
+            # ✅ Registrar uso de tokens
+            self.factory.get_usage_service().register_token_usage(
+                model=self.model,
+                prompt_tokens=resp.usage.prompt_tokens,
+                completion_tokens=resp.usage.completion_tokens,
+            )
+
+            choice = resp.choices[0]
+            content = choice.message.get("content", "")
+            token_count = getattr(resp.usage, "total_tokens", None) or 0
+            return CompletionResult(content=content, token_count=token_count)
+
+        except Exception as exc:
+            logger.exception("[OpenAIService] ❌ Error en chat_completion: %s", exc)
+            raise HTTPException(status_code=500, detail=f"OpenAI chat error: {exc}")
+
     def _build_system_prompt(
         self,
         custom_prompt: str,
@@ -160,13 +189,6 @@ class OpenAIService:
         functions: List[Function],
         mcp_tools: Optional[dict],
     ) -> str:
-        """Construye el prompt de sistema combinando:
-        - Prompt del agente (dinámico)
-        - Resumen de esquema SQL
-        - Lista de funciones del App
-        - Lista de tools MCP
-        - Sufijo con la instrucción JSON
-        """
         parts: List[str] = [custom_prompt.strip() or "You are a helpful assistant."]
 
         if db_schema:

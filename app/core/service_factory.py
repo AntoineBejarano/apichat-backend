@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from app.services.role_service import RoleService
     from app.services.billing_service import BillingService
     from app.services.permission_service import PermissionService
+    from app.services.usage_service import UsageService
+
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class ServiceFactory:
         self._billing_service = None
         self._permission_service = None
         self._orchestrator_service = None
+        self._usage_service = None
 
     @property
     def user(self) -> User:
@@ -252,3 +255,12 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando OrchestratorService")
             self._orchestrator_service = OrchestratorService(self)
         return self._orchestrator_service
+
+    def get_usage_service(self) -> "UsageService":
+        if not self._usage_service:
+            from app.services.usage_service import UsageService
+            logger.debug("⚙️ Inicializando UsageService")
+            self._usage_service = UsageService(self)
+        return self._usage_service
+
+   

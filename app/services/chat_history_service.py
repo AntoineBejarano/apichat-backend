@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
-
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
@@ -20,7 +20,16 @@ class ChatHistoryService:
 
     def create_message(self, data: ChatHistoryCreate) -> ChatHistory:
         logger.info(f"[ChatHistoryService] Creando nuevo mensaje para user_id={self.user_id}")
-        message = ChatHistory(user_id=self.user_id, **data.model_dump())
+        message = ChatHistory(
+            user_id=self.user_id,
+            chat_id=data.chat_id,
+            role=data.role,
+            content=data.content,
+            name=data.name,
+            token_count=data.token_count,
+            is_function_call=data.is_function_call,
+            function_call_id=data.function_call_id
+        )
         self.db.add(message)
         self.db.commit()
         self.db.refresh(message)
@@ -30,23 +39,44 @@ class ChatHistoryService:
         logger.info(f"[ChatHistoryService] Obteniendo historial para chat_id={chat_id}, user_id={self.user_id}")
         return (
             self.db.query(ChatHistory)
-            .filter(ChatHistory.chat_id == chat_id, ChatHistory.user_id == self.user_id)
-            .order_by(ChatHistory.created_at.asc())
+            .filter(
+                ChatHistory.chat_id == chat_id,
+                ChatHistory.user_id == self.user_id
+            )
+            .order_by(ChatHistory.timestamp.asc())
             .limit(limit)
             .all()
         )
 
     def delete_all_for_chat(self, chat_id: int) -> int:
         logger.warning(f"[ChatHistoryService] Eliminando historial de chat_id={chat_id} para user_id={self.user_id}")
-        deleted = self.db.query(ChatHistory).filter(ChatHistory.chat_id == chat_id, ChatHistory.user_id == self.user_id).delete()
+        deleted = (
+            self.db.query(ChatHistory)
+            .filter(
+                ChatHistory.chat_id == chat_id,
+                ChatHistory.user_id == self.user_id
+            )
+            .delete()
+        )
         self.db.commit()
         return deleted
 
     def append(self, data: dict) -> ChatHistory:
         logger.info(f"[ChatHistoryService] Añadiendo mensaje para user_id={self.user_id}")
-        if not all(k in data for k in ("session_id", "message", "response")):
-            logger.error("[ChatHistoryService] Datos inválidos: falta algún campo obligatorio")
-            raise ValueError("Faltan campos requeridos en el historial")
-
-        msg = ChatHistoryCreate(**data)
+        required = ("chat_id", "role", "content")
+        if not all(key in data for key in required):
+            logger.error(
+                "[ChatHistoryService] Datos inválidos: "
+                f"faltan campos obligatorios {required}"
+            )
+            raise ValueError(f"Faltan campos requeridos: {required}")
+        msg = ChatHistoryCreate(
+            chat_id=data["chat_id"],
+            role=data["role"],
+            content=data["content"],
+            name=data.get("name"),
+            token_count=data.get("token_count"),
+            is_function_call=data.get("is_function_call", False),
+            function_call_id=data.get("function_call_id"),
+        )
         return self.create_message(msg)

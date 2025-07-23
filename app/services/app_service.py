@@ -5,7 +5,8 @@ from typing import List, Dict, Any
 
 from app.models.app_model import App
 from app.schemas.app_schema import AppCreate, AppUpdate
-from app.schemas.function_schema import FunctionSchema  # Optional
+from app.services.base_service import BaseService  # 👈 Hereda de BaseService
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,11 +14,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-class AppService:
+class AppService(BaseService):  # ✅ Hereda de BaseService
     def __init__(self, factory: "ServiceFactory"):
-        self.factory = factory
-        self.db = factory.db
-        self.user_id = factory.user.id
+        super().__init__(factory)  # ✅ Llama al constructor de BaseService
         logger.info(f"[AppService] ✅ Initialized for user_id={self.user_id}")
 
     # ----------------------------------------------------------------
@@ -26,14 +25,17 @@ class AppService:
     def create(self, app_data: AppCreate) -> App:
         logger.info(f"[AppService] ➕ Creating new App for user_id={self.user_id}")
 
-        # If a proxy_id is provided, ensure it belongs to the user
+        # ✅ Limite de Apps por plan
+        self.check_limit(App, "max_apps", "apps")
+
+        # Validar proxy_id si se proporciona
         if app_data.proxy_id:
             proxy = self.factory.get_proxy_service().get_by_id(app_data.proxy_id)
             if not proxy:
                 logger.warning(f"[AppService] ❌ Invalid proxy_id={app_data.proxy_id} for user_id={self.user_id}")
                 raise HTTPException(status_code=400, detail="Invalid proxy_id")
 
-        new_app = App(**app_data.dict(), user_id=self.user_id)
+        new_app = App(**app_data.model_dump(), user_id=self.user_id)
         self.db.add(new_app)
         self.db.commit()
         self.db.refresh(new_app)

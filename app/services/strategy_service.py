@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.models.strategy_model import Strategy
 from app.schemas.strategy_schema import StrategyCreate
 from app.core.service_factory import ServiceFactory
+from app.services.base_service import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +20,16 @@ class StrategyExecutionResult(BaseModel):
     logs: List[str]
 
 
-class StrategyService:
+class StrategyService(BaseService):  # 👈 Hereda BaseService
     def __init__(self, factory: ServiceFactory):
+        super().__init__(factory)  # 👈 Inicializa BaseService
         self.factory = factory
         self.db: Session = factory.db
         self.user = factory.user
 
     def create_strategy(self, data: StrategyCreate) -> Strategy:
+        self.check_plan_limit("strategies", Strategy)  # 👈 Chequea el límite
+
         logger.info(f"🚀 Creando nueva estrategia para el usuario {self.user.id}: {data.name}")
 
         strategy = Strategy(

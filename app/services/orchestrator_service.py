@@ -7,12 +7,12 @@ from sqlalchemy.orm import Session
 from app.models.app_model import App
 from app.models.database_model import DatabaseConnection
 from app.schemas.chat_schema import ChatMessage
+from app.schemas.chat_history_schema import ChatHistoryCreate
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
 logger = logging.getLogger(__name__)
-
 
 class OrchestratorService:
     """
@@ -24,39 +24,75 @@ class OrchestratorService:
         self.factory = factory
         self.db: Session = factory.db
         self.user_id: int = factory.user.id
+        self.history_service = factory.get_chat_history_service()
         logger.info("[OrchestratorService] Initialized for user_id=%s", self.user_id)
 
-    # ------------------------------------------------------------------
-    # Main entry point
-    # ------------------------------------------------------------------
     async def handle_user_message(
-        self,
+    self,
+        chat_id: int,
         database_id: Optional[int],
         app_id: Optional[int],
         agent_id: Optional[int],
         message: ChatMessage,
     ) -> Dict[str, Any]:
-        """Main entry point to handle a user message and return assistant response with trace steps."""
+        """
+        Main entry point to handle a user message and return assistant response with trace steps.
+        Supports both “plan_actions” workflows and simple chat completions.
+        """
         steps: List[str] = []
         ctx: Dict[str, Any] = {}
 
+        # ✅ Check user token usage limit before proceeding
         try:
-            logger.info("[%s] 📥 Received user message: %s", self.user_id, message.content)
-            steps.append("📩 Message received")
+            usage_service = self.factory.get_usage_service()
+            usage_service.check_plan_limit()
+            steps.append("✅ Token limit check passed")
+        except HTTPException as e:
+            warning_msg = (
+                "⚠️ You’ve reached your token limit. Please upgrade your plan to continue using the service."
+            )
+            logger.warning("[User %s] Token limit reached → blocking message", self.user_id)
+            self.history_service.create_message(
+                data=ChatHistoryCreate(
+                    chat_id=chat_id,
+                    role="assistant",
+                    content=warning_msg,
+                    name=None,
+                    token_count=0,
+                    is_function_call=False,
+                    function_call_id=None
+                )
+            )
+            return {"assistant_response": warning_msg, "steps": steps + ["❌ Token limit reached"]}
 
-            # 1. Load agent system prompt
+        # 💬 Step 1: Save user message to chat history
+        self.history_service.create_message(
+            data=ChatHistoryCreate(
+                chat_id=chat_id,
+                role=message.role,
+                content=message.content,
+                name=message.name,
+                token_count=None,
+                is_function_call=False,
+                function_call_id=None
+            )
+        )
+        steps.append("📩 Message received")
+
+        try:
+            # 1. Load system prompt
             system_prompt = ""
             if agent_id:
                 system_prompt = self.factory.get_agent_service().get_prompt(agent_id)
                 steps.append(f"🤖 Agent {agent_id} prompt loaded")
 
-            # 2. Load database connection (optional)
+            # 2. Optional database connection
             db_conn: Optional[DatabaseConnection] = None
             if database_id:
                 db_conn = self.factory.get_database_service().get_sql_instance(database_id)
                 steps.append(f"🔗 Connected to database {database_id}")
 
-            # 3. Load app and associated functions
+            # 3. Load app and functions
             app: Optional[App] = self.factory.get_apps_service().get_by_id(app_id)
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
@@ -65,17 +101,16 @@ class OrchestratorService:
             functions = self.factory.get_function_service().get_functions_by_app(app)
             steps.append(f"🔧 {len(functions)} functions loaded from app")
 
-            # 4. Determine proxy (if app has one)
+            # 4. Optional proxy
             proxy = None
             if app.proxy_id:
                 proxy = self.factory.get_proxy_service().get_by_id(app.proxy_id)
                 if proxy:
                     steps.append(f"🛡️ Proxy {proxy.id} loaded for app")
-                    logger.info("[OrchestratorService] Proxy ID %s loaded for app ID %s", proxy.id, app.id)
                 else:
                     steps.append("⚠️ App has proxy_id but not found or not owned by user")
 
-            # 5. Ask OpenAI for execution plan
+            # 5. Generate plan
             plan = await self.factory.get_openai_service().plan_actions(
                 user_id=self.user_id,
                 system_prompt=system_prompt,
@@ -85,7 +120,29 @@ class OrchestratorService:
             )
             steps.append("🧠 Plan generated by LLM")
 
-            # 6. Execute plan actions
+            # 5a. Fallback to basic chat
+            if not plan.get("actions"):
+                logger.info("[%s] 💬 Simple chat (no functions)", self.user_id)
+                assistant_msg = await self.factory.get_openai_service().chat_completion(
+                    chat_id=chat_id,
+                    user_message=message,
+                    system_prompt=system_prompt
+                )
+                self.history_service.create_message(
+                    data=ChatHistoryCreate(
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=assistant_msg.content,
+                        name=None,
+                        token_count=assistant_msg.token_count,
+                        is_function_call=False,
+                        function_call_id=None
+                    )
+                )
+                steps.append("💬 Simple chat completed")
+                return {"assistant_response": assistant_msg.content, "steps": steps}
+
+            # 6. Execute actions in plan
             for idx, action in enumerate(plan.get("actions", []), start=1):
                 tag = f"Step {idx}: {action['type']}"
                 try:
@@ -100,12 +157,21 @@ class OrchestratorService:
                     elif action["type"] == "api_function":
                         params = self._render_params(action["params"], ctx)
                         func_id = action["function_id"]
-
-                        # Auto-select executor
-                        result = self.factory.get_executor_service().execute_by_id(
+                        result, tokens_used, call_id = self.factory.get_executor_service().execute_and_log(
                             function_id=func_id,
                             params=params,
-                            proxy=proxy  # used by HTTPExecutor
+                            proxy=proxy
+                        )
+                        self.history_service.create_message(
+                            data=ChatHistoryCreate(
+                                chat_id=chat_id,
+                                role="function",
+                                content=str(result),
+                                name=action.get("name"),
+                                token_count=tokens_used,
+                                is_function_call=True,
+                                function_call_id=call_id
+                            )
                         )
                         ctx[action.get("store_as", f"result_{idx}")] = result
                         steps.append(f"{tag} ✅ Function executed")
@@ -115,11 +181,21 @@ class OrchestratorService:
 
                 except Exception as step_exc:
                     logger.exception("[%s] ❌ Error in %s", self.user_id, tag)
-                    steps.append(f"{tag} ❌ {str(step_exc)}")
                     return self._error_response(steps, step_exc)
 
-            # 7. Final response from assistant
+            # 7. Final assistant response
             final_text = plan.get("assistant_response", "✅ All steps completed successfully.")
+            self.history_service.create_message(
+                data=ChatHistoryCreate(
+                    chat_id=chat_id,
+                    role="assistant",
+                    content=final_text,
+                    name=None,
+                    token_count=None,
+                    is_function_call=False,
+                    function_call_id=None
+                )
+            )
             steps.append("🧾 Final assistant response generated")
             logger.info("[%s] ✅ Message handled successfully", self.user_id)
 
@@ -129,23 +205,17 @@ class OrchestratorService:
             logger.exception("[%s] ❌ Fatal error handling message: %s", self.user_id, exc)
             return self._error_response(steps, exc)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+
     @staticmethod
     def _render_params(params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Replace {{placeholders}} in parameters using context."""
         import re, json
-
         def _replace(value):
             if isinstance(value, str):
-                matches = re.findall(r"{{(.*?)}}", value)
-                for m in matches:
+                for m in re.findall(r"{{(.*?)}}", value):
                     if m in context:
                         v = context[m]
                         value = value.replace(f"{{{{{m}}}}}", json.dumps(v) if not isinstance(v, str) else str(v))
             return value
-
         return {k: _replace(v) for k, v in params.items()}
 
     @staticmethod
