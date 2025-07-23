@@ -1,13 +1,17 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
+from sqlalchemy import Column, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+
 from app.models.base_model import Base  # Usa el mismo Base que el resto
+
 
 class OpenAPIIntegration(Base):
     __tablename__ = "openapi_integrations"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 🔑 FK a users.id
+    id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
 
     title    = Column(String, nullable=False)
     version  = Column(String, nullable=True)

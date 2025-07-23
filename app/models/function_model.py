@@ -1,17 +1,18 @@
-# app/models/function_model.py
-
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, Boolean, Text
+import uuid
+from sqlalchemy import Column, String, ForeignKey, JSON, DateTime, Boolean, Text
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.models.base_model import Base
 from app.models.function_group_model import function_group_association
 
+
 class Function(Base):
     __tablename__ = "functions"
 
-    id             = Column(Integer, primary_key=True, index=True)
-    app_id         = Column(Integer, ForeignKey("apps.id"), nullable=False)
-    integration_id = Column(Integer, ForeignKey("integrations.id"), nullable=True)
+    id             = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+    app_id         = Column(UUID(as_uuid=True), ForeignKey("apps.id"), nullable=False)
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True)
 
     name           = Column(String, nullable=False)
     description    = Column(Text, nullable=True)
@@ -30,7 +31,6 @@ class Function(Base):
 
     # Relaciones a modelos padres
     app         = relationship("App", back_populates="functions")
-    integration = relationship("Integration", back_populates="functions")
 
     # Relación many-to-many con FunctionGroup
     groups = relationship(

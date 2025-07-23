@@ -177,6 +177,23 @@ ServiceFactory
 
 ---
 
+## 🧪 Generar reporte de pruebas contractuales con Schemathesis
+
+Para validar que tu API cumple con su especificación OpenAPI y generar un informe visual de los resultados, puedes usar Schemathesis con el siguiente comando:
+
+### 🔧 Requisitos previos
+
+- Tener la API corriendo localmente (por defecto en `http://127.0.0.1:8000`).
+- Haber instalado `schemathesis` con soporte para CLI.
+- Tener acceso al archivo de especificación OpenAPI (`/openapi.json`).
+
+### ✅ Comando para ejecutar Schemathesis con reporte
+
+```bash
+C:\Users\antub\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\Scripts\schemathesis.exe run http://127.0.0.1:8000/openapi.json --report report.html
+
+---
+
 ## 🔐 Futuras Mejoras
 
 - Alertas de límite por email/Slack.

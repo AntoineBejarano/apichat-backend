@@ -1,14 +1,17 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, String, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+
 from app.models.base_model import Base
 
 class OAuthAccount(Base):
     __tablename__ = "oauth_accounts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    integration_id = Column(Integer, ForeignKey("integrations.id"))
+    id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"))
 
     access_token = Column(String, nullable=False)
     refresh_token = Column(String, nullable=True)

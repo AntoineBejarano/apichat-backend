@@ -1,21 +1,21 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
+from sqlalchemy import Column, String, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.models.base_model import Base
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 
+from app.models.base_model import Base
 
 class Chat(Base):
     __tablename__ = "chats"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    app_id = Column(UUID(as_uuid=True), ForeignKey("apps.id"), nullable=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    database_id = Column(UUID(as_uuid=True), ForeignKey("database_connections.id"), nullable=True)
 
-    # Configuración asociada al chat
-    app_id = Column(Integer, ForeignKey("apps.id"), nullable=True)
-    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
-    database_id = Column(Integer, ForeignKey("database_connections.id"), nullable=True)
     system_prompt = Column(Text, nullable=True)
-
     title = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

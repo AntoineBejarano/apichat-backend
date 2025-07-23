@@ -1,6 +1,7 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from datetime import datetime
 import enum
 import uuid
@@ -27,7 +28,8 @@ class Strategy(Base):
     is_active = Column(Boolean, default=True)
     last_run_at = Column(DateTime, nullable=True)
     status = Column(String, default="pending")     # success, error, pending, etc.
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="strategies")

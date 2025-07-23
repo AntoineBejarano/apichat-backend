@@ -1,17 +1,18 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey  # 👈 añade ForeignKey
+from sqlalchemy import Column, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID
 from app.models.base_model import Base
 from app.models.role_model import user_roles
-from app.models.plan_model import Plan  # 👈 importa el modelo Plan
 from passlib.context import CryptContext
+import uuid
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=True)
     avatar_url = Column(String, nullable=True)
@@ -20,34 +21,28 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # 🔗 NUEVO: relación con Plan
-    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=True)
+    # Relación con Plan (opcional)
+    plan_id = Column(ForeignKey("plans.id"), nullable=True)
     plan = relationship("Plan")
 
+    # Relaciones 1:N
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
-    apps   = relationship("App", back_populates="user", cascade="all, delete-orphan")
-    databases  = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
+    apps = relationship("App", back_populates="user", cascade="all, delete-orphan")
+    databases = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
     strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
     integrations = relationship("Integration", back_populates="user", cascade="all, delete-orphan")
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")
-    token_usages   = relationship("TokenUsage", back_populates="user", cascade="all, delete-orphan")
-    sessions       = relationship("Session", back_populates="user", cascade="all, delete-orphan")
-    roles          = relationship("Role", secondary=user_roles, back_populates="users")
-    chats          = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
-    subscriptions  = relationship("Subscription", back_populates="user")
+    token_usages = relationship("TokenUsage", back_populates="user", cascade="all, delete-orphan")
+    sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
+    subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
+    openapi_integrations = relationship("OpenAPIIntegration", back_populates="user", cascade="all, delete-orphan")
+    proxies = relationship("Proxy", back_populates="user", cascade="all, delete-orphan")
 
-    openapi_integrations = relationship(
-        "OpenAPIIntegration",
-        back_populates="user",
-        cascade="all, delete-orphan"
-    )
+    # Relaciones N:M
+    roles = relationship("Role", secondary=user_roles, back_populates="users")
 
-    proxies = relationship(
-        "Proxy",
-        back_populates="user",
-        cascade="all, delete-orphan"
-    )
-
+    # Métodos para gestionar contraseñas
     def set_password(self, password: str):
         self.hashed_password = pwd_context.hash(password)
 

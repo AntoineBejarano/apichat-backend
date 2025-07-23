@@ -66,6 +66,24 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# 👇 Fuerza OpenAPI 3.0.2 para compatibilidad con Schemathesis
+from fastapi.openapi.utils import get_openapi
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    openapi_schema["openapi"] = "3.0.2"  # 👈 Aquí se fuerza la versión
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 # ────────────────────────────────
 # CORS middleware
 # ────────────────────────────────
@@ -98,7 +116,7 @@ app.include_router(role_router.router); logger.info("🧩 Role router loaded.")
 app.include_router(billing_router.router); logger.info("💳 Billing router loaded.")
 app.include_router(integration_router.router); logger.info("🧩 Integration router loaded.")
 app.include_router(permission_router.router); logger.info("🔐 Permission router loaded.")
-app.include_router(usage_router.router);("📊 Usage router loaded")
+app.include_router(usage_router.router); logger.info("📊 Usage router loaded")
 app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")
 
 logger.info("🚀 APIchat is up and running.")

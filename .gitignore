@@ -70,3 +70,10 @@ dist/
 
 # Others
 logs/
+
+# Ignorar datos temporales de Hypothesis
+.hypothesis/
+
+# Ignorar el reporte de Schemathesis
+report.html
+report.html.gz

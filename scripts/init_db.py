@@ -1,17 +1,41 @@
-import asyncio
-from app.database.database import engine
-from app.database.models.base import Base  # Asegúrate que todos tus modelos hereden de esta Base
-from dotenv import load_dotenv
+# scripts/init_db.py
+
 import os
+import sys
+import logging
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
 
-# Carga variables de entorno desde .env
-load_dotenv()
+# Cargar .env desde la raíz del proyecto
+env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+load_dotenv(dotenv_path=env_path)
 
-async def create_tables():
-    async with engine.begin() as conn:
-        print("🔧 Creando tablas en la base de datos...")
-        await conn.run_sync(Base.metadata.create_all)
-        print("✅ Tablas creadas correctamente.")
+# Añadir path del proyecto
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Importa todos los modelos (esto registra las tablas)
+from app.models import Base, init_model_relationships
+import app.models  # ← Forza todos los imports y relaciones
+
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def init_db():
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.error("❌ DATABASE_URL no está definida en el archivo .env")
+        return
+
+    logger.info(f"🔌 Conectando a la base de datos en {db_url}")
+    engine = create_engine(db_url)
+
+    logger.info("🧱 Inicializando relaciones entre modelos...")
+    init_model_relationships()
+
+    logger.info("🛠️ Creando todas las tablas...")
+    Base.metadata.create_all(bind=engine)
+    logger.info("✅ Base de datos creada con éxito.")
 
 if __name__ == "__main__":
-    asyncio.run(create_tables())
+    init_db()
