@@ -8,6 +8,10 @@ class OpenAPIIntegrationCreate(BaseModel):
     base_url: Optional[str]
     raw_json: str
 
+    model_config = {
+        "from_attributes": False
+    }
+
 class OpenAPIIntegrationOut(BaseModel):
     id: int
     title: str
@@ -15,5 +19,6 @@ class OpenAPIIntegrationOut(BaseModel):
     base_url: Optional[str]
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }

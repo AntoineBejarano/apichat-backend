@@ -4,8 +4,12 @@ from datetime import datetime
 
 class DatabaseConnectionBase(BaseModel):
     name: str
-    db_type: str  # Ej: "postgresql", "mysql", etc.
-    config: Dict  # Contendrá host, port, dbname, user, password...
+    db_type: str
+    config: Dict
+
+    model_config = {
+        "from_attributes": False
+    }
 
 class DatabaseConnectionCreate(DatabaseConnectionBase):
     pass
@@ -15,10 +19,15 @@ class DatabaseConnectionUpdate(BaseModel):
     db_type: Optional[str]
     config: Optional[Dict]
 
+    model_config = {
+        "from_attributes": False
+    }
+
 class DatabaseConnectionOut(DatabaseConnectionBase):
     id: int
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }

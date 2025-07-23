@@ -5,6 +5,8 @@ class RoleBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     description: Optional[str] = Field(None, max_length=255)
 
+    model_config = {"from_attributes": False}
+
 class RoleCreate(RoleBase):
     pass
 
@@ -12,9 +14,10 @@ class RoleUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     description: Optional[str] = Field(None, max_length=255)
 
+    model_config = {"from_attributes": False}
+
 class RoleOut(RoleBase):
     id: int
     permissions: List[str] = []
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}

@@ -1,9 +1,6 @@
-# app/schemas/chat_schema.py
-
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-
 
 class ChatBase(BaseModel):
     system_prompt: Optional[str] = None
@@ -12,10 +9,12 @@ class ChatBase(BaseModel):
     agent_id: Optional[int] = None
     database_id: Optional[int] = None
 
+    model_config = {
+        "from_attributes": False
+    }
 
 class ChatCreate(ChatBase):
     pass
-
 
 class ChatOut(ChatBase):
     id: int
@@ -23,12 +22,16 @@ class ChatOut(ChatBase):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        orm_mode = True
-
+    model_config = {
+        "from_attributes": True
+    }
 
 class ChatMessage(BaseModel):
-    role: str  # "user", "assistant", "system", "function"
+    role: str
     content: str
     name: Optional[str] = None
     timestamp: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": False
+    }

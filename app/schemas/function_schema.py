@@ -6,7 +6,7 @@ class FunctionBase(BaseModel):
     name: str
     description: Optional[str]
     parameters: Optional[Dict]
-    execution_type: str  # "python" o "http"
+    execution_type: str
     method: Optional[str]
     url: Optional[str]
     headers: Optional[Dict]
@@ -14,11 +14,15 @@ class FunctionBase(BaseModel):
     code: Optional[str]
     active: Optional[bool] = True
 
+    model_config = {
+        "from_attributes": False
+    }
+
 class FunctionCreate(FunctionBase):
     app_id: Optional[int]
     integration_id: Optional[int]
 
-class FunctionUpdate(FunctionBase):
+class FunctionUpdate(BaseModel):
     name: Optional[str]
     description: Optional[str]
     parameters: Optional[Dict]
@@ -30,6 +34,10 @@ class FunctionUpdate(FunctionBase):
     code: Optional[str]
     active: Optional[bool]
 
+    model_config = {
+        "from_attributes": False
+    }
+
 class FunctionOut(FunctionBase):
     id: int
     app_id: Optional[int]
@@ -37,5 +45,6 @@ class FunctionOut(FunctionBase):
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }

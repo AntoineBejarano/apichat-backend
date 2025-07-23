@@ -1,8 +1,6 @@
-# app/schemas/proxy_schema.py
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 from datetime import datetime
-
 
 class ProxyBase(BaseModel):
     name: str = Field(..., max_length=100)
@@ -11,10 +9,10 @@ class ProxyBase(BaseModel):
     auth: Optional[Dict[str, str]] = None
     active: Optional[bool] = True
 
+    model_config = {"from_attributes": False}
 
 class ProxyCreate(ProxyBase):
     pass
-
 
 class ProxyUpdate(BaseModel):
     name: Optional[str] = None
@@ -23,6 +21,7 @@ class ProxyUpdate(BaseModel):
     auth: Optional[Dict[str, str]] = None
     active: Optional[bool] = None
 
+    model_config = {"from_attributes": False}
 
 class ProxyOut(ProxyBase):
     id: int
@@ -30,5 +29,4 @@ class ProxyOut(ProxyBase):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}

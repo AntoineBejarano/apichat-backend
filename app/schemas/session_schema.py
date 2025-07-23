@@ -2,12 +2,12 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
-
 class SessionCreate(BaseModel):
     user_id: int
     user_agent: Optional[str]
     ip_address: Optional[str]
 
+    model_config = {"from_attributes": False}
 
 class SessionOut(BaseModel):
     id: int
@@ -18,7 +18,6 @@ class SessionOut(BaseModel):
     created_at: datetime
     expires_at: datetime
     last_used_at: datetime
-    is_current: Optional[bool] = False  # Se puede setear en el router comparando tokens
+    is_current: Optional[bool] = False
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": True}

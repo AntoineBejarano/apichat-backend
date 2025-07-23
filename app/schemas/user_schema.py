@@ -2,13 +2,14 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 
-
 class UserBase(BaseModel):
     email: EmailStr
     name: Optional[str]
 
+    model_config = {"from_attributes": False}
+
 class UserCreate(UserBase):
-    password: str  # si usas login propio además de OAuth
+    password: str
 
 class UserOut(UserBase):
     id: int
@@ -16,18 +17,14 @@ class UserOut(UserBase):
     updated_at: Optional[datetime]
     is_admin: Optional[bool] = False
 
-    class Config:
-        orm_mode = True
-        
+    model_config = {"from_attributes": True}
+
 class UserUpdate(BaseModel):
     name: Optional[str]
-    password: Optional[str]  # Permite cambiar contraseña
+    password: Optional[str]
 
-    class Config:
-        orm_mode = True
+    model_config = {"from_attributes": False}
 
-
-# Opcional: usuario detallado con sus relaciones (apps, agentes, etc.)
 class UserDetail(UserOut):
     apps: List["AppOut"] = []
     agents: List["AgentOut"] = []
@@ -35,7 +32,8 @@ class UserDetail(UserOut):
     functions: List["FunctionOut"] = []
     integrations: List["IntegrationOut"] = []
 
-# Evita errores de referencia circular
+    model_config = {"from_attributes": True}
+
 from app.schemas.app_schema import AppOut
 from app.schemas.agent_schema import AgentOut
 from app.schemas.strategy_schema import StrategyOut

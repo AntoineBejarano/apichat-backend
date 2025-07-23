@@ -1,26 +1,35 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Literal
+from typing import Optional, Dict, Literal, List
 from datetime import datetime
 
 class MCPIntegrationMetadata(BaseModel):
     url: Optional[str] = None
     command: Optional[str] = None
-    args: Optional[list[str]] = None
+    args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     endpoints: Optional[Dict[str, str]] = Field(default_factory=dict)
+
+    model_config = {
+        "from_attributes": False
+    }
 
 class MCPIntegrationBase(BaseModel):
     name: str
     mcp_type: Literal["http", "stdio", "websocket"]
     mcp_metadata: MCPIntegrationMetadata
 
+    model_config = {
+        "from_attributes": False
+    }
+
 class MCPIntegrationUpdate(BaseModel):
     name: Optional[str] = None
     mcp_type: Optional[Literal["http", "stdio", "websocket"]] = None
     mcp_metadata: Optional[MCPIntegrationMetadata] = None
 
-    class Config:
-        schema_extra = {
+    model_config = {
+        "from_attributes": False,
+        "json_schema_extra": {
             "example": {
                 "name": "GitHub MCP",
                 "mcp_type": "http",
@@ -36,18 +45,21 @@ class MCPIntegrationUpdate(BaseModel):
                 }
             }
         }
+    }
 
 class MCPIntegrationInDB(MCPIntegrationBase):
     id: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
 
 class MCPIntegrationCreate(MCPIntegrationBase):
-    class Config:
-        schema_extra = {
+    model_config = {
+        "from_attributes": False,
+        "json_schema_extra": {
             "example": {
                 "name": "GitHub MCP",
                 "mcp_type": "http",
@@ -63,3 +75,4 @@ class MCPIntegrationCreate(MCPIntegrationBase):
                 }
             }
         }
+    }
