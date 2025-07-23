@@ -1,5 +1,6 @@
 # app/routers/auth_router.py
 
+import os
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
@@ -8,8 +9,7 @@ from authlib.integrations.starlette_client import OAuth
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
-from app.schemas.login_schema import LoginRequest
-from app.schemas.login_schema import RegisterRequest
+from app.schemas.login_schema import LoginRequest, RegisterRequest
 from app.models.user_model import User
 
 router = APIRouter(
@@ -36,6 +36,21 @@ oauth.register(
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
+# 🔒 Función privada para setear cookie de sesión
+def _set_session_cookie(response: Response, token: str):
+    environment = os.getenv("ENVIRONMENT", "development")
+    is_local = environment == "development"
+
+    response.set_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=not is_local,
+        samesite="none",
+        domain="apichat.es" if not is_local else None,
+        max_age=settings.SESSION_COOKIE_MAX_AGE
+    )
+
 
 @router.get("/google/login", summary="Iniciar sesión con Google")
 async def login_via_google(request: Request):
@@ -60,15 +75,8 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
         user = user_service.get_or_create_user(user_info)
         session = session_service.create_session(user.id, request)
 
-        response = RedirectResponse(url=f"{settings.FRONTEND_URL}/?session_token={session.session_token}")
-        response.set_cookie(
-            key=settings.SESSION_COOKIE_NAME,
-            value=session.session_token,
-            httponly=True,
-            secure=settings.SESSION_COOKIE_SECURE,
-            samesite=settings.SESSION_COOKIE_SAMESITE,
-            max_age=settings.SESSION_COOKIE_MAX_AGE,
-        )
+        response = RedirectResponse(url=f"{settings.FRONTEND_URL}/")
+        _set_session_cookie(response, session.session_token)
         return response
 
     except Exception as e:
@@ -90,14 +98,7 @@ def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
 
     session = session_service.create_session(user.id, request)
-    response.set_cookie(
-        key=settings.SESSION_COOKIE_NAME,
-        value=session.session_token,
-        httponly=True,
-        secure=settings.SESSION_COOKIE_SECURE,
-        samesite=settings.SESSION_COOKIE_SAMESITE,
-        max_age=settings.SESSION_COOKIE_MAX_AGE,
-    )
+    _set_session_cookie(response, session.session_token)
     return {"message": "✅ Login exitoso"}
 
 
@@ -127,7 +128,6 @@ def me(factory: ServiceFactory = Depends(get_factory)):
     }
 
 
-
 @router.post("/register", summary="Registrar nuevo usuario")
 def register(
     data: RegisterRequest,
@@ -150,12 +150,5 @@ def register(
     db.refresh(user)
 
     session = session_service.create_session(user.id, request)
-    response.set_cookie(
-        key=settings.SESSION_COOKIE_NAME,
-        value=session.session_token,
-        httponly=True,
-        secure=settings.SESSION_COOKIE_SECURE,
-        samesite=settings.SESSION_COOKIE_SAMESITE,
-        max_age=settings.SESSION_COOKIE_MAX_AGE,
-    )
+    _set_session_cookie(response, session.session_token)
     return {"message": "✅ Registro y login exitoso"}

@@ -6,13 +6,16 @@ from sqlalchemy.orm import Session
 
 from app.models.session_model import Session as SessionModel
 from app.models.user_model import User
+from app.core.service_factory import ServiceFactory
 
 logger = logging.getLogger(__name__)
 
 
 class SessionService:
-    def __init__(self, db: Session):
-        self.db = db
+    def __init__(self, factory: ServiceFactory):
+        self.factory = factory
+        self.db: Session = factory.db
+        self.request: Request = factory.request
 
     def create_session(self, user_id: int, request: Request) -> SessionModel:
         token = str(uuid.uuid4())
@@ -107,7 +110,6 @@ class SessionService:
         if session.expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
 
-        # Opcional: actualizar `last_used_at` si se desea al validar sin autenticar
         return session
 
     def revoke_session_by_token(self, token: str, user_id: int) -> bool:

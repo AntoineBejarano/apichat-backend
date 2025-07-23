@@ -87,9 +87,14 @@ app.openapi = custom_openapi
 # ────────────────────────────────
 # CORS middleware
 # ────────────────────────────────
+origins = [
+    "http://127.0.0.1:8000/",           # para desarrollo local
+    "https://app.apichat.es",         # frontend en producción
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

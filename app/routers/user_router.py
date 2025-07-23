@@ -1,6 +1,7 @@
 # app/routers/user_router.py
 
-from fastapi import APIRouter, Depends, Request, HTTPException, status
+import os
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -21,6 +22,21 @@ router = APIRouter(
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
+# 🔒 Función privada para setear cookie de sesión
+def _set_session_cookie(response: Response, token: str):
+    environment = os.getenv("ENVIRONMENT", "development")
+    is_local = environment == "development"
+
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        secure=not is_local,
+        samesite="none",
+        domain="apichat.es" if not is_local else None
+    )
+
+
 @router.post(
     "/",
     response_model=UserOut,
@@ -30,6 +46,8 @@ def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFacto
 )
 def register_user(
     user_data: UserCreate,
+    request: Request,
+    response: Response,
     factory: ServiceFactory = Depends(get_factory)
 ):
     existing = factory.db.query(User).filter(User.email == user_data.email).first()
@@ -39,7 +57,14 @@ def register_user(
             detail="❌ El email ya está registrado"
         )
 
-    return factory.get_user_service().create_user(user_data)
+    user = factory.get_user_service().create_user(user_data)
+
+    # Crear sesión y setear cookie
+    session = factory.get_session_service().create_session(user.id, request)
+    _set_session_cookie(response, session.session_token)
+
+    return user
+
 
 @router.get(
     "/me",
@@ -49,6 +74,7 @@ def register_user(
 )
 def get_current_profile(factory: ServiceFactory = Depends(get_factory)):
     return factory.user
+
 
 @router.get(
     "/{user_id}",
