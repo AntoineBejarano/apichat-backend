@@ -50,7 +50,7 @@ def list_integrations(factory: ServiceFactory = Depends(get_factory)):
     """
     📦 Lista todas las integraciones activas del usuario autenticado.
     """
-    return factory.get_integration_service().get_by_user(factory.user.id)
+    return factory.get_integration_service().get_by_user()
 
 
 @router.get(

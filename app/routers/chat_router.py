@@ -33,7 +33,7 @@ def create_chat(chat: ChatCreate, factory: ServiceFactory = Depends(get_factory)
     description="Devuelve todos los chats del usuario autenticado.",
 )
 def list_user_chats(factory: ServiceFactory = Depends(get_factory)):
-    return factory.get_chat_service().get_user_chats()
+    return factory.get_chat_service().get_all()
 
 @router.delete(
     "/{chat_id}",

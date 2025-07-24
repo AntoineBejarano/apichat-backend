@@ -40,7 +40,7 @@ def create_agent(
 )
 def list_agents(factory: ServiceFactory = Depends(get_factory)):
     agent_service = factory.get_agent_service()
-    return agent_service.get_all(factory.user.id)
+    return agent_service.get_all()
 
 @router.get(
     "/{agent_id}",

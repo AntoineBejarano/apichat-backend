@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional
+from uuid import UUID
 
 class PermissionBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -21,7 +22,7 @@ class PermissionUpdate(BaseModel):
     }
 
 class PermissionOut(PermissionBase):
-    id: int
+    id: UUID
 
     model_config = {
         "from_attributes": True

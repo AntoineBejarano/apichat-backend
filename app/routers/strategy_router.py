@@ -59,7 +59,7 @@ def create_strategy_route(
     description="Devuelve todas las estrategias creadas por el usuario autenticado.",
 )
 def list_strategies(factory: ServiceFactory = Depends(get_factory)):
-    return factory.get_strategy_service().get_user_strategies(factory.user.id)
+    return factory.get_strategy_service().get_user_strategies()
 
 
 @router.get(

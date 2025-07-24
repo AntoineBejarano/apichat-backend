@@ -22,7 +22,7 @@ def seed_permissions(factory: ServiceFactory):
 
 
 def seed_event_definitions(factory: ServiceFactory):
-    event_service = factory.get_event_definition_service()
+    event_service = factory.get_event_definition_service(user=None)
 
     default_events = [
         {

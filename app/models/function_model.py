@@ -38,3 +38,6 @@ class Function(Base):
         secondary=function_group_association,
         back_populates="functions"
     )
+
+    # 🔗 Nueva relación con FunctionCallLog (uno a muchos)
+    calls = relationship("FunctionCallLog", back_populates="function", cascade="all, delete-orphan")

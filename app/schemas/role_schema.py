@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from uuid import UUID
 
 class RoleBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
@@ -17,7 +18,7 @@ class RoleUpdate(BaseModel):
     model_config = {"from_attributes": False}
 
 class RoleOut(RoleBase):
-    id: int
+    id: UUID
     permissions: List[str] = []
 
     model_config = {"from_attributes": True}

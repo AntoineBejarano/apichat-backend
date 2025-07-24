@@ -11,3 +11,7 @@ def get_openai_client():
 
 def get_langchain_client():
     return langchain_client
+
+def is_admin(self) -> bool:
+    """Verifica si el usuario autenticado es administrador."""
+    return bool(getattr(self.factory.user, "is_admin", False))

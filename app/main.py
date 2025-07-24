@@ -48,8 +48,8 @@ async def lifespan(app: FastAPI):
     factory = ServiceFactory(db=db)
 
     try:
-        seed_permissions(factory)
-        seed_event_definitions(factory)
+        #seed_permissions(factory)
+        #seed_event_definitions(factory)
         logger.info("🔐 Default permissions seeded.")
     except OperationalError as e:
         # Si la tabla 'permissions' (o cualquier otra) no existe, saltamos el seed

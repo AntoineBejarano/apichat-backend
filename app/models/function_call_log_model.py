@@ -20,3 +20,5 @@ class FunctionCallLog(Base):
         back_populates="function_call",
         uselist=False
     )
+
+    function = relationship("Function", back_populates="calls")

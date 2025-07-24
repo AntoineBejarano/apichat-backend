@@ -58,7 +58,7 @@ def list_mcp_integrations(factory: ServiceFactory = Depends(get_factory)):
     Devuelve todas las integraciones MCP registradas por el usuario.
     """
     service = factory.get_mcp_integration_service()
-    return service.get_all_mcp_integrations()
+    return service.list_all()
 
 
 @router.get(

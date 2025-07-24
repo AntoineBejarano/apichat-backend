@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class EventDefinitionService(BaseService):
     def __init__(self, factory: "ServiceFactory"):
         super().__init__(factory)
-        logger.info(f"[EventDefinitionService] ✅ Initialized for user_id={self.user_id}")
+        logger.info(f"[EventDefinitionService] ✅ Initialized for user_id={self.user.id}")
 
     # ----------------------------------------------------------------
     # CREATE
@@ -43,14 +43,14 @@ class EventDefinitionService(BaseService):
     # READ
     # ----------------------------------------------------------------
     def get_all(self, only_active: bool = True) -> List[EventDefinition]:
-        logger.info(f"[EventDefinitionService] 📦 Getting all EventDefinitions")
+        logger.info(f"[EventDefinitionService] 📦 Getting all EventDefinitions for user_id={self.user.id}")
         query = self.db.query(EventDefinition)
         if only_active:
             query = query.filter(EventDefinition.is_active == True)
         return query.all()
 
     def get_by_id(self, event_def_id: str) -> EventDefinition:
-        logger.info(f"[EventDefinitionService] 🔍 Fetching EventDefinition ID={event_def_id}")
+        logger.info(f"[EventDefinitionService] 🔍 Fetching EventDefinition ID={event_def_id} for user_id={self.user.id}")
         event_def = self.db.query(EventDefinition).filter(EventDefinition.id == event_def_id).first()
         if not event_def:
             raise HTTPException(status_code=404, detail="EventDefinition not found")
@@ -60,7 +60,7 @@ class EventDefinitionService(BaseService):
     # UPDATE
     # ----------------------------------------------------------------
     def update(self, event_def_id: str, data: EventDefinitionUpdate) -> EventDefinition:
-        logger.info(f"[EventDefinitionService] ✏️ Updating EventDefinition ID={event_def_id}")
+        logger.info(f"[EventDefinitionService] ✏️ Updating EventDefinition ID={event_def_id} for user_id={self.user.id}")
         event_def = self.get_by_id(event_def_id)
 
         for field, value in data.model_dump(exclude_unset=True).items():
@@ -75,13 +75,14 @@ class EventDefinitionService(BaseService):
     # DELETE
     # ----------------------------------------------------------------
     def delete(self, event_def_id: str) -> dict:
-        logger.info(f"[EventDefinitionService] 🗑️ Deleting EventDefinition ID={event_def_id}")
+        logger.info(f"[EventDefinitionService] 🗑️ Deleting EventDefinition ID={event_def_id} for user_id={self.user.id}")
         event_def = self.get_by_id(event_def_id)
         self.db.delete(event_def)
         self.db.commit()
         return {"detail": "EventDefinition deleted"}
 
     def get_or_create_by_code(self, code: str, name: str, description: str, payload_schema: dict):
+        logger.info(f"[EventDefinitionService] 🔁 get_or_create_by_code for user_id={self.user.id}")
         existing = self.db.query(EventDefinition).filter_by(code=code).first()
         if existing:
             return existing
@@ -94,4 +95,5 @@ class EventDefinitionService(BaseService):
         self.db.add(event)
         self.db.commit()
         self.db.refresh(event)
+        logger.info(f"[EventDefinitionService] ✅ Created new EventDefinition from code: {code}")
         return event

@@ -24,22 +24,22 @@ class DatabaseService(BaseService):
 
     def __init__(self, factory: "ServiceFactory") -> None:
         super().__init__(factory)
-        logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user_id)
+        logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user.id)
 
     # ---------------------------------------------------------
     # CRUD CONEXIONES
     # ---------------------------------------------------------
 
     def create_connection(self, data: DatabaseConnectionCreate) -> DatabaseConnection:
-        logger.info("[DatabaseService] ➕ Creando conexión DB para user_id=%s", self.user_id)
-        connection = DatabaseConnection(user_id=self.user_id, **data.model_dump())
+        logger.info("[DatabaseService] ➕ Creando conexión DB para user_id=%s", self.user.id)
+        connection = DatabaseConnection(user_id=self.user.id, **data.model_dump())
         self.db.add(connection)
         self.db.commit()
         self.db.refresh(connection)
         return connection
 
     def update_connection(self, db_id: int, updates: DatabaseConnectionUpdate) -> DatabaseConnection:
-        logger.info("[DatabaseService] 🔄 Actualizando DB id=%s para user_id=%s", db_id, self.user_id)
+        logger.info("[DatabaseService] 🔄 Actualizando DB id=%s para user_id=%s", db_id, self.user.id)
         conn = self.get_record(db_id)
         if not conn:
             raise ValueError("Database connection not found")
@@ -52,23 +52,23 @@ class DatabaseService(BaseService):
         return conn
 
     def get_user_databases(self) -> List[DatabaseConnection]:
-        logger.info("[DatabaseService] 📥 Listando todas las conexiones DB para user_id=%s", self.user_id)
+        logger.info("[DatabaseService] 📥 Listando todas las conexiones DB para user_id=%s", self.user.id)
         return (
             self.db.query(DatabaseConnection)
-            .filter(DatabaseConnection.user_id == self.user_id)
+            .filter(DatabaseConnection.user_id == self.user.id)
             .all()
         )
 
     def get_record(self, db_id: int) -> Optional[DatabaseConnection]:
-        logger.debug("[DatabaseService] 🔎 Buscando DB id=%s para user_id=%s", db_id, self.user_id)
+        logger.debug("[DatabaseService] 🔎 Buscando DB id=%s para user_id=%s", db_id, self.user.id)
         return (
             self.db.query(DatabaseConnection)
-            .filter_by(id=db_id, user_id=self.user_id)
+            .filter_by(id=db_id, user_id=self.user.id)
             .first()
         )
 
     def delete_connection(self, db_id: int) -> bool:
-        logger.warning("[DatabaseService] 🗑️ Eliminando DB id=%s para user_id=%s", db_id, self.user_id)
+        logger.warning("[DatabaseService] 🗑️ Eliminando DB id=%s para user_id=%s", db_id, self.user.id)
         conn = self.get_record(db_id)
         if not conn:
             raise ValueError("Database not found")
@@ -116,7 +116,7 @@ class DatabaseService(BaseService):
         Valida que la configuración de conexión sea válida antes de guardarla.
         """
         try:
-            record = DatabaseConnection(user_id=self.user_id, **data.model_dump())
+            record = DatabaseConnection(user_id=self.user.id, **data.model_dump())
             engine = self.build_sqlalchemy_engine(record)
             with engine.connect() as conn:
                 conn.execute(sqlalchemy.text("SELECT 1"))

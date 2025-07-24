@@ -15,19 +15,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ProxyService(BaseService):  # ✅ Hereda de BaseService
+class ProxyService(BaseService):
     """Service to manage user proxies and return configurations."""
 
     def __init__(self, factory: "ServiceFactory") -> None:
-        super().__init__(factory)  # ✅ Usa inicialización del padre
-        logger.info("[ProxyService] ✅ Initialized for user_id=%s", self.user_id)
+        super().__init__(factory)
+        logger.info("[ProxyService] ✅ Initialized for user_id=%s", self.user.id)
 
     # ---------------------------------------------------------------- #
     # CREATE                                                           #
     # ---------------------------------------------------------------- #
     def create(self, data: ProxyCreate) -> Proxy:
         logger.info("[ProxyService] ➕ Creating proxy: «%s»", data.name)
-        proxy = Proxy(user_id=self.user_id, **data.model_dump())  # ✅ model_dump
+        proxy = Proxy(user_id=self.user.id, **data.model_dump())
         self.db.add(proxy)
         self.db.commit()
         self.db.refresh(proxy)
@@ -38,26 +38,25 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
     # READ                                                             #
     # ---------------------------------------------------------------- #
     def list_all(self) -> List[Proxy]:
-        logger.info("[ProxyService] 📄 Listing all proxies for user_id=%s", self.user_id)
-        return self.db.query(Proxy).filter_by(user_id=self.user_id).all()
+        logger.info("[ProxyService] 📄 Listing all proxies for user_id=%s", self.user.id)
+        return self.db.query(Proxy).filter_by(user_id=self.user.id).all()
 
     def get_by_id(self, proxy_id: int) -> Optional[Proxy]:
-        logger.debug("[ProxyService] 🔍 Getting proxy_id=%s for user_id=%s", proxy_id, self.user_id)
-        return self.db.query(Proxy).filter_by(id=proxy_id, user_id=self.user_id).first()
+        logger.debug("[ProxyService] 🔍 Getting proxy_id=%s for user_id=%s", proxy_id, self.user.id)
+        return self.db.query(Proxy).filter_by(id=proxy_id, user_id=self.user.id).first()
 
     def get_by_user_and_database(self, database_name: str) -> Optional[Proxy]:
-        logger.info("[ProxyService] 🔍 Getting proxy for user_id=%s and database='%s'", self.user_id, database_name)
-        return self.db.query(Proxy).filter_by(user_id=self.user_id, database=database_name).first()
+        logger.info("[ProxyService] 🔍 Getting proxy for user_id=%s and database='%s'", self.user.id, database_name)
+        return self.db.query(Proxy).filter_by(user_id=self.user.id, database=database_name).first()
 
     def get_proxy_for_app(self, app_id: int) -> Optional[Proxy]:
         """Returns the proxy configured for a given app, ensuring it belongs to the user."""
         logger.debug("[ProxyService] 🧭 Getting proxy for app_id=%s", app_id)
-
         from app.models.app_model import App  # avoid circular import
 
-        app = self.db.query(App).filter(App.id == app_id, App.user_id == self.user_id).first()
+        app = self.db.query(App).filter(App.id == app_id, App.user_id == self.user.id).first()
         if not app:
-            logger.warning("[ProxyService] ❌ App ID %s not found or not owned by user %s", app_id, self.user_id)
+            logger.warning("[ProxyService] ❌ App ID %s not found or not owned by user %s", app_id, self.user.id)
             return None
 
         if not app.proxy_id:
@@ -66,7 +65,7 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
 
         proxy = self.get_by_id(app.proxy_id)
         if not proxy:
-            logger.warning("[ProxyService] ❌ Proxy ID %s not found or not owned by user %s", app.proxy_id, self.user_id)
+            logger.warning("[ProxyService] ❌ Proxy ID %s not found or not owned by user %s", app.proxy_id, self.user.id)
             return None
 
         logger.info("[ProxyService] ✅ Found proxy ID %s for app ID %s", proxy.id, app.id)
@@ -82,7 +81,7 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
             raise ValueError("Proxy not found")
 
         logger.info("[ProxyService] ♻️ Updating proxy_id=%s", proxy_id)
-        for field, value in updates.model_dump(exclude_unset=True).items():  # ✅ model_dump
+        for field, value in updates.model_dump(exclude_unset=True).items():
             setattr(proxy, field, value)
 
         proxy.updated_at = datetime.utcnow()
@@ -109,7 +108,6 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
     # CONFIG HELPERS                                                   #
     # ---------------------------------------------------------------- #
     def get_proxy_for_user(self, proxy_id: Optional[int]) -> Optional[Proxy]:
-        """Returns proxy if it exists and belongs to user; None if no ID provided."""
         if proxy_id is None:
             logger.info("[ProxyService] 🔌 No proxy_id specified. Continuing without proxy.")
             return None
@@ -119,11 +117,9 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
         return proxy
 
     def get_http_config(self, proxy_id: Optional[int]) -> Optional[dict]:
-        """Returns HTTP config (base_url, headers, auth) for API calls."""
         proxy = self.get_proxy_for_user(proxy_id)
         if not proxy:
             return None
-
         logger.info("[ProxyService] 🛰️ Fetching HTTP config for proxy_id=%s", proxy_id)
         return {
             "base_url": proxy.base_url,
@@ -132,11 +128,9 @@ class ProxyService(BaseService):  # ✅ Hereda de BaseService
         }
 
     def get_sql_config(self, proxy_id: Optional[int]) -> Optional[dict]:
-        """Returns SQL connection config if proxy is for databases."""
         proxy = self.get_proxy_for_user(proxy_id)
         if not proxy:
             return None
-
         logger.info("[ProxyService] 🗄️ Fetching SQL config for proxy_id=%s", proxy_id)
         return {
             "host": proxy.host,

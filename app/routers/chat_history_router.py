@@ -1,4 +1,3 @@
-# app/routers/chat_history_router.py
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -34,13 +33,22 @@ def add_message_to_history(
     return factory.get_chat_history_service().create_message(data)
 
 @router.get(
-    "/",
+    "/all",
     response_model=List[ChatHistoryOut],
-    summary="📜 Obtener historial completo",
-    description="Devuelve todo el historial de chat del usuario autenticado.",
+    summary="📜 Obtener TODO el historial del usuario",
 )
-def get_chat_history(factory: ServiceFactory = Depends(get_factory)):
-    return factory.get_chat_history_service().get_history()
+def get_all_chat_history(factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_chat_history_service().get_all()
+
+
+@router.get(
+    "/{chat_id}",
+    response_model=List[ChatHistoryOut],
+    summary="📜 Obtener historial por chat_id",
+)
+def get_chat_history(chat_id: int, factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_chat_history_service().get_history(chat_id)
+
 
 @router.delete(
     "/",

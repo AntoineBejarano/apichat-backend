@@ -13,6 +13,7 @@ class ChatHistory(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)  # 👈 AÑADIDO
 
     role = Column(String, nullable=False)  # "user", "assistant", "function", etc.
     content = Column(Text, nullable=False)

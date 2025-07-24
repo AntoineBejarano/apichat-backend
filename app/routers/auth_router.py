@@ -1,5 +1,3 @@
-# app/routers/auth_router.py
-
 import os
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from sqlalchemy.orm import Session
@@ -11,6 +9,7 @@ from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.login_schema import LoginRequest, RegisterRequest
 from app.models.user_model import User
+from app.models.role_model import Role
 
 router = APIRouter(
     prefix="/auth",
@@ -22,7 +21,6 @@ router = APIRouter(
     },
 )
 
-# 🔐 Configurar OAuth para Google
 oauth = OAuth()
 oauth.register(
     name="google",
@@ -32,11 +30,9 @@ oauth.register(
     client_kwargs={"scope": settings.GOOGLE_SCOPE},
 )
 
-# 🧩 Inyección de dependencias
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
-# 🔒 Función privada para setear cookie de sesión
 def _set_session_cookie(response: Response, token: str):
     environment = os.getenv("ENVIRONMENT", "development")
     is_local = environment == "development"
@@ -45,19 +41,25 @@ def _set_session_cookie(response: Response, token: str):
         key=settings.SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=not is_local,
-        samesite="none",
-        domain="apichat.es" if not is_local else None,
+        secure=not is_local,  # ✅ True en prod, False en local
+        samesite="lax" if is_local else "none",  # ✅ "lax" en local
+        domain=None if is_local else "apichat.es",
         max_age=settings.SESSION_COOKIE_MAX_AGE
     )
 
+
+def assign_default_user_role(db: Session, user: User):
+    role = db.query(Role).filter_by(name="user").first()
+    if role and role not in user.roles:
+        user.roles.append(role)
+        db.commit()
+        db.refresh(user)
 
 @router.get("/google/login", summary="Iniciar sesión con Google")
 async def login_via_google(request: Request):
     return await oauth.google.authorize_redirect(
         request, redirect_uri=settings.GOOGLE_REDIRECT_URI
     )
-
 
 @router.get("/google/callback", summary="Callback de Google")
 async def google_callback(request: Request, db: Session = Depends(get_db)):
@@ -73,6 +75,7 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="No se recibió información del usuario desde Google.")
 
         user = user_service.get_or_create_user(user_info)
+        assign_default_user_role(db, user)
         session = session_service.create_session(user.id, request)
 
         response = RedirectResponse(url=f"{settings.FRONTEND_URL}/")
@@ -81,7 +84,6 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en login con Google: {str(e)}")
-
 
 @router.post("/login", summary="Login con email y contraseña")
 def login(
@@ -93,14 +95,13 @@ def login(
     db = factory.db
     session_service = factory.get_session_service()
 
-    user = db.query(factory.user.__class__).filter_by(email=data.email).first()
+    user = db.query(User).filter_by(email=data.email).first()
     if not user or not user.verify_password(data.password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
 
     session = session_service.create_session(user.id, request)
     _set_session_cookie(response, session.session_token)
     return {"message": "✅ Login exitoso"}
-
 
 @router.post("/logout", summary="Cerrar sesión")
 def logout(
@@ -117,7 +118,6 @@ def logout(
 
     return {"message": "👋 Sesión cerrada"}
 
-
 @router.get("/me", summary="Obtener usuario autenticado")
 def me(factory: ServiceFactory = Depends(get_factory)):
     user = factory.user
@@ -126,7 +126,6 @@ def me(factory: ServiceFactory = Depends(get_factory)):
         "email": user.email,
         "name": user.name,
     }
-
 
 @router.post("/register", summary="Registrar nuevo usuario")
 def register(
@@ -149,6 +148,7 @@ def register(
     db.commit()
     db.refresh(user)
 
+    assign_default_user_role(db, user)
     session = session_service.create_session(user.id, request)
     _set_session_cookie(response, session.session_token)
     return {"message": "✅ Registro y login exitoso"}

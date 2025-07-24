@@ -1,6 +1,6 @@
 import logging
 from fastapi import HTTPException
-from typing import List, Dict
+from typing import List
 
 from app.models.trigger_model import Trigger
 from app.models.event_trigger_model import EventTrigger
@@ -14,27 +14,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 class TriggerService(BaseService):
     def __init__(self, factory: "ServiceFactory"):
         super().__init__(factory)
-        logger.info(f"[TriggerService] ✅ Initialized for user_id={self.user_id}")
+        logger.info(f"[TriggerService] ✅ Initialized for user_id={self.user.id}")
 
     # ----------------------------------------------------------------
     # CREATE
     # ----------------------------------------------------------------
     def create(self, data: TriggerCreate) -> Trigger:
-        logger.info(f"[TriggerService] ➕ Creating new Trigger for user_id={self.user_id}")
+        logger.info(f"[TriggerService] ➕ Creating new Trigger for user_id={self.user.id}")
 
         event_trigger = self.db.query(EventTrigger).filter(
             EventTrigger.id == data.event_trigger_id,
-            EventTrigger.user_id == self.user_id
+            EventTrigger.user_id == self.user.id
         ).first()
 
         if not event_trigger:
             raise HTTPException(status_code=400, detail="Invalid or unauthorized event_trigger_id")
 
-        trigger = Trigger(**data.model_dump(), user_id=self.user_id)
+        trigger = Trigger(**data.model_dump(), user_id=self.user.id)
         self.db.add(trigger)
         self.db.commit()
         self.db.refresh(trigger)
@@ -46,14 +45,14 @@ class TriggerService(BaseService):
     # READ
     # ----------------------------------------------------------------
     def get_all(self) -> List[Trigger]:
-        logger.info(f"[TriggerService] 📦 Getting all Triggers for user_id={self.user_id}")
-        return self.db.query(Trigger).filter(Trigger.user_id == self.user_id).all()
+        logger.info(f"[TriggerService] 📦 Getting all Triggers for user_id={self.user.id}")
+        return self.db.query(Trigger).filter(Trigger.user_id == self.user.id).all()
 
     def get_by_id(self, trigger_id: str) -> Trigger:
         logger.info(f"[TriggerService] 🔍 Fetching Trigger ID={trigger_id}")
         trigger = self.db.query(Trigger).filter(
             Trigger.id == trigger_id,
-            Trigger.user_id == self.user_id
+            Trigger.user_id == self.user.id
         ).first()
         if not trigger:
             raise HTTPException(status_code=404, detail="Trigger not found")

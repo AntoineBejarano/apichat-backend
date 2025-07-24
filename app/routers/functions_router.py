@@ -9,16 +9,15 @@ from app.core.service_factory import ServiceFactory
 from app.schemas.function_schema import FunctionCreate, FunctionUpdate, FunctionOut
 
 router = APIRouter(
-    prefix="/functions",
+    prefix="/apps/{app_id}/functions",
     tags=["⚙️ Functions"],
     responses={
         401: {"description": "No autorizado"},
-        404: {"description": "Función no encontrada"},
+        404: {"description": "Función o App no encontrada"},
         500: {"description": "Error interno del servidor"},
     },
 )
 
-# 🧩 Inyección de ServiceFactory
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
@@ -31,42 +30,38 @@ def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFacto
     response_description="Función creada correctamente"
 )
 def create_function(
+    app_id: int,
     function_data: FunctionCreate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    🆕 Crea una nueva función para tu app, usable en llamadas automáticas por IA.
-    """
-    return factory.get_function_service().create(factory.user.id, function_data)
+    return factory.get_function_service().create(app_id, function_data)
 
 
 @router.get(
     "/",
     response_model=List[FunctionOut],
-    summary="Listar funciones",
-    response_description="Lista de funciones del usuario"
+    summary="Listar funciones de la app",
+    response_description="Funciones definidas en la app"
 )
-def list_user_functions(factory: ServiceFactory = Depends(get_factory)):
-    """
-    📄 Lista todas las funciones definidas por el usuario.
-    """
-    return factory.get_function_service().get_by_user(factory.user.id)
+def list_functions(
+    app_id: int,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    return factory.get_function_service().get_by_app(app_id)
 
 
 @router.get(
     "/{function_id}",
     response_model=FunctionOut,
-    summary="Obtener función",
+    summary="Obtener función por ID",
     response_description="Detalles de la función"
 )
 def get_function(
+    app_id: int,
     function_id: int,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    🔍 Recupera una función específica por su ID.
-    """
-    return factory.get_function_service().get_by_id(factory.user.id, function_id)
+    return factory.get_function_service().get_by_id(app_id, function_id)
 
 
 @router.put(
@@ -76,14 +71,12 @@ def get_function(
     response_description="Función actualizada correctamente"
 )
 def update_function(
+    app_id: int,
     function_id: int,
     updates: FunctionUpdate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    ✏️ Actualiza una función existente con nuevos parámetros.
-    """
-    return factory.get_function_service().update(factory.user.id, function_id, updates)
+    return factory.get_function_service().update(app_id, function_id, updates)
 
 
 @router.delete(
@@ -93,11 +86,10 @@ def update_function(
     response_description="Función eliminada correctamente"
 )
 def delete_function(
+    app_id: int,
     function_id: int,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    """
-    🗑️ Elimina una función por su ID.
-    """
-    if not factory.get_function_service().delete(factory.user.id, function_id):
+    success = factory.get_function_service().delete(app_id, function_id)
+    if not success:
         raise HTTPException(status_code=404, detail="Función no encontrada")

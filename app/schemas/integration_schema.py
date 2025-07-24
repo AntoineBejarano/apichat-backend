@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from uuid import UUID
 
 class IntegrationBase(BaseModel):
     name: str
@@ -14,8 +15,8 @@ class IntegrationCreate(IntegrationBase):
     pass
 
 class IntegrationOut(IntegrationBase):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     access_token: Optional[str]
     refresh_token: Optional[str]
     created_at: Optional[str]

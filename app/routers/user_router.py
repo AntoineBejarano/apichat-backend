@@ -22,7 +22,7 @@ router = APIRouter(
 def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFactory:
     return ServiceFactory(db, request)
 
-# 🔒 Función privada para setear cookie de sesión
+# 🔒 Setear cookie de sesión (usado en el registro)
 def _set_session_cookie(response: Response, token: str):
     environment = os.getenv("ENVIRONMENT", "development")
     is_local = environment == "development"
@@ -36,7 +36,7 @@ def _set_session_cookie(response: Response, token: str):
         domain="apichat.es" if not is_local else None
     )
 
-
+# 📥 Registro de usuario
 @router.post(
     "/",
     response_model=UserOut,
@@ -50,22 +50,16 @@ def register_user(
     response: Response,
     factory: ServiceFactory = Depends(get_factory)
 ):
-    existing = factory.db.query(User).filter(User.email == user_data.email).first()
+    existing = factory.get_user_service().get_user_by_email(user_data.email)
     if existing:
-        raise HTTPException(
-            status_code=400,
-            detail="❌ El email ya está registrado"
-        )
+        raise HTTPException(status_code=400, detail="❌ El email ya está registrado")
 
     user = factory.get_user_service().create_user(user_data)
-
-    # Crear sesión y setear cookie
     session = factory.get_session_service().create_session(user.id, request)
     _set_session_cookie(response, session.session_token)
-
     return user
 
-
+# 👤 Obtener perfil actual
 @router.get(
     "/me",
     response_model=UserDetail,
@@ -75,7 +69,7 @@ def register_user(
 def get_current_profile(factory: ServiceFactory = Depends(get_factory)):
     return factory.user
 
-
+# 🔍 Obtener usuario por ID
 @router.get(
     "/{user_id}",
     response_model=UserDetail,
@@ -88,8 +82,31 @@ def get_user_by_id_route(
 ):
     user = factory.get_user_service().get_user_by_id(user_id)
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="❌ Usuario no encontrado"
-        )
+        raise HTTPException(status_code=404, detail="❌ Usuario no encontrado")
     return user
+
+# 🔎 Obtener usuario por email
+@router.get(
+    "/by-email/{email}",
+    response_model=UserDetail,
+    summary="🔎 Obtener usuario por email",
+    description="Devuelve los detalles de un usuario específico a partir de su email."
+)
+def get_user_by_email_route(
+    email: str,
+    factory: ServiceFactory = Depends(get_factory)
+):
+    user = factory.get_user_service().get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="❌ Usuario no encontrado")
+    return user
+
+# 📋 Listar todos los usuarios (útil para admin o pruebas)
+@router.get(
+    "/",
+    response_model=list[UserOut],
+    summary="📋 Listar todos los usuarios",
+    description="Devuelve una lista de todos los usuarios del sistema (solo uso interno/admin)."
+)
+def list_all_users(factory: ServiceFactory = Depends(get_factory)):
+    return factory.get_user_service().get_all_users()

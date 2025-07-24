@@ -18,13 +18,13 @@ logger = logging.getLogger(__name__)
 class EventTriggerService(BaseService):
     def __init__(self, factory: "ServiceFactory"):
         super().__init__(factory)
-        logger.info(f"[EventTriggerService] ✅ Initialized for user_id={self.user_id}")
+        logger.info(f"[EventTriggerService] ✅ Initialized for user_id={self.user.id}")
 
     # ----------------------------------------------------------------
     # CREATE
     # ----------------------------------------------------------------
     def create(self, data: EventTriggerCreate) -> EventTrigger:
-        logger.info(f"[EventTriggerService] ➕ Creating new EventTrigger for user_id={self.user_id}")
+        logger.info(f"[EventTriggerService] ➕ Creating new EventTrigger for user_id={self.user.id}")
 
         definition = self.db.query(EventDefinition).filter(
             EventDefinition.id == data.event_definition_id,
@@ -34,7 +34,6 @@ class EventTriggerService(BaseService):
         if not definition:
             raise HTTPException(status_code=400, detail="Invalid or inactive event_definition_id")
 
-        # Validar config contra los campos requeridos
         missing = [
             field for field in definition.required_fields
             if field not in data.config
@@ -45,7 +44,7 @@ class EventTriggerService(BaseService):
 
         trigger = EventTrigger(
             **data.model_dump(),
-            user_id=self.user_id
+            user_id=self.user.id
         )
 
         self.db.add(trigger)
@@ -59,14 +58,14 @@ class EventTriggerService(BaseService):
     # READ
     # ----------------------------------------------------------------
     def get_all(self) -> List[EventTrigger]:
-        logger.info(f"[EventTriggerService] 📦 Getting all EventTriggers for user_id={self.user_id}")
-        return self.db.query(EventTrigger).filter(EventTrigger.user_id == self.user_id).all()
+        logger.info(f"[EventTriggerService] 📦 Getting all EventTriggers for user_id={self.user.id}")
+        return self.db.query(EventTrigger).filter(EventTrigger.user_id == self.user.id).all()
 
     def get_by_id(self, event_trigger_id: str) -> EventTrigger:
         logger.info(f"[EventTriggerService] 🔍 Fetching EventTrigger ID={event_trigger_id}")
         event_trigger = self.db.query(EventTrigger).filter(
             EventTrigger.id == event_trigger_id,
-            EventTrigger.user_id == self.user_id
+            EventTrigger.user_id == self.user.id
         ).first()
         if not event_trigger:
             raise HTTPException(status_code=404, detail="EventTrigger not found")

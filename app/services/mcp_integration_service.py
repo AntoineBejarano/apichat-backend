@@ -19,19 +19,13 @@ logger = logging.getLogger(__name__)
 class MCPIntegrationService:
     """CRUD y utilidades para integraciones MCP."""
 
-    # ------------------------------------------------------------------
     def __init__(self, factory: "ServiceFactory") -> None:
         self.db: Session = factory.db
-        self.user_id: int = factory.user.id
-        logger.info("[MCPIntegrationService] Inicializado para user_id=%s", self.user_id)
+        logger.info("[MCPIntegrationService] Inicializado")
 
-    # ------------------------------------------------------------------
-    # CREAR -------------------------------------------------------------
-    # ------------------------------------------------------------------
     def create(self, data: MCPIntegrationCreate) -> MCPIntegration:
         logger.info("[MCPIntegrationService] ➕ Creando MCP ‘%s’", data.name)
         mcp = MCPIntegration(
-            user_id=self.user_id,  # asegúrate de que el modelo tenga este campo
             name=data.name,
             mcp_type=data.mcp_type,
             mcp_metadata=data.mcp_metadata.model_dump(),
@@ -41,27 +35,12 @@ class MCPIntegrationService:
         self.db.refresh(mcp)
         return mcp
 
-    # ------------------------------------------------------------------
-    # LEER --------------------------------------------------------------
-    # ------------------------------------------------------------------
     def list_all(self) -> List[MCPIntegration]:
-        return (
-            self.db.query(MCPIntegration)
-            .filter(MCPIntegration.user_id == self.user_id)
-            .all()
-        )
+        return self.db.query(MCPIntegration).all()
 
     def get_by_id(self, mcp_id: int) -> Optional[MCPIntegration]:
-        """Recupera la integración si pertenece al usuario actual."""
-        return (
-            self.db.query(MCPIntegration)
-            .filter_by(id=mcp_id, user_id=self.user_id)
-            .first()
-        )
+        return self.db.query(MCPIntegration).filter_by(id=mcp_id).first()
 
-    # ------------------------------------------------------------------
-    # ACTUALIZAR --------------------------------------------------------
-    # ------------------------------------------------------------------
     def update(self, mcp_id: int, data: MCPIntegrationUpdate) -> MCPIntegration:
         mcp = self.get_by_id(mcp_id)
         if not mcp:
@@ -79,9 +58,6 @@ class MCPIntegrationService:
         self.db.refresh(mcp)
         return mcp
 
-    # ------------------------------------------------------------------
-    # ELIMINAR ----------------------------------------------------------
-    # ------------------------------------------------------------------
     def delete(self, mcp_id: int) -> bool:
         mcp = self.get_by_id(mcp_id)
         if not mcp:
@@ -89,7 +65,3 @@ class MCPIntegrationService:
         self.db.delete(mcp)
         self.db.commit()
         return True
-
-    # ------------------------------------------------------------------
-    # EXTRA: ejecutar tool remoto, etc.
-    # ------------------------------------------------------------------

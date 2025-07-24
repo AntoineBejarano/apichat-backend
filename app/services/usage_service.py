@@ -1,12 +1,14 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import func
+from fastapi import HTTPException
+
 from app.models.token_usage_model import TokenUsage
-from app.schemas.usage_schema import UsageOut, FunctionUsage
 from app.models.function_call_log_model import FunctionCallLog
 from app.models.chat_history_model import ChatHistory
-from fastapi import HTTPException
+from app.models.function_model import Function
+from app.schemas.usage_schema import UsageOut, FunctionUsage
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class UsageService:
         self.db.add(usage)
         self.db.commit()
 
-    def get_total_usage(self) -> UsageOut:
+    def get_usage(self) -> UsageOut:
         logger.info(f"📊 Obteniendo uso total de tokens para usuario {self.user.id}")
 
         # Tokens usados en mensajes normales
@@ -39,15 +41,16 @@ class UsageService:
             ChatHistory.chat.has(user_id=self.user.id)
         ).scalar()
 
-        # Llamadas a funciones
+        # Llamadas a funciones, usando join con Function
         function_data = self.db.query(
-            FunctionCallLog.function_name,
-            func.count().label("count"),
+            Function.name.label("function_name"),
+            func.count(FunctionCallLog.id).label("count"),
             func.coalesce(func.sum(FunctionCallLog.token_count), 0).label("tokens_used")
+        ).join(Function, FunctionCallLog.function_id == Function.id
         ).filter(
-            FunctionCallLog.chat.has(user_id=self.user.id)
+            FunctionCallLog.user_id == self.user.id
         ).group_by(
-            FunctionCallLog.function_name
+            Function.name
         ).all()
 
         function_calls = [
@@ -68,7 +71,6 @@ class UsageService:
         )
 
     def get_monthly_token_usage(self) -> int:
-        """Devuelve el número total de tokens usados en el mes actual por el usuario"""
         start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         usage = self.db.query(
             func.coalesce(func.sum(TokenUsage.total_tokens), 0)
@@ -79,28 +81,21 @@ class UsageService:
         return usage or 0
 
     def check_plan_limit(self):
-        """
-        Raises an exception if the user has reached the token limit defined by their plan.
-        """
         if not self.user.plan:
             logger.warning(f"🚫 User {self.user.id} has no assigned plan.")
             raise HTTPException(status_code=403, detail="You don't have an active plan.")
 
         token_limit = getattr(self.user.plan, "token_limit", None)
-
-        # If there's no token limit set (e.g., enterprise plan), allow unlimited usage
         if token_limit is None:
             logger.info(f"✅ User {self.user.id} has no token limit.")
             return
 
-        # Calculate total tokens used by the user so far
         total_used = self.db.query(
             func.coalesce(func.sum(TokenUsage.total_tokens), 0)
         ).filter(
             TokenUsage.user_id == self.user.id
         ).scalar() or 0
 
-        # Check if usage exceeds the limit
         if total_used >= token_limit:
             logger.warning(f"⛔ User {self.user.id} reached the plan limit of {token_limit} tokens.")
             raise HTTPException(status_code=403, detail="You have reached your token limit.")

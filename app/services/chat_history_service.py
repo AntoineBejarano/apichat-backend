@@ -80,3 +80,14 @@ class ChatHistoryService:
             function_call_id=data.get("function_call_id"),
         )
         return self.create_message(msg)
+    
+    def get_all(self, limit: int = 1000) -> List[ChatHistory]:
+        logger.info(f"[ChatHistoryService] Obteniendo TODO el historial de user_id={self.user_id}")
+        return (
+            self.db.query(ChatHistory)
+            .filter(ChatHistory.user_id == self.user_id)
+            .order_by(ChatHistory.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+
