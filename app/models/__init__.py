@@ -27,6 +27,9 @@ from app.models.token_usage_model import TokenUsage
 from app.models.subscription_model import Subscription
 from app.models.oauth_model import OAuthAccount
 from app.models.function_group_model import FunctionGroup
+from app.models.event_definition_model import EventDefinition
+from app.models.trigger_model import Trigger
+from app.models.event_trigger_model import EventTrigger
 
 __all__ = [
     "Base",
@@ -34,7 +37,7 @@ __all__ = [
     "DatabaseConnection", "Function", "Integration", "MCPIntegration",
     "OpenAPIIntegration", "Permission", "Plan", "Proxy", "Role",
     "Session", "Strategy", "TokenUsage", "Subscription",
-    "OAuthAccount", "FunctionGroup",
+    "OAuthAccount", "FunctionGroup", "EventDefinition", "Trigger", "EventTrigger"
 ]
 
 def init_model_relationships():

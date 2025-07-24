@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     from app.services.billing_service import BillingService
     from app.services.permission_service import PermissionService
     from app.services.usage_service import UsageService
+    from app.services.event_definition_service import EventDefinitionService
+    from app.services.event_trigger_service import EventTriggerService
+    from app.services.trigger_service import TriggerService
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,10 @@ class ServiceFactory:
         self._permission_service = None
         self._orchestrator_service = None
         self._usage_service = None
+        self._event_definition_service = None
+        self._event_trigger_service = None
+        self._trigger_service = None
+
 
     @property
     def user(self) -> User:
@@ -263,4 +270,23 @@ class ServiceFactory:
             self._usage_service = UsageService(self)
         return self._usage_service
 
-   
+    def get_event_definition_service(self) -> "EventDefinitionService":
+        if not self._event_definition_service:
+            from app.services.event_definition_service import EventDefinitionService
+            logger.debug("⚙️ Inicializando EventDefinitionService")
+            self._event_definition_service = EventDefinitionService(self)
+        return self._event_definition_service
+
+    def get_event_trigger_service(self) -> "EventTriggerService":
+        if not self._event_trigger_service:
+            from app.services.event_trigger_service import EventTriggerService
+            logger.debug("⚙️ Inicializando EventTriggerService")
+            self._event_trigger_service = EventTriggerService(self)
+        return self._event_trigger_service
+
+    def get_trigger_service(self) -> "TriggerService":
+        if not self._trigger_service:
+            from app.services.trigger_service import TriggerService
+            logger.debug("⚙️ Inicializando TriggerService")
+            self._trigger_service = TriggerService(self)
+        return self._trigger_service

@@ -10,7 +10,8 @@ from app.routers import (
     auth_router, chat_router, functions_router, agent_router, database_router,
     chat_history_router, openapi_router, strategy_router, user_router, proxy_router,
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
-    billing_router, integration_router, permission_router, usage_router
+    billing_router, integration_router, permission_router, usage_router, event_definition_router,
+    event_trigger_router, trigger_router
 )
 from app.routers.chat_ws_router import router as ws_router
 from app.utils.error_handler import register_error_handlers
@@ -39,7 +40,7 @@ logger = logging.getLogger("APIchat")
 # ────────────────────────────────
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
-from app.seed.seed_permissions import seed_permissions
+from app.seed.seed_all import seed_permissions, seed_event_definitions
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
 
     try:
         seed_permissions(factory)
+        seed_event_definitions(factory)
         logger.info("🔐 Default permissions seeded.")
     except OperationalError as e:
         # Si la tabla 'permissions' (o cualquier otra) no existe, saltamos el seed
@@ -122,6 +124,10 @@ app.include_router(billing_router.router); logger.info("💳 Billing router load
 app.include_router(integration_router.router); logger.info("🧩 Integration router loaded.")
 app.include_router(permission_router.router); logger.info("🔐 Permission router loaded.")
 app.include_router(usage_router.router); logger.info("📊 Usage router loaded")
+app.include_router(event_definition_router.router); logger.info("📘 EventDefinition router loaded")
+app.include_router(event_trigger_router.router); logger.info("📡 EventTrigger router loaded")
+app.include_router(trigger_router.router); logger.info("🎯 Trigger router loaded")
+
 app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")
 
 logger.info("🚀 APIchat is up and running.")
