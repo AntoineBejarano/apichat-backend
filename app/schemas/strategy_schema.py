@@ -52,3 +52,14 @@ class StrategyOut(BaseModel):
     model_config = {
         "from_attributes": True
     }
+
+class TriggerSchema(BaseModel):
+    type: TriggerTypeEnum
+    config: Optional[Dict[str, str]] = None
+
+
+class StrategyImportSchema(BaseModel):
+    name: str
+    description: Optional[str] = None
+    trigger: TriggerSchema
+    steps: List[StepSchema]

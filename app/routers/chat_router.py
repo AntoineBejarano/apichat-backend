@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.chat_schema import ChatMessage, ChatCreate, ChatOut
 from app.schemas.chat_history_schema import ChatHistoryOut
+from uuid import UUID
 
 router = APIRouter(
     prefix="/chat",
@@ -63,7 +64,7 @@ def get_chat_history(chat_id: int, factory: ServiceFactory = Depends(get_factory
     description="Envía un mensaje a la IA dentro de un chat específico.",
 )
 def send_message_to_chat(
-    chat_id: int,
+    chat_id: UUID,  # <-- aquí estaba el error
     message: ChatMessage,
     factory: ServiceFactory = Depends(get_factory),
 ):
@@ -77,3 +78,4 @@ def send_message_to_chat(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"❌ Error procesando mensaje: {str(e)}"
         )
+

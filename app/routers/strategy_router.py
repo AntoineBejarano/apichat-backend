@@ -1,8 +1,7 @@
-# app/routers/strategy_router.py
-
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Dict
+from uuid import UUID
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -10,6 +9,7 @@ from app.schemas.strategy_schema import (
     StrategyCreate,
     StrategyOut,
     StrategyUpdate,
+    StrategyImportSchema,
 )
 from pydantic import BaseModel
 
@@ -43,9 +43,7 @@ def create_strategy_route(
     factory: ServiceFactory = Depends(get_factory),
 ):
     try:
-        return factory.get_strategy_service().create_strategy(
-            factory.user.id, user_data
-        )
+        return factory.get_strategy_service().create_strategy(user_data)
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"💥 Error al crear estrategia: {str(e)}"
@@ -69,16 +67,9 @@ def list_strategies(factory: ServiceFactory = Depends(get_factory)):
     description="Devuelve los detalles de una estrategia específica del usuario.",
 )
 def get_strategy_route(
-    strategy_id: int, factory: ServiceFactory = Depends(get_factory)
+    strategy_id: UUID, factory: ServiceFactory = Depends(get_factory)
 ):
-    strategy = factory.get_strategy_service().get_strategy_by_id(
-        factory.user.id, strategy_id
-    )
-    if not strategy:
-        raise HTTPException(
-            status_code=404, detail="❌ Estrategia no encontrada"
-        )
-    return strategy
+    return factory.get_strategy_service().get_strategy_by_id(strategy_id)
 
 
 @router.put(
@@ -88,19 +79,11 @@ def get_strategy_route(
     description="Actualiza los datos de una estrategia específica.",
 )
 def update_strategy_route(
-    strategy_id: int,
+    strategy_id: UUID,
     updates: StrategyUpdate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    updated = factory.get_strategy_service().update_strategy(
-        factory.user.id, strategy_id, updates
-    )
-    if not updated:
-        raise HTTPException(
-            status_code=404,
-            detail="❌ Estrategia no encontrada o sin cambios",
-        )
-    return updated
+    return factory.get_strategy_service().update_strategy(strategy_id, updates)
 
 
 @router.delete(
@@ -110,15 +93,9 @@ def update_strategy_route(
     description="Elimina una estrategia específica del usuario.",
 )
 def delete_strategy_route(
-    strategy_id: int, factory: ServiceFactory = Depends(get_factory)
+    strategy_id: UUID, factory: ServiceFactory = Depends(get_factory)
 ):
-    success = factory.get_strategy_service().delete_strategy(
-        factory.user.id, strategy_id
-    )
-    if not success:
-        raise HTTPException(
-            status_code=404, detail="❌ Estrategia no encontrada"
-        )
+    factory.get_strategy_service().delete_strategy(strategy_id)
 
 
 # ——————————————————————————————
@@ -127,8 +104,7 @@ def delete_strategy_route(
 
 class StrategyExecuteRequest(BaseModel):
     agent_id: int
-    parameters: Dict  # define aquí tu schema concreto si quieres más validación
-
+    parameters: Dict  # puedes usar un schema específico si lo prefieres
 
 class StrategyExecuteResponse(BaseModel):
     success: bool
@@ -141,13 +117,13 @@ class StrategyExecuteResponse(BaseModel):
     summary="🏃 Ejecutar estrategia",
 )
 def execute_strategy_route(
-    strategy_id: int,
+    strategy_id: UUID,
     body: StrategyExecuteRequest,
     factory: ServiceFactory = Depends(get_factory),
 ):
     try:
         outcome = factory.get_strategy_service().execute_strategy(
-            strategy_id,         # ya sin user_id
+            strategy_id,
             body.agent_id,
             body.parameters,
         )
@@ -159,3 +135,33 @@ def execute_strategy_route(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"❌ Error al ejecutar: {e}",
         )
+
+
+# ——————————————————————————————
+# 🆕 Importar y Exportar Estrategias en JSON
+# ——————————————————————————————
+
+@router.post(
+    "/import",
+    response_model=StrategyOut,
+    summary="📥 Importar estrategia desde JSON",
+    description="Importa una estrategia en formato JSON como las de Make o n8n.",
+)
+def import_strategy_route(
+    payload: StrategyImportSchema,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    return factory.get_strategy_service().import_from_json(payload.dict())
+
+
+@router.get(
+    "/{strategy_id}/export",
+    summary="📤 Exportar estrategia como JSON",
+    description="Exporta una estrategia a formato JSON universal.",
+)
+def export_strategy_route(
+    strategy_id: UUID,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    strategy = factory.get_strategy_service().get_strategy_by_id(strategy_id)
+    return factory.get_strategy_service().export_to_json(strategy)

@@ -166,6 +166,48 @@ ServiceFactory
 - `BaseService` accede a `factory.db`, `factory.user`, etc.
 
 ---
+## 📥 Importar y Exportar Estrategias (Formato JSON)
+
+Nuestra plataforma permite importar y exportar estrategias en un formato JSON universal, similar a herramientas como **Make** o **n8n**.
+
+Esto permite:
+- Compartir estrategias entre usuarios.
+- Clonar automatizaciones.
+- Versionar y reutilizar workflows.
+
+---
+
+### 🧠 Estructura del JSON
+
+```json
+{
+  "name": "Notificar nuevo lead por email",
+  "description": "Esta estrategia se activa cuando llega un nuevo lead y envía un correo al club.",
+  "trigger": {
+    "type": "event",
+    "config": {
+      "event": "new_lead"
+    }
+  },
+  "steps": [
+    {
+      "function_id": "send_email",
+      "inputs": {
+        "to": "{{club.email}}",
+        "subject": "Nuevo lead recibido",
+        "body": "Hola {{club.name}}, tienes un nuevo lead: {{lead.name}} ({{lead.phone}})"
+      }
+    },
+    {
+      "function_id": "log_event",
+      "inputs": {
+        "message": "Se ha enviado un email al club {{club.name}} por nuevo lead"
+      }
+    }
+  ]
+}
+
+---
 
 ## 📋 Endpoints Principales
 
