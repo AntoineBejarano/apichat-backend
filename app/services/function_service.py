@@ -28,14 +28,15 @@ class FunctionService:
             raise HTTPException(status_code=404, detail="App no encontrada o no pertenece al usuario.")
         return app
 
-    def create(self, app_id: int, data: FunctionCreate) -> Function:
-        self._get_app_or_404(app_id)
-        logger.info(f"[FunctionService] ➕ Creando función '{data.name}' para app_id={app_id}")
-        function = Function(**data.model_dump(), app_id=app_id)
+    def create(self, data: FunctionCreate) -> Function:
+        self._get_app_or_404(str(data.app_id))  # Asegúrate de que sea UUID o str
+        logger.info(f"[FunctionService] ➕ Creando función '{data.name}' para app_id={data.app_id}")
+        function = Function(**data.model_dump())
         self.db.add(function)
         self.db.commit()
         self.db.refresh(function)
         return function
+
 
     def get_by_app(self, app_id: int) -> List[Function]:
         self._get_app_or_404(app_id)

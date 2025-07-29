@@ -7,6 +7,7 @@ from typing import List
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.app_schema import AppCreate, AppOut, AppUpdate
+from uuid import UUID
 
 router = APIRouter(
     prefix="/apps",
@@ -51,7 +52,7 @@ def list_apps(factory: ServiceFactory = Depends(get_factory)):
     response_model=AppOut,
     response_description="Detalles de la App",
 )
-def get_app(app_id: int, factory: ServiceFactory = Depends(get_factory)):
+def get_app(app_id: UUID, factory: ServiceFactory = Depends(get_factory)):
     app_service = factory.get_apps_service()
     return app_service.get_by_id(app_id)
 
@@ -63,7 +64,7 @@ def get_app(app_id: int, factory: ServiceFactory = Depends(get_factory)):
     response_description="App actualizada correctamente",
 )
 def update_app(
-    app_id: int,
+    app_id: UUID,
     app_update: AppUpdate,
     factory: ServiceFactory = Depends(get_factory),
 ):
@@ -77,6 +78,6 @@ def update_app(
     status_code=status.HTTP_204_NO_CONTENT,
     response_description="App eliminada exitosamente",
 )
-def delete_app(app_id: int, factory: ServiceFactory = Depends(get_factory)):
+def delete_app(app_id: UUID, factory: ServiceFactory = Depends(get_factory)):
     app_service = factory.get_apps_service()
     app_service.delete(app_id)

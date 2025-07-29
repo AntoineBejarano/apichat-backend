@@ -23,3 +23,4 @@ class DatabaseConnection(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="databases")
+    agent_links = relationship("AgentDatabaseLink", back_populates="database", cascade="all, delete-orphan")

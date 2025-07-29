@@ -11,7 +11,7 @@ from app.routers import (
     chat_history_router, openapi_router, strategy_router, user_router, proxy_router,
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
     billing_router, integration_router, permission_router, usage_router, event_definition_router,
-    event_trigger_router, trigger_router
+    event_trigger_router, trigger_router, app_router
 )
 from app.routers.chat_ws_router import router as ws_router
 from app.utils.error_handler import register_error_handlers
@@ -20,6 +20,8 @@ import logging
 from art import tprint
 from contextlib import asynccontextmanager
 from sqlalchemy.exc import OperationalError
+from starlette.middleware.sessions import SessionMiddleware
+from app.core.config import settings
 
 # ────────────────────────────────
 # ASCII logo
@@ -68,6 +70,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SESSION_SECRET_KEY
+)
+
+
 # 👇 Fuerza OpenAPI 3.0.2 para compatibilidad con Schemathesis
 from fastapi.openapi.utils import get_openapi
 
@@ -107,6 +115,7 @@ app.add_middleware(
 # ────────────────────────────────
 app.include_router(meta_router.router); logger.info("📡 Meta router loaded.")
 app.include_router(auth_router.router); logger.info("🔐 Auth router loaded.")
+app.include_router(app_router.router); logger.info("📦 App router loaded.")
 app.include_router(agent_router.router); logger.info("🛣️ Agent router loaded.")
 app.include_router(chat_history_router.router); logger.info("📜 Chat history router loaded.")
 app.include_router(chat_router.router); logger.info("💬 Chat router loaded.")

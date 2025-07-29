@@ -3,12 +3,11 @@
 import logging
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from app.models.user_model import User
 from app.schemas.user_schema import UserCreate, UserUpdate
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class UserService:
-    def __init__(self, factory: ServiceFactory):
+    def __init__(self, factory: "ServiceFactory"):
         self.factory = factory
         self.db = factory.db
 
@@ -39,7 +38,16 @@ class UserService:
             logger.info(f"⚠️ Usuario ya existe con email: {user_data.email}")
             return existing_user
 
-        user = User(**user_data.model_dump())
+        # ✅ Crear solo con campos válidos del modelo SQLAlchemy
+        user = User(
+            email=user_data.email,
+            name=user_data.name,
+        )
+
+        # ✅ Si hay contraseña, usar set_password
+        if user_data.password:
+            user.set_password(user_data.password)
+
         try:
             self.db.add(user)
             self.db.commit()
@@ -59,8 +67,12 @@ class UserService:
             raise HTTPException(status_code=404, detail="User not found")
 
         for field, value in updates.model_dump(exclude_unset=True).items():
-            setattr(user, field, value)
-            logger.debug(f"🔄 Campo actualizado: {field} = {value}")
+            if field == "password":
+                user.set_password(value)
+                logger.debug("🔒 Contraseña actualizada")
+            else:
+                setattr(user, field, value)
+                logger.debug(f"🔄 Campo actualizado: {field} = {value}")
 
         self.db.commit()
         self.db.refresh(user)

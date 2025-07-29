@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+from uuid import UUID
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -30,11 +31,13 @@ def get_factory(request: Request, db: Session = Depends(get_db)) -> ServiceFacto
     response_description="Función creada correctamente"
 )
 def create_function(
-    app_id: int,
+    app_id: UUID,
     function_data: FunctionCreate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    return factory.get_function_service().create(app_id, function_data)
+    # Inyectamos el app_id dentro de function_data antes de llamar al servicio
+    function_data.app_id = app_id
+    return factory.get_function_service().create(function_data)
 
 
 @router.get(
@@ -44,7 +47,7 @@ def create_function(
     response_description="Funciones definidas en la app"
 )
 def list_functions(
-    app_id: int,
+    app_id: UUID,
     factory: ServiceFactory = Depends(get_factory),
 ):
     return factory.get_function_service().get_by_app(app_id)
@@ -57,8 +60,8 @@ def list_functions(
     response_description="Detalles de la función"
 )
 def get_function(
-    app_id: int,
-    function_id: int,
+    app_id: UUID,
+    function_id: UUID,
     factory: ServiceFactory = Depends(get_factory),
 ):
     return factory.get_function_service().get_by_id(app_id, function_id)
@@ -71,8 +74,8 @@ def get_function(
     response_description="Función actualizada correctamente"
 )
 def update_function(
-    app_id: int,
-    function_id: int,
+    app_id: UUID,
+    function_id: UUID,
     updates: FunctionUpdate,
     factory: ServiceFactory = Depends(get_factory),
 ):
@@ -86,8 +89,8 @@ def update_function(
     response_description="Función eliminada correctamente"
 )
 def delete_function(
-    app_id: int,
-    function_id: int,
+    app_id: UUID,
+    function_id: UUID,
     factory: ServiceFactory = Depends(get_factory),
 ):
     success = factory.get_function_service().delete(app_id, function_id)

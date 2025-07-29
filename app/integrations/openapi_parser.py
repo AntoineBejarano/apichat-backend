@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 def parse_openapi_to_functions(openapi: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Transforma un OpenAPI dict en una lista de funciones compatibles con OpenAI function calling.
+    Transforma un OpenAPI dict en una lista de funciones listas para guardar en la DB como FunctionCreate.
     """
 
     if not isinstance(openapi, dict):
@@ -14,6 +14,7 @@ def parse_openapi_to_functions(openapi: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     functions = []
     seen_names = set()
+    base_url = openapi.get("servers", [{}])[0].get("url", "").rstrip("/")
 
     paths = openapi.get("paths", {})
 
@@ -62,6 +63,7 @@ def parse_openapi_to_functions(openapi: Dict[str, Any]) -> List[Dict[str, Any]]:
                 if "required" in json_schema:
                     required.extend(json_schema["required"])
 
+            # --- Crear función compatible con FunctionCreate ---
             func_def = {
                 "name": func_name,
                 "description": details.get("summary", f"Call {method.upper()} {path}"),
@@ -70,11 +72,12 @@ def parse_openapi_to_functions(openapi: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "properties": properties,
                     "required": list(set(required)),
                 },
-                # Para posibles ejecuciones futuras:
-                "metadata": {
-                    "path": path,
-                    "method": method.upper()
-                }
+                "execution_type": "http",
+                "method": method.upper(),
+                "url": f"{base_url}{path}",
+                "headers": {},
+                "body": {},
+                "code": None
             }
 
             functions.append(func_def)

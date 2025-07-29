@@ -1,6 +1,6 @@
 # app/routers/openapi_router.py
 
-from fastapi import APIRouter, UploadFile, File, Depends, Request, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Depends, Request, HTTPException, status, Query
 import json
 from sqlalchemy.orm import Session
 
@@ -29,15 +29,14 @@ Sube un archivo `.json` con especificaciones OpenAPI.
 
 El sistema lo parseará y generará funciones disponibles automáticamente.
 
-**Requisitos:**
-- El archivo debe estar en formato JSON válido.
-- El contenido debe seguir el estándar OpenAPI (v3).
+**Opcional:** Puedes pasar `app_id` como query param para añadir funciones a una App existente.
 
 **Respuesta:** Lista de funciones creadas.
 """
 )
 async def upload_openapi(
     file: UploadFile = File(..., description="Archivo JSON con el esquema OpenAPI"),
+    app_id: str = Query(default=None, description="UUID de la App existente (opcional)"),
     factory: ServiceFactory = Depends(get_factory)
 ):
     if not file.filename.endswith(".json"):
@@ -57,7 +56,7 @@ async def upload_openapi(
 
     try:
         processor = factory.get_openapi_processor()
-        result = processor.process(openapi_dict)
+        result = processor.process(openapi_dict, app_id=app_id)
         return {
             "message": f"✅ {len(result)} funciones creadas correctamente.",
             "functions": [f.name for f in result]

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     SESSION_COOKIE_SECURE: bool = os.getenv("SESSION_COOKIE_SECURE", "True") == "True"
     SESSION_COOKIE_SAMESITE: str = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
     SESSION_COOKIE_MAX_AGE: int = int(os.getenv("SESSION_COOKIE_MAX_AGE", 60 * 60 * 24 * 30))  # 30 días
+    SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY")
 
     # CORS
     ALLOWED_ORIGINS: list[str] = ["*"]  # Cambia esto en producción

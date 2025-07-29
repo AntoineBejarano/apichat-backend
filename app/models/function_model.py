@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, JSON, DateTime, Boolean, Text
+from sqlalchemy import Column, String, ForeignKey, JSON, DateTime, Boolean, Text, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -12,7 +12,7 @@ class Function(Base):
 
     id             = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
     app_id         = Column(UUID(as_uuid=True), ForeignKey("apps.id"), nullable=False)
-    integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True)
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("openapi_integrations.id"), nullable=True)
 
     name           = Column(String, nullable=False)
     description    = Column(Text, nullable=True)
@@ -25,6 +25,8 @@ class Function(Base):
     headers        = Column(JSON, nullable=True)
     body           = Column(JSON, nullable=True)
     active         = Column(Boolean, default=True)
+    timeout = Column(Integer, default=30)
+    is_enabled = Column(Boolean, default=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

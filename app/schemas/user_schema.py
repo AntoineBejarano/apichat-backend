@@ -16,7 +16,7 @@ class UserBase(BaseModel):
     model_config = {"from_attributes": False}
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None
 
 class UserOut(UserBase):
     id: UUID

@@ -155,6 +155,7 @@ class OrchestratorService:
                         steps.append(f"{tag} ✅ SQL executed")
 
                     elif action["type"] == "api_function":
+                        usage_service.check_plan_limit()
                         params = self._render_params(action["params"], ctx)
                         func_id = action["function_id"]
                         result, tokens_used, call_id = self.factory.get_executor_service().execute_and_log(

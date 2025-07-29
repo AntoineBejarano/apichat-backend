@@ -26,6 +26,8 @@ class App(Base):
     user = relationship("User", back_populates="apps")
     functions = relationship("Function", back_populates="app", cascade="all, delete-orphan")
     chats = relationship("Chat", back_populates="app", cascade="all, delete-orphan")
+    agent_links = relationship("AgentAppLink", back_populates="app", cascade="all, delete-orphan")
+
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -8,6 +8,7 @@ from app.models.token_usage_model import TokenUsage
 from app.models.function_call_log_model import FunctionCallLog
 from app.models.chat_history_model import ChatHistory
 from app.models.function_model import Function
+from app.models.subscription_model import Subscription
 from app.schemas.usage_schema import UsageOut, FunctionUsage
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,12 @@ class UsageService:
     def get_usage(self) -> UsageOut:
         logger.info(f"📊 Obteniendo uso total de tokens para usuario {self.user.id}")
 
-        # Tokens usados en mensajes normales
         message_tokens = self.db.query(
             func.coalesce(func.sum(ChatHistory.token_count), 0)
         ).filter(
             ChatHistory.chat.has(user_id=self.user.id)
         ).scalar()
 
-        # Llamadas a funciones, usando join con Function
         function_data = self.db.query(
             Function.name.label("function_name"),
             func.count(FunctionCallLog.id).label("count"),
@@ -80,24 +79,40 @@ class UsageService:
         ).scalar()
         return usage or 0
 
+    def get_monthly_function_executions(self) -> int:
+        start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return self.db.query(FunctionCallLog).filter(
+            FunctionCallLog.user_id == self.user.id,
+            FunctionCallLog.timestamp >= start_of_month
+        ).count()
+
     def check_plan_limit(self):
-        if not self.user.plan:
-            logger.warning(f"🚫 User {self.user.id} has no assigned plan.")
-            raise HTTPException(status_code=403, detail="You don't have an active plan.")
+        # Validar plan desde subscription activa
+        subscription = self.db.query(Subscription).filter(
+            Subscription.user_id == self.user.id,
+            Subscription.is_active == True
+        ).first()
 
-        token_limit = getattr(self.user.plan, "token_limit", None)
-        if token_limit is None:
-            logger.info(f"✅ User {self.user.id} has no token limit.")
-            return
+        if not subscription or not subscription.plan:
+            logger.warning(f"🚫 Usuario {self.user.id} sin suscripción activa.")
+            raise HTTPException(status_code=403, detail="No tienes un plan activo.")
 
-        total_used = self.db.query(
-            func.coalesce(func.sum(TokenUsage.total_tokens), 0)
-        ).filter(
-            TokenUsage.user_id == self.user.id
-        ).scalar() or 0
+        plan = subscription.plan
 
-        if total_used >= token_limit:
-            logger.warning(f"⛔ User {self.user.id} reached the plan limit of {token_limit} tokens.")
-            raise HTTPException(status_code=403, detail="You have reached your token limit.")
-        else:
-            logger.info(f"🟢 User {self.user.id} has used {total_used}/{token_limit} tokens.")
+        # Validar tokens
+        token_limit = getattr(plan, "token_limit", None)
+        tokens_used = self.get_monthly_token_usage()
+
+        if token_limit is not None and tokens_used >= token_limit:
+            logger.warning(f"⛔ Token limit reached: {tokens_used}/{token_limit} para user {self.user.id}")
+            raise HTTPException(status_code=403, detail="Has alcanzado tu límite de tokens mensuales.")
+
+        # Validar ejecuciones de funciones
+        max_exec = getattr(plan, "max_executions", None)
+        if max_exec is not None:
+            executions = self.get_monthly_function_executions()
+            if executions >= max_exec:
+                logger.warning(f"⛔ Execution limit reached: {executions}/{max_exec} para user {self.user.id}")
+                raise HTTPException(status_code=403, detail="Has alcanzado tu límite de ejecuciones mensuales.")
+
+        logger.info(f"✅ Plan OK para usuario {self.user.id} - tokens: {tokens_used}/{token_limit}, execs: {executions if max_exec else '-'}")
