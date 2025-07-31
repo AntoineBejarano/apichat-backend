@@ -72,7 +72,8 @@ app = FastAPI(
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.SESSION_SECRET_KEY
+    secret_key=settings.SESSION_SECRET_KEY,
+    session_cookie=settings.SESSION_COOKIE_NAME  # esto usará "session_token"
 )
 
 

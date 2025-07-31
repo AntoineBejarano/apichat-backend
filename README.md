@@ -36,7 +36,7 @@ app/
 ### Flujo de trabajo:
 
 1. **✅ Verificación de Límite de Tokens**  
-   Se verifica si el usuario ha alcanzado el límite mensual según su plan (`UsageService.check_plan_limit()`). Si es así, el mensaje se detiene.
+   Se verifica si el usuario ha alcanzado el límite mensual según su plan (`UsageService.check_limit()`). Si es así, el mensaje se detiene.
 
 2. **💬 Registro del Mensaje**  
    El mensaje se guarda con rol `user` en `ChatHistoryService`.
@@ -91,7 +91,7 @@ class MyService(BaseService):
 **Servicio:** `UsageService`
 
 - Guarda el uso por usuario (tokens, mensajes).
-- Llama a `check_plan_limit("tokens")`, `register_token_use`, etc.
+- Llama a `check_limit("tokens")`, `register_token_use`, etc.
 
 ---
 

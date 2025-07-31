@@ -1,6 +1,6 @@
 import logging
-from typing import Optional, TYPE_CHECKING
-from fastapi import Request, HTTPException, status
+from typing import Optional, TYPE_CHECKING, Union
+from fastapi import Request, HTTPException, status, WebSocket
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
@@ -38,14 +38,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 class ServiceFactory:
-    def __init__(self, db: Session, request: Optional[Request] = None):
+    def __init__(self, db: Session, request: Union[Request, WebSocket, None] = None):
         self.db = db
         self.request = request
         logger.info("🧪 Inicializando ServiceFactory...")
 
         self._user: Optional[User] = None
 
-        # Lazy-loaded services
+        # Lazy-loaded services (los tuyos sin tocar)
         self._agent_service = None
         self._function_service = None
         self._integration_service = None
@@ -73,7 +73,6 @@ class ServiceFactory:
         self._event_trigger_service = None
         self._trigger_service = None
 
-
     @property
     def user(self) -> User:
         if self._user is None:
@@ -85,7 +84,13 @@ class ServiceFactory:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Request not available")
 
         logger.debug("🔍 Cargando usuario desde session_token...")
-        token = self.request.cookies.get("session_token") or self.request.headers.get("Authorization")
+
+        # Detecta si es WebSocket o HTTP Request
+        token = None
+        if hasattr(self.request, "cookies"):
+            token = self.request.cookies.get("session_token")
+        if not token and hasattr(self.request, "headers"):
+            token = self.request.headers.get("Authorization")
 
         if not token:
             logger.warning("❌ Token de sesión no proporcionado")

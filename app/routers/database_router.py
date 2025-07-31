@@ -1,8 +1,7 @@
-# app/routers/database_router.py
-
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+from uuid import UUID
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -17,7 +16,7 @@ router = APIRouter(
     responses={
         401: {"description": "No autorizado"},
         404: {"description": "Base de datos no encontrada"},
-        500: {"description": "Error interno del servidor"},
+        500: {"description": "Error UUIDerno del servidor"},
     },
 )
 
@@ -65,7 +64,7 @@ def list_connections(factory: ServiceFactory = Depends(get_factory)):
     response_description="Conexión eliminada correctamente"
 )
 def delete_connection(
-    db_id: int,
+    db_id: UUID,
     factory: ServiceFactory = Depends(get_factory),
 ):
     """
@@ -77,20 +76,20 @@ def delete_connection(
         raise HTTPException(status_code=404, detail="Base de datos no encontrada")
 
 
-@router.post(
-    "/validate",
-    summary="Validar conexión",
-    response_description="Validez de la conexión comprobada"
+@router.get(
+    "/test/{db_id}",
+    summary="Testear conexión por ID",
+    response_description="Conexión exitosa"
 )
-def validate_connection(
-    data: DatabaseConnectionCreate,
+def test_connection(
+    db_id: UUID,
     factory: ServiceFactory = Depends(get_factory),
 ):
     """
-    🧪 Valida si los datos de conexión proporcionados son correctos.
+    🧪 Testea si una conexión ya guardada (por ID) es válida y operativa.
     """
     db_service = factory.get_database_service()
-    success = db_service.validate_connection(data)
+    success = db_service.test_connection_by_id(db_id)
     if not success:
-        raise HTTPException(status_code=400, detail="Conexión inválida")
-    return {"message": "Conexión válida ✅"}
+        raise HTTPException(status_code=400, detail="Conexión inválida o inaccesible")
+    return {"message": "Conexión exitosa ✅"}

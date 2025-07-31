@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 
 class ChatHistoryBase(BaseModel):
     role: str
@@ -15,11 +16,11 @@ class ChatHistoryBase(BaseModel):
     }
 
 class ChatHistoryCreate(ChatHistoryBase):
-    chat_id: int
+    chat_id: UUID  # Cambiado a UUID
 
 class ChatHistoryOut(ChatHistoryBase):
-    id: int
-    chat_id: int
+    id: UUID
+    chat_id: UUID  # Cambiado a UUID
     timestamp: datetime
 
     model_config = {

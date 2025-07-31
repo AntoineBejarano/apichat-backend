@@ -1,13 +1,12 @@
 import logging
 from typing import List, Dict, Optional, Any, TYPE_CHECKING
-
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-
 from app.models.app_model import App
 from app.models.database_model import DatabaseConnection
 from app.schemas.chat_schema import ChatMessage
-from app.schemas.chat_history_schema import ChatHistoryCreate
+from app.schemas.chat_history_schema import ChatHistoryCreate, ChatHistoryOut
+from uuid import UUID
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -15,37 +14,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 class OrchestratorService:
-    """
-    Central orchestrator that processes user input and coordinates execution
-    across databases, functions, and LLMs to generate assistant responses.
-    """
-
     def __init__(self, factory: "ServiceFactory") -> None:
         self.factory = factory
         self.db: Session = factory.db
-        self.user_id: int = factory.user.id
+        self.user_id: UUID = factory.user.id
         self.history_service = factory.get_chat_history_service()
         logger.info("[OrchestratorService] Initialized for user_id=%s", self.user_id)
 
     async def handle_user_message(
-    self,
-        chat_id: int,
-        database_id: Optional[int],
-        app_id: Optional[int],
-        agent_id: Optional[int],
+        self,
+        chat_id: UUID,
+        database_id: Optional[UUID],
+        app_id: Optional[UUID],
+        agent_id: Optional[UUID],
         message: ChatMessage,
     ) -> Dict[str, Any]:
-        """
-        Main entry point to handle a user message and return assistant response with trace steps.
-        Supports both “plan_actions” workflows and simple chat completions.
-        """
         steps: List[str] = []
         ctx: Dict[str, Any] = {}
 
-        # ✅ Check user token usage limit before proceeding
+        # Check user token usage limit
         try:
             usage_service = self.factory.get_usage_service()
-            usage_service.check_plan_limit()
+            usage_service.check_limit()
             steps.append("✅ Token limit check passed")
         except HTTPException as e:
             warning_msg = (
@@ -65,7 +55,7 @@ class OrchestratorService:
             )
             return {"assistant_response": warning_msg, "steps": steps + ["❌ Token limit reached"]}
 
-        # 💬 Step 1: Save user message to chat history
+        # Save user message to chat history
         self.history_service.create_message(
             data=ChatHistoryCreate(
                 chat_id=chat_id,
@@ -80,28 +70,29 @@ class OrchestratorService:
         steps.append("📩 Message received")
 
         try:
-            # 1. Load system prompt
+            # Load system prompt if agent_id given
             system_prompt = ""
             if agent_id:
                 system_prompt = self.factory.get_agent_service().get_prompt(agent_id)
                 steps.append(f"🤖 Agent {agent_id} prompt loaded")
 
-            # 2. Optional database connection
+            # Optional DB connection
             db_conn: Optional[DatabaseConnection] = None
             if database_id:
                 db_conn = self.factory.get_database_service().get_sql_instance(database_id)
                 steps.append(f"🔗 Connected to database {database_id}")
 
-            # 3. Load app and functions
+            # Load app by ID
             app: Optional[App] = self.factory.get_apps_service().get_by_id(app_id)
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
             steps.append(f"📦 App {app_id} loaded → {app.name}")
 
-            functions = self.factory.get_function_service().get_functions_by_app(app)
+            # Get functions by app id (pass app.id, not app object!)
+            functions = self.factory.get_function_service().get_by_app(app.id)
             steps.append(f"🔧 {len(functions)} functions loaded from app")
 
-            # 4. Optional proxy
+            # Optional proxy
             proxy = None
             if app.proxy_id:
                 proxy = self.factory.get_proxy_service().get_by_id(app.proxy_id)
@@ -110,17 +101,26 @@ class OrchestratorService:
                 else:
                     steps.append("⚠️ App has proxy_id but not found or not owned by user")
 
-            # 5. Generate plan
+            # Prepare db_schema attribute (use _schema if exists)
+            db_schema = getattr(db_conn, '_schema', None) if db_conn else None
+
+            # Get chat history ORM objects
+            history = self.history_service.get_history(chat_id)
+            # Convert ORM chat history to dicts using Pydantic schema
+            history_dicts = [ChatHistoryOut.model_validate(msg).model_dump() for msg in history]
+
+            # Generate plan
             plan = await self.factory.get_openai_service().plan_actions(
-                user_id=self.user_id,
+                chat_id=chat_id,
                 system_prompt=system_prompt,
                 user_message=message,
-                db_schema=db_conn.schema if db_conn else None,
+                db_schema=db_schema,
                 available_functions=functions,
+                history=history_dicts  # Pasa el historial serializado
             )
             steps.append("🧠 Plan generated by LLM")
 
-            # 5a. Fallback to basic chat
+            # Fallback to simple chat if no actions
             if not plan.get("actions"):
                 logger.info("[%s] 💬 Simple chat (no functions)", self.user_id)
                 assistant_msg = await self.factory.get_openai_service().chat_completion(
@@ -142,7 +142,7 @@ class OrchestratorService:
                 steps.append("💬 Simple chat completed")
                 return {"assistant_response": assistant_msg.content, "steps": steps}
 
-            # 6. Execute actions in plan
+            # Execute actions in plan
             for idx, action in enumerate(plan.get("actions", []), start=1):
                 tag = f"Step {idx}: {action['type']}"
                 try:
@@ -155,7 +155,7 @@ class OrchestratorService:
                         steps.append(f"{tag} ✅ SQL executed")
 
                     elif action["type"] == "api_function":
-                        usage_service.check_plan_limit()
+                        usage_service.check_limit()
                         params = self._render_params(action["params"], ctx)
                         func_id = action["function_id"]
                         result, tokens_used, call_id = self.factory.get_executor_service().execute_and_log(
@@ -184,7 +184,7 @@ class OrchestratorService:
                     logger.exception("[%s] ❌ Error in %s", self.user_id, tag)
                     return self._error_response(steps, step_exc)
 
-            # 7. Final assistant response
+            # Final assistant response
             final_text = plan.get("assistant_response", "✅ All steps completed successfully.")
             self.history_service.create_message(
                 data=ChatHistoryCreate(

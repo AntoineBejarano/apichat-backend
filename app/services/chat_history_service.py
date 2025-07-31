@@ -1,6 +1,7 @@
 import logging
-from typing import List, Optional
+from typing import List
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -35,8 +36,9 @@ class ChatHistoryService:
         self.db.refresh(message)
         return message
 
-    def get_history(self, chat_id: int, limit: int = 50) -> List[ChatHistory]:
-        logger.info(f"[ChatHistoryService] Obteniendo historial para chat_id={chat_id}, user_id={self.user_id}")
+    def get_history(self, chat_id: UUID, limit: int = 50) -> List[ChatHistory]:
+        logger.info(f"[ChatHistoryService] Obteniendo historial para chat_id={chat_id}, user_id={self.user_id} con límite={limit}")
+        limit = min(limit, 1000)
         return (
             self.db.query(ChatHistory)
             .filter(
@@ -48,7 +50,8 @@ class ChatHistoryService:
             .all()
         )
 
-    def delete_all_for_chat(self, chat_id: int) -> int:
+
+    def delete_all_for_chat(self, chat_id: UUID) -> int:
         logger.warning(f"[ChatHistoryService] Eliminando historial de chat_id={chat_id} para user_id={self.user_id}")
         deleted = (
             self.db.query(ChatHistory)
@@ -82,7 +85,8 @@ class ChatHistoryService:
         return self.create_message(msg)
     
     def get_all(self, limit: int = 1000) -> List[ChatHistory]:
-        logger.info(f"[ChatHistoryService] Obteniendo TODO el historial de user_id={self.user_id}")
+        logger.info(f"[ChatHistoryService] Obteniendo TODO el historial de user_id={self.user_id} con límite={limit}")
+        limit = min(limit, 1000)
         return (
             self.db.query(ChatHistory)
             .filter(ChatHistory.user_id == self.user_id)
@@ -90,4 +94,3 @@ class ChatHistoryService:
             .limit(limit)
             .all()
         )
-

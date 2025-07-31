@@ -86,7 +86,7 @@ class UsageService:
             FunctionCallLog.timestamp >= start_of_month
         ).count()
 
-    def check_plan_limit(self):
+    def check_limit(self):
         # Validar plan desde subscription activa
         subscription = self.db.query(Subscription).filter(
             Subscription.user_id == self.user.id,

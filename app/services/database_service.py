@@ -71,7 +71,7 @@ class DatabaseService(BaseService):
         logger.warning("[DatabaseService] 🗑️ Eliminando DB id=%s para user_id=%s", db_id, self.user.id)
         conn = self.get_record(db_id)
         if not conn:
-            raise ValueError("Database not found")
+            return False
 
         self.db.delete(conn)
         self.db.commit()
@@ -108,20 +108,25 @@ class DatabaseService(BaseService):
         return db_instance
 
     # ---------------------------------------------------------
-    # VALIDACIÓN DE CONEXIONES
+    # VALIDACIÓN DE CONEXIONES EXISTENTES
     # ---------------------------------------------------------
 
-    def validate_connection(self, data: DatabaseConnectionCreate) -> bool:
+    def test_connection_by_id(self, db_id: int) -> bool:
         """
-        Valida que la configuración de conexión sea válida antes de guardarla.
+        Valida si una conexión existente (guardada en la DB) es válida.
         """
         try:
-            record = DatabaseConnection(user_id=self.user.id, **data.model_dump())
+            record = self.get_record(db_id)
+            if not record:
+                logger.warning("[DatabaseService] ⚠️ No existe conexión con id=%s", db_id)
+                return False
+
             engine = self.build_sqlalchemy_engine(record)
             with engine.connect() as conn:
                 conn.execute(sqlalchemy.text("SELECT 1"))
-            logger.info("[DatabaseService] ✅ Conexión válida para URI: %s", record.url)
+
+            logger.info("[DatabaseService] ✅ Conexión válida para DB id=%s", db_id)
             return True
         except Exception as e:
-            logger.warning("[DatabaseService] ⚠️ Conexión inválida: %s", e)
+            logger.warning("[DatabaseService] ❌ Error al validar DB id=%s: %s", db_id, e)
             return False

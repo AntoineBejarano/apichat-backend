@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
 from fastapi import HTTPException
+from datetime import timezone
 
 from app.models.chat_model import Chat
 from app.models.token_usage_model import TokenUsage
@@ -23,10 +24,11 @@ class ChatService:
         self.user_id = factory.user.id
         logger.info(f"[ChatService] Initialized for user_id={self.user_id}")
 
-    def create_chat(self, data: ChatCreate) -> Chat:
+    def create_chat(self, data: Optional[ChatCreate] = None) -> Chat:
         """Create a new chat for the current user."""
         logger.info(f"[ChatService] Creating new chat for user_id={self.user_id}")
-        new_chat = Chat(user_id=self.user_id, **data.model_dump())
+        payload = data.model_dump() if data else {}
+        new_chat = Chat(user_id=self.user_id, **payload)
         self.db.add(new_chat)
         self.db.commit()
         self.db.refresh(new_chat)
@@ -63,6 +65,25 @@ class ChatService:
         self.db.commit()
         return True
 
+    def get_or_create_chat(self) -> int:
+        """
+        Return the most recent chat for the user, or create a new one if none exists.
+        Used in WebSocket sessions to maintain continuity.
+        """
+        logger.info(f"[ChatService] Checking for existing chats for user_id={self.user_id}")
+        existing = (
+            self.db.query(Chat)
+            .filter(Chat.user_id == self.user_id)
+            .order_by(Chat.created_at.desc())
+            .first()
+        )
+        if existing:
+            logger.info(f"[ChatService] Reusing existing chat_id={existing.id}")
+            return existing.id
+
+        logger.info(f"[ChatService] No existing chat found, creating new chat")
+        return self.create_chat().id
+
     def check_token_limit(self):
         """Check if the user has exceeded their daily token usage limit based on their plan."""
         user = self.factory.user
@@ -71,7 +92,7 @@ class ChatService:
             logger.warning(f"[ChatService] No plan or token limit configured for user_id={user.id}")
             return  # No limitation applied
 
-        today = datetime.utcnow().date()
+        today = ddatetime.now(timezone.utc).date()
         start_of_day = datetime.combine(today, datetime.min.time())
         end_of_day = datetime.combine(today, datetime.max.time())
 

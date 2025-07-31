@@ -1,8 +1,9 @@
 import json
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, NamedTuple
+import asyncio
 
-import openai
+from openai import OpenAI
 from fastapi import HTTPException
 
 from app.core.config import settings
@@ -13,7 +14,6 @@ from app.utils.text import truncate_words
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
-openai.api_key = settings.OPENAI_API_KEY
 logger = logging.getLogger(__name__)
 
 PROMPT_SQL_HEADER = "### SQL Schema (read‑only)"
@@ -75,6 +75,7 @@ class OpenAIService:
         self.user = factory.user
         self.history_service = factory.get_chat_history_service()
         self.function_service = factory.get_function_service()
+        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.OPENAI_MODEL
         logger.info("[OpenAIService] Instanciado para user=%s", self.user.email)
 
@@ -86,11 +87,14 @@ class OpenAIService:
         db_schema: Optional[str],
         available_functions: List[Function],
         available_mcp_tools: Optional[dict] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Genera y devuelve un plan de acciones estructurado."""
         try:
-            # 1️⃣ Historial limitado (últimos 8 mensajes)
-            history = self.history_service.get_history(chat_id)[-8:]
+            if history is None:
+                history_msgs = self.history_service.get_history(chat_id)[-8:]
+                history = [msg.model_dump() for msg in history_msgs]
+
             messages = [
                 {
                     "role": "system",
@@ -98,22 +102,25 @@ class OpenAIService:
                         system_prompt, db_schema, available_functions, available_mcp_tools
                     ),
                 },
-                *[msg.model_dump() for msg in history],
+                *history,
                 user_message.model_dump(),
             ]
 
             logger.debug("[OpenAIService] Contexto · %s", truncate_words(str(messages), 60))
 
-            # 2️⃣ Llamada ChatCompletion con función return_plan
-            resp = openai.ChatCompletion.create(
-                model=self.model,
-                functions=[self.RETURN_PLAN_FUNC],
-                function_call={"name": "return_plan"},
-                temperature=settings.OPENAI_TEMPERATURE,
-                messages=messages,
+            # Ejecutar llamada síncrona en un executor para no bloquear
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    functions=[self.RETURN_PLAN_FUNC],
+                    function_call={"name": "return_plan"},
+                    temperature=settings.OPENAI_TEMPERATURE,
+                    messages=messages,
+                )
             )
 
-            # ✅ Registrar uso de tokens
             self.factory.get_usage_service().register_token_usage(
                 model=self.model,
                 prompt_tokens=resp.usage.prompt_tokens,
@@ -160,13 +167,16 @@ class OpenAIService:
 
             logger.debug("[OpenAIService] Chat context · %s", truncate_words(str(messages), 60))
 
-            resp = openai.ChatCompletion.create(
-                model=self.model,
-                messages=messages,
-                temperature=settings.OPENAI_TEMPERATURE,
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=settings.OPENAI_TEMPERATURE,
+                )
             )
 
-            # ✅ Registrar uso de tokens
             self.factory.get_usage_service().register_token_usage(
                 model=self.model,
                 prompt_tokens=resp.usage.prompt_tokens,

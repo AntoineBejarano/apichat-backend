@@ -28,7 +28,7 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
         self.user = factory.user
 
     def create_strategy(self, data: StrategyCreate) -> Strategy:
-        self.check_plan_limit("strategies", Strategy)  # 👈 Chequea el límite
+        self.check_limit("strategies", Strategy)  # 👈 Chequea el límite
 
         logger.info(f"🚀 Creando nueva estrategia para el usuario {self.user.id}: {data.name}")
 
