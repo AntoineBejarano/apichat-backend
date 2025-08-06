@@ -130,3 +130,30 @@ class DatabaseService(BaseService):
         except Exception as e:
             logger.warning("[DatabaseService] ❌ Error al validar DB id=%s: %s", db_id, e)
             return False
+
+    def get_sql_instance_from_action(self, action: dict, proxy_config: Optional[dict] = None) -> SQLDatabase:
+        """
+        Recibe una acción (que contiene el ID de la DB) y devuelve una instancia SQLDatabase.
+        Soporta configuración de proxy si es necesario en el futuro.
+        """
+        db_id = action.get("database_id") or action.get("db_id")
+        if not db_id:
+            raise ValueError("Acción db_query sin 'database_id'")
+
+        logger.info("[DatabaseService] 📡 Obteniendo SQL instance para acción con DB id=%s", db_id)
+        
+        # Aquí podrías adaptar si usas proxies en la conexión (por ahora no se usa)
+        return self.get_sql_instance(db_id)
+
+    def execute_sql(self, db_conn: SQLDatabase, sql: str) -> list:
+        """
+        Ejecuta una sentencia SQL directamente usando langchain_community.SQLDatabase.
+        """
+        try:
+            logger.info("[DatabaseService] 💾 Ejecutando SQL: %s", sql)
+            result = db_conn.run(sql)
+            logger.debug("[DatabaseService] ✅ Resultado: %s", result)
+            return result
+        except Exception as e:
+            logger.error("[DatabaseService] ❌ Error al ejecutar SQL: %s", e)
+            raise

@@ -13,7 +13,7 @@ class ChatHistory(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)  # 👈 AÑADIDO
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
 
     role = Column(String, nullable=False)  # "user", "assistant", "function", etc.
     content = Column(Text, nullable=False)
@@ -23,12 +23,14 @@ class ChatHistory(Base):
     is_function_call = Column(Boolean, nullable=False, default=False)
     function_call_id = Column(UUID(as_uuid=True), ForeignKey("function_call_logs.id"), nullable=True)
 
+    # 👇 Nuevo: referencia opcional a estrategia IA ejecutada
+    executed_strategy_id = Column(UUID(as_uuid=True), ForeignKey("executed_strategies.id"), nullable=True)
+
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relaciones
     chat = relationship("Chat", back_populates="history")
-    function_call = relationship(
-        "FunctionCallLog",
-        back_populates="chat_history",
-        uselist=False
-    )
+    function_call = relationship("FunctionCallLog", back_populates="chat_history", uselist=False)
+
+    # Relación a estrategia ejecutada
+    executed_strategy = relationship("ExecutedStrategy", back_populates="chat_histories")

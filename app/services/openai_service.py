@@ -1,15 +1,19 @@
 import json
 import logging
+from uuid import UUID
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, NamedTuple
 import asyncio
 
 from openai import OpenAI
 from fastapi import HTTPException
+from pydantic import ValidationError
+from langchain.output_parsers import PydanticOutputParser
 
 from app.core.config import settings
 from app.schemas.chat_schema import ChatMessage
 from app.models.function_model import Function
 from app.utils.text import truncate_words
+from app.services.orchestrator_service import PlanModel  # Importamos nuestro modelo Pydantic
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -21,13 +25,31 @@ PROMPT_FUNCTIONS_HEADER = "### Functions disponibles"
 PROMPT_MCP_HEADER = "### MCP Tools disponibles"
 PROMPT_SUFFIX = (
     "---\n"
-    "Devuelve SIEMPRE la llamada de función `return_plan` y un JSON con `actions[]` "
-    "y `assistant_response`. No incluyas texto fuera del JSON."
+    "Devuelve SIEMPRE la llamada de función `return_plan` y un JSON que cumpla con este esquema:\n"
+    f"{PlanModel.schema_json(indent=2)}\n"
+    "No incluyas texto fuera del JSON."
 )
+
+
+def json_default(obj):
+    """Conversión segura para objetos no serializables por JSON estándar."""
+    import uuid
+    import datetime
+    from decimal import Decimal
+
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return str(obj)  # fallback genérico
+
 
 class CompletionResult(NamedTuple):
     content: str
     token_count: int
+
 
 class OpenAIService:
     """Servicio que envuelve la API de OpenAI y genera planes de acción o chat libre."""
@@ -38,35 +60,7 @@ class OpenAIService:
             "Devuelve el plan de acciones (`actions`) y el texto final "
             "(`assistant_response`) que el asistente mostrará al usuario."
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "description": "Pasos secuenciales a realizar antes de responder al usuario.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["db_query", "api_function", "mcp_tool"],
-                            },
-                            "sql": {"type": "string"},
-                            "function_id": {"type": "integer"},
-                            "tool_name": {"type": "string"},
-                            "params": {"type": "object"},
-                            "store_as": {"type": "string"},
-                        },
-                        "required": ["type"],
-                    },
-                },
-                "assistant_response": {
-                    "type": "string",
-                    "description": "Respuesta final que verá el usuario.",
-                },
-            },
-            "required": ["actions", "assistant_response"],
-        },
+        "parameters": PlanModel.model_json_schema(),  # Usamos el esquema real de Pydantic
     }
 
     def __init__(self, factory: "ServiceFactory") -> None:
@@ -77,11 +71,12 @@ class OpenAIService:
         self.function_service = factory.get_function_service()
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.OPENAI_MODEL
-        logger.info("[OpenAIService] Instanciado para user=%s", self.user.email)
+        self.parser = PydanticOutputParser(pydantic_object=PlanModel)
+        logger.info("[OpenAIService] 🚀 Instanciado para user=%s", self.user.email)
 
     async def plan_actions(
         self,
-        chat_id: int,
+        chat_id: UUID,
         system_prompt: str,
         user_message: ChatMessage,
         db_schema: Optional[str],
@@ -89,7 +84,7 @@ class OpenAIService:
         available_mcp_tools: Optional[dict] = None,
         history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Genera y devuelve un plan de acciones estructurado."""
+        """Genera y valida un plan de acciones estructurado."""
         try:
             if history is None:
                 history_msgs = self.history_service.get_history(chat_id)[-8:]
@@ -106,19 +101,27 @@ class OpenAIService:
                 user_message.model_dump(),
             ]
 
-            logger.debug("[OpenAIService] Contexto · %s", truncate_words(str(messages), 60))
+            logger.info(
+                "[OpenAIService] 📝 Generando plan de acciones (model=%s, temp=%s, msgs=%d)",
+                self.model,
+                settings.OPENAI_TEMPERATURE,
+                len(messages),
+            )
+            logger.debug("[OpenAIService] Contexto → %s", truncate_words(str(messages), 60))
 
-            # Ejecutar llamada síncrona en un executor para no bloquear
+            payload = {
+                "model": self.model,
+                "functions": [self.RETURN_PLAN_FUNC],
+                "function_call": {"name": "return_plan"},
+                "temperature": settings.OPENAI_TEMPERATURE,
+                "messages": messages,
+            }
+            safe_payload = json.loads(json.dumps(payload, default=json_default))
+
             loop = asyncio.get_running_loop()
             resp = await loop.run_in_executor(
                 None,
-                lambda: self.client.chat.completions.create(
-                    model=self.model,
-                    functions=[self.RETURN_PLAN_FUNC],
-                    function_call={"name": "return_plan"},
-                    temperature=settings.OPENAI_TEMPERATURE,
-                    messages=messages,
-                )
+                lambda: self.client.chat.completions.create(**safe_payload)
             )
 
             self.factory.get_usage_service().register_token_usage(
@@ -130,21 +133,21 @@ class OpenAIService:
             choice = resp.choices[0]
             if choice.message.get("function_call"):
                 args_raw = choice.message["function_call"].get("arguments", "{}")
-                plan = json.loads(args_raw)
-                logger.info(
-                    "[OpenAIService] Plan recibido con %d acciones", len(plan.get("actions", []))
-                )
-                return plan
+                try:
+                    plan_obj = self.parser.parse(args_raw)
+                    logger.info(
+                        "[OpenAIService] 📦 Plan validado con %d acciones",
+                        len(plan_obj.actions),
+                    )
+                    return plan_obj.model_dump()
+                except ValidationError as ve:
+                    logger.error("[OpenAIService] ❌ Error validando plan: %s", ve)
+                    raise HTTPException(status_code=500, detail="Plan devuelto no es válido")
 
-            return {
-                "actions": [],
-                "assistant_response": choice.message.get(
-                    "content", "Lo siento, no pude entender la petición."
-                ),
-            }
+            return {"actions": [], "assistant_response": choice.message.get("content", "")}
 
         except json.JSONDecodeError as decode_err:
-            logger.error("[OpenAIService] JSON inválido: %s", decode_err)
+            logger.error("[OpenAIService] ❌ JSON inválido: %s", decode_err)
             raise HTTPException(status_code=500, detail="LLM devolvió JSON inválido")
         except Exception as exc:
             logger.exception("[OpenAIService] ❌ Error en plan_actions: %s", exc)
@@ -152,7 +155,7 @@ class OpenAIService:
 
     async def chat_completion(
         self,
-        chat_id: int,
+        chat_id: UUID,
         system_prompt: str,
         user_message: ChatMessage,
     ) -> CompletionResult:
@@ -165,16 +168,25 @@ class OpenAIService:
                 user_message.model_dump(),
             ]
 
-            logger.debug("[OpenAIService] Chat context · %s", truncate_words(str(messages), 60))
+            logger.info(
+                "[OpenAIService] 💬 Generando respuesta simple (model=%s, temp=%s, msgs=%d)",
+                self.model,
+                settings.OPENAI_TEMPERATURE,
+                len(messages),
+            )
+            logger.debug("[OpenAIService] Chat context → %s", truncate_words(str(messages), 60))
+
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": settings.OPENAI_TEMPERATURE,
+            }
+            safe_payload = json.loads(json.dumps(payload, default=json_default))
 
             loop = asyncio.get_running_loop()
             resp = await loop.run_in_executor(
                 None,
-                lambda: self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=settings.OPENAI_TEMPERATURE,
-                )
+                lambda: self.client.chat.completions.create(**safe_payload)
             )
 
             self.factory.get_usage_service().register_token_usage(

@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from app.services.event_definition_service import EventDefinitionService
     from app.services.event_trigger_service import EventTriggerService
     from app.services.trigger_service import TriggerService
+    from app.services.executed_strategy_service import ExecutedStrategyService
+
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,7 @@ class ServiceFactory:
         self._event_definition_service = None
         self._event_trigger_service = None
         self._trigger_service = None
+        self._executed_strategy_service = None
 
     @property
     def user(self) -> User:
@@ -295,3 +298,10 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando TriggerService")
             self._trigger_service = TriggerService(self)
         return self._trigger_service
+
+    def get_executed_strategy_service(self) -> "ExecutedStrategyService":
+        if not self._executed_strategy_service:
+            from app.services.executed_strategy_service import ExecutedStrategyService
+            logger.debug("⚙️ Inicializando ExecutedStrategyService")
+            self._executed_strategy_service = ExecutedStrategyService(self.db, self.user.id)
+        return self._executed_strategy_service

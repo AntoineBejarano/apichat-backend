@@ -206,6 +206,7 @@ Esto permite:
     }
   ]
 }
+```
 
 ---
 
@@ -232,7 +233,8 @@ Para validar que tu API cumple con su especificación OpenAPI y generar un infor
 ### ✅ Comando para ejecutar Schemathesis con reporte
 
 ```bash
-C:\Users\antub\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\Scripts\schemathesis.exe run http://127.0.0.1:8000/openapi.json --report report.html
+schemathesis run http://127.0.0.1:8000/openapi.json --report report.html
+```
 
 ---
 
