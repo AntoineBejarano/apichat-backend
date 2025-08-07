@@ -1,12 +1,12 @@
 from sqlalchemy import Column, String, ForeignKey, DateTime, Text, Boolean, Integer
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
 from app.models.base_model import Base
 from app.models.function_call_log_model import FunctionCallLog
-
+from app.models.executed_strategy_model import ExecutedStrategy  # ✅ Import directo
 
 class ChatHistory(Base):
     __tablename__ = "chat_history"
@@ -23,14 +23,16 @@ class ChatHistory(Base):
     is_function_call = Column(Boolean, nullable=False, default=False)
     function_call_id = Column(UUID(as_uuid=True), ForeignKey("function_call_logs.id"), nullable=True)
 
-    # 👇 Nuevo: referencia opcional a estrategia IA ejecutada
     executed_strategy_id = Column(UUID(as_uuid=True), ForeignKey("executed_strategies.id"), nullable=True)
 
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
+    # 🧠 Nuevos campos para modo explorador y contexto
+    explorer = Column(Boolean, nullable=False, default=False)
+    db_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=False, default=[])
+    app_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=False, default=[])
+
     # Relaciones
     chat = relationship("Chat", back_populates="history")
     function_call = relationship("FunctionCallLog", back_populates="chat_history", uselist=False)
-
-    # Relación a estrategia ejecutada
-    executed_strategy = relationship("ExecutedStrategy", back_populates="chat_histories")
+    executed_strategy = relationship(ExecutedStrategy, back_populates="chat_histories")

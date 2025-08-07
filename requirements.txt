@@ -22,3 +22,6 @@ passlib==1.7.4
 itsdangerous>=2.1.2
 langgraph>=0.0.10
 tiktoken
+faiss-cpu
+langchain
+sqlalchemy

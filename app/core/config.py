@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
     OPENAI_API_TYPE: str = os.getenv("OPENAI_API_TYPE", "openai")  # o "azure"
     OPENAI_API_VERSION: str = os.getenv("OPENAI_API_VERSION", "2023-07-01-preview")
-    OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", 0.0))
+    OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", 0.7))
     LANGCHAIN_VERBOSE: bool = os.getenv("LANGCHAIN_VERBOSE", "False") == "True"
 
     # OAuth2 Google

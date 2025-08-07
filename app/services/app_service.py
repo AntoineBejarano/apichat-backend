@@ -4,10 +4,11 @@ from fastapi import HTTPException
 from typing import List, Dict, Any
 
 from app.models.app_model import App
-from app.schemas.app_schema import AppCreate, AppUpdate
-from app.services.base_service import BaseService  # ✅ Herencia correcta
+from app.schemas.app_schema import AppCreate, AppUpdate, AppOut
+from app.services.base_service import BaseService
 
 from typing import TYPE_CHECKING
+from sqlalchemy.orm import joinedload
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -19,9 +20,6 @@ class AppService(BaseService):
         super().__init__(factory)
         logger.info(f"[AppService] ✅ Initialized for user_id={self.user.id}")
 
-    # ----------------------------------------------------------------
-    # CREATE
-    # ----------------------------------------------------------------
     def create(self, app_data: AppCreate) -> App:
         logger.info(f"[AppService] ➕ Creating new App for user_id={self.user.id}")
         self.check_limit(App, "max_apps", "apps")
@@ -39,9 +37,6 @@ class AppService(BaseService):
         logger.info(f"[AppService] ✅ App created with ID={new_app.id}")
         return new_app
 
-    # ----------------------------------------------------------------
-    # READ
-    # ----------------------------------------------------------------
     def get_all(self) -> List[App]:
         logger.info(f"[AppService] 📦 Getting all Apps for user_id={self.user.id}")
         return self.db.query(App).filter(App.user_id == self.user.id).all()
@@ -54,9 +49,6 @@ class AppService(BaseService):
             raise HTTPException(status_code=404, detail="App not found")
         return app
 
-    # ----------------------------------------------------------------
-    # UPDATE
-    # ----------------------------------------------------------------
     def update(self, app_id: int, app_data: AppUpdate) -> App:
         logger.info(f"[AppService] ✏️ Updating App ID={app_id} for user_id={self.user.id}")
         app = self.get_by_id(app_id)
@@ -75,9 +67,6 @@ class AppService(BaseService):
         logger.info(f"[AppService] ✅ App ID={app.id} updated")
         return app
 
-    # ----------------------------------------------------------------
-    # DELETE
-    # ----------------------------------------------------------------
     def delete(self, app_id: int) -> dict:
         logger.info(f"[AppService] 🗑️ Deleting App ID={app_id} for user_id={self.user.id}")
         app = self.get_by_id(app_id)
@@ -86,9 +75,6 @@ class AppService(BaseService):
         logger.info(f"[AppService] ✅ App ID={app_id} deleted")
         return {"detail": "App deleted successfully"}
 
-    # ----------------------------------------------------------------
-    # 🔌 GET FUNCTIONS
-    # ----------------------------------------------------------------
     def get_functions(self, app: App) -> List[Dict[str, Any]]:
         logger.info(f"[AppService] 🧠 Getting functions for app {app.name} (id={app.id})")
 
@@ -112,6 +98,16 @@ class AppService(BaseService):
                 logger.exception(f"[AppService] ❌ MCP fetch failed for app_id={app.id}")
                 raise HTTPException(status_code=502, detail="Failed to fetch MCP functions")
 
-        # Custom App fallback
         logger.debug(f"[AppService] 🔧 Delegating to FunctionService for app_id={app.id}")
         return self.factory.get_function_service().get_by_app(app.id)
+
+    def list_all_for_user(self) -> List[AppOut]:
+        logger.info(f"[AppService] 📥 list_all_for_user() called for user_id={self.user.id}")
+        apps = (
+            self.db.query(App)
+            .filter(App.user_id == self.user.id)
+            .options(joinedload(App.mcp_integration))
+            .order_by(App.created_at.desc())
+            .all()
+        )
+        return [AppOut.model_validate(app) for app in apps]

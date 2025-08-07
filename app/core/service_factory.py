@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from app.services.openapi_service import OpenAPIProcessor
     from app.services.chat_history_service import ChatHistoryService
     from app.services.chat_service import ChatService
-    from app.services.langchain_service import LangChainService
+    from app.services.langchain_service import LangchainService
     from app.services.app_service import AppService
     from app.services.proxy_service import ProxyService
     from app.services.sql_executor_service import SQLExecutorService
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from app.services.event_trigger_service import EventTriggerService
     from app.services.trigger_service import TriggerService
     from app.services.executed_strategy_service import ExecutedStrategyService
+    from app.services.execution_engine_service import ExecutionEngineService
 
 
 
@@ -75,6 +76,7 @@ class ServiceFactory:
         self._event_trigger_service = None
         self._trigger_service = None
         self._executed_strategy_service = None
+        self._execution_engine_service = None
 
     @property
     def user(self) -> User:
@@ -208,11 +210,11 @@ class ServiceFactory:
             self._chat_service = ChatService(self)
         return self._chat_service
 
-    def get_langchain_service(self) -> "LangChainService":
+    def get_langchain_service(self) -> "LangchainService":
         if not self._langchain_service:
-            from app.services.langchain_service import LangChainService
+            from app.services.langchain_service import LangchainService
             logger.debug("⚙️ Inicializando LangChainService")
-            self._langchain_service = LangChainService(self)
+            self._langchain_service = LangchainService(self)
         return self._langchain_service
 
     def get_apps_service(self) -> "AppService":
@@ -305,3 +307,10 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando ExecutedStrategyService")
             self._executed_strategy_service = ExecutedStrategyService(self.db, self.user.id)
         return self._executed_strategy_service
+
+    def get_execution_engine_service(self) -> "ExecutionEngineService":
+        if self._execution_engine_service is None:
+            from app.services.execution_engine_service import ExecutionEngineService
+            logger.debug("⚙️ Inicializando ExecutionEngineService")
+            self._execution_engine_service = ExecutionEngineService(self)
+        return self._execution_engine_service

@@ -1,15 +1,27 @@
-import logging
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
-from fastapi import HTTPException
-from sqlalchemy.orm import Session
-from uuid import UUID
-from pydantic import BaseModel, Field, ValidationError
+# app/services/orchestrator_service.py
+"""
+OrchestratorService
+───────────────────
+1. Guarda el mensaje del usuario.
+2. Lanza Guided / Exploration Graph y obtiene:
+      • una respuesta simple, o
+      • un PlanModel con acciones.
+3. Si hay plan, ejecuta acciones con ExecutionEngineService y
+   renderiza la respuesta final.
+4. Devuelve siempre `assistant_response` al front y registra todo.
+"""
+from __future__ import annotations
 
-from app.models.app_model import App
-from app.models.database_model import DatabaseConnection
+import logging
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from uuid import UUID
+
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
 from app.schemas.chat_schema import ChatMessage
 from app.schemas.chat_history_schema import ChatHistoryCreate, ChatHistoryOut
-from app.schemas.executed_strategy_schema import ExecutedStrategyCreate
+from app.schemas.plan_schema import PlanModel
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -17,187 +29,185 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# --- Modelos internos ---
+# ──────────────────────────────────────────────────────
+#   Modelo auxiliar (por si lo sigues usando en PlanModel)
+# ──────────────────────────────────────────────────────
 class ActionModel(BaseModel):
-    type: str = Field(..., description="db_query, api_function, mcp_tool, etc.")
+    type: str = Field(..., description="db_query, api_function, mcp_tool")
     sql: Optional[str] = None
     question: Optional[str] = None
     function_id: Optional[int] = None
     tool_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
     store_as: Optional[str] = None
-    proxy_id: Optional[int] = None  # ✅ Nuevo para pasar proxy
+    proxy_id: Optional[int] = None
 
 
-class PlanModel(BaseModel):
-    actions: List[ActionModel] = Field(default_factory=list)
-    assistant_response: str = Field(...)
-
-
+# ──────────────────────────────────────────────────────
+#   Servicio
+# ──────────────────────────────────────────────────────
 class OrchestratorService:
-    """
-    Cerebro de APIchat:
-      - Procesa mensajes
-      - Decide si es conversación simple o plan complejo
-      - Descubre apps y bases conectadas
-      - Genera plan con IA
-      - Guarda estrategia ejecutada
-      - Ejecuta el plan con ExecutionEngine (LangGraph/LangChain)
-    """
-
     def __init__(self, factory: "ServiceFactory") -> None:
         self.factory = factory
-        self.db: Session = factory.db
-        self.user_id: UUID = factory.user.id
+        self.db = factory.db
+        self.user_id = factory.user.id
         self.history_service = factory.get_chat_history_service()
-        logger.info("[OrchestratorService] 🚀 Inicializado para user_id=%s", self.user_id)
+        logger.info("[OrchestratorService] Initialized for user_id=%s", self.user_id)
 
+    # ===================================================
+    #  PUBLIC ENTRY-POINT
+    # ===================================================
     async def handle_user_message(
         self,
         chat_id: UUID,
-        database_id: Optional[UUID],
-        app_id: Optional[UUID],
+        db_ids: Optional[List[UUID]],
+        app_ids: Optional[List[UUID]],
+        explorer: bool,
         agent_id: Optional[UUID],
-        message: ChatMessage
+        message: ChatMessage,
     ) -> Dict[str, Any]:
-        steps: List[str] = []
-        executed_strategy_id: Optional[UUID] = None
 
-        # 1️⃣ Comprobar límites de uso
-        try:
-            self.factory.get_usage_service().check_limit()
-            steps.append("✅ Límite de tokens OK")
-        except HTTPException:
-            warning_msg = "⚠️ Límite de tokens alcanzado. Mejora tu plan para continuar."
-            self._save_assistant_message(chat_id, warning_msg, 0)
-            return {"assistant_response": warning_msg, "steps": steps}
+        # 1) Límite de uso
+        self.factory.get_usage_service().check_limit()
 
-        # 2️⃣ Guardar mensaje del usuario
-        self.history_service.create_message(
-            data=ChatHistoryCreate(
-                chat_id=chat_id,
-                user_id=self.user_id,
-                role=message.role,
-                content=message.content,
-                name=message.name,
-                is_function_call=False
-            )
-        )
-        steps.append("📩 Mensaje del usuario guardado")
+        # 2) Guardar mensaje del usuario
+        self._store_user_message(chat_id, message)
 
-        # 3️⃣ Cargar prompt del agente (si hay)
-        system_prompt = ""
-        if agent_id:
-            system_prompt = self.factory.get_agent_service().get_prompt(agent_id)
-            steps.append(f"🤖 Prompt del agente {agent_id} cargado")
+        # 3) Prompt del agente (si aplica)
+        system_prompt = self._load_agent_prompt(agent_id)
 
-        # 4️⃣ Descubrir conexiones disponibles
-        available_apps = self.factory.get_apps_service().list_all_for_user()
-        available_dbs = self.factory.get_database_service().list_all_for_user()
-        steps.append(f"🔍 Descubiertas {len(available_apps)} apps y {len(available_dbs)} bases de datos conectadas")
+        # 4) Historial reciente
+        history_records = self.history_service.get_history(chat_id, limit=20)
+        history = [ChatHistoryOut.model_validate(rec).model_dump() for rec in history_records]
 
-        # 5️⃣ Preparar funciones y schema DB (si hay selección explícita)
-        db_conn = self.factory.get_database_service().get_sql_instance(database_id) if database_id else None
-        db_schema = getattr(db_conn, "_schema", None) if db_conn else None
+        # 5) Ejecutar grafo Guided / Exploration
+        context: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "db_ids": db_ids,
+            "app_ids": app_ids,
+            "explorer": explorer,
+            "agent_id": agent_id,
+            "message": message,
+            "history": history,
+            "system_prompt": system_prompt,
+            "user_id": self.user_id,
+        }
+        graph_runner = self._select_graph_runner(explorer)
+        graph_output = await graph_runner.run(context)
 
-        app = self.factory.get_apps_service().get_by_id(app_id) if app_id else None
-        functions = self.factory.get_function_service().get_by_app(app.id) if app else []
-        proxy_id = app.proxy_id if app and app.proxy_id else None  # ✅ Obtenemos proxy_id de la app
-        steps.append(f"🔧 {len(functions)} funciones disponibles para la app seleccionada")
+        # 6) Procesar salida del grafo
+        assistant_response: str
+        executed_strategy_id: Optional[UUID] = graph_output.get("executed_strategy_id")
+        execution_results: Optional[Dict[str, Any]] = None
 
-        # 6️⃣ Historial de chat
-        history = self.history_service.get_history(chat_id)
-        history_dicts = [ChatHistoryOut.model_validate(m).model_dump() for m in history]
+        # a) Respuesta simple
+        if graph_output.get("assistant_response"):
+            assistant_response = graph_output["assistant_response"]
 
-        # 7️⃣ Generar plan con IA
-        raw_plan = await self.factory.get_openai_service().plan_actions(
-            chat_id=chat_id,
-            system_prompt=system_prompt,
-            user_message=message,
-            db_schema=db_schema,
-            available_functions=functions,
-            available_mcp_tools=None,
-            history=history_dicts
-        )
-        steps.append("🧠 Plan generado por IA")
+        # b) Hay plan con acciones → ejecutamos
+        elif graph_output.get("plan"):
+            plan: PlanModel = graph_output["plan"]
 
-        # 8️⃣ Validar plan
-        try:
-            plan = PlanModel.model_validate(raw_plan)
-            steps.append("✅ Plan validado correctamente")
-        except ValidationError as ve:
-            return self._error_response(steps, ve)
+            # --- preparar contexto para la ejecución
+            # Usa db_ids inferidos por el grafo si existen,
+            # en caso contrario los que venían de la llamada original.
+            exec_db_ids = graph_output.get("db_ids") or db_ids
+            available_dbs = self.factory.get_database_service().get_user_databases()
 
-        # 🔹 Añadir proxy_id automáticamente si tenemos proxy asociado
-        if proxy_id:
-            for action in plan.actions:
-                if not action.proxy_id:
-                    action.proxy_id = proxy_id
-            steps.append(f"🌐 Proxy ID {proxy_id} añadido a todas las acciones")
+            try:
+                engine_out = self.factory.get_execution_engine_service().run(
+                    plan.model_dump(),
+                    chat_id,
+                    ctx={
+                        "db_ids": exec_db_ids,
+                        "available_dbs": available_dbs,
+                    },
+                )
+                assistant_response = engine_out["assistant_response"]
+                execution_results = engine_out["variables"]
+            except Exception as e:
+                logger.exception("[Orchestrator] Execution engine error: %s", e)
+                assistant_response = (
+                    "He generado un plan, pero ocurrió un error al ejecutarlo."
+                )
 
-        # 9️⃣ Si no hay acciones → chat simple
-        if not plan.actions:
-            assistant_msg = await self.factory.get_openai_service().chat_completion(
-                chat_id=chat_id,
-                system_prompt=system_prompt,
-                user_message=message
-            )
-            self._save_assistant_message(chat_id, assistant_msg.content, assistant_msg.token_count)
-            steps.append("💬 Conversación simple completada")
-            return {"assistant_response": assistant_msg.content, "steps": steps}
+        # c) El grafo devolvió error
+        else:
+            err = graph_output.get("error", "unknown")
+            logger.error("[Orchestrator] Graph error: %s", err)
+            raise HTTPException(500, "Error interno al procesar tu solicitud.")
 
-        # 🔟 Guardar estrategia ejecutada usando ExecutedStrategyService
-        executed_strategy = self.factory.get_executed_strategy_service().create(
-            ExecutedStrategyCreate(
-                chat_id=chat_id,
-                plan=plan.model_dump(),
-                graph=self._generate_graph(plan.actions),
-                is_user_defined=False
-            )
-        )
-        executed_strategy_id = executed_strategy.id
-        steps.append(f"📜 Estrategia ejecutada guardada (id={executed_strategy_id})")
-
-        # 1️⃣1️⃣ Ejecutar plan con LangGraph/LangChain
-        engine_results = self.factory.get_execution_engine_service().run(
-            plan.model_dump(),
+        # 7) Guardar respuesta del asistente
+        self._save_assistant_message(
             chat_id,
-            ctx={"available_apps": available_apps, "available_dbs": available_dbs}
+            assistant_response,
+            token_count=None,
+            executed_strategy_id=executed_strategy_id,
         )
-        steps.append("⚙️ Plan ejecutado vía LangGraph + LangChain")
 
-        # 1️⃣2️⃣ Guardar respuesta final
-        self._save_assistant_message(chat_id, plan.assistant_response, None, executed_strategy_id)
-        steps.append("🧾 Respuesta final generada")
-
+        # 8) Devolver al front
         return {
-            "assistant_response": plan.assistant_response,
-            "steps": steps,
-            "execution_results": engine_results
+            **graph_output,
+            "assistant_response": assistant_response,
+            "execution_results": execution_results,
         }
 
-    def _save_assistant_message(self, chat_id, content, token_count, executed_strategy_id=None):
-        self.history_service.create_message(
-            data=ChatHistoryCreate(
-                chat_id=chat_id,
-                user_id=self.user_id,
-                role="assistant",
-                content=content,
-                token_count=token_count,
-                is_function_call=False,
-                executed_strategy_id=executed_strategy_id
+    # ===================================================
+    #  Helpers
+    # ===================================================
+    def _select_graph_runner(self, explorer: bool):
+        from app.services.graphs.exploration_graph import ExplorationGraph
+        from app.services.graphs.guided_graph import GuidedGraph
+        GraphClass = ExplorationGraph if explorer else GuidedGraph
+        logger.info("[OrchestratorService] Using graph: %s", GraphClass.__name__)
+        return GraphClass(self.factory)
+
+    def _store_user_message(self, chat_id: UUID, message: ChatMessage) -> None:
+        try:
+            self.history_service.create_message(
+                data=ChatHistoryCreate(
+                    chat_id=chat_id,
+                    user_id=self.user_id,
+                    role=message.role,
+                    content=message.content,
+                    name=message.name,
+                    is_function_call=False,
+                )
             )
-        )
+            logger.info("[OrchestratorService] User message stored")
+        except Exception as e:
+            logger.exception("[OrchestratorService] Failed to store user message: %s", e)
 
-    def _generate_graph(self, actions: List[ActionModel]) -> Dict[str, Any]:
-        nodes, edges = [], []
-        for idx, action in enumerate(actions):
-            node_id = f"node_{idx+1}"
-            nodes.append({"id": node_id, "type": action.type, "data": action.model_dump()})
-            if idx > 0:
-                edges.append({"from": f"node_{idx}", "to": node_id})
-        return {"nodes": nodes, "edges": edges}
+    def _load_agent_prompt(self, agent_id: Optional[UUID]) -> str:
+        if not agent_id:
+            return ""
+        try:
+            prompt = self.factory.get_agent_service().get_prompt(agent_id)
+            logger.info("[OrchestratorService] Loaded prompt for agent_id=%s", agent_id)
+            return prompt
+        except Exception as e:
+            logger.warning("[OrchestratorService] Agent prompt load failed: %s", e)
+            return ""
 
-    @staticmethod
-    def _error_response(steps: List[str], exc: Exception) -> Dict[str, Any]:
-        return {"error": str(exc), "steps": steps + ["⚠️ Error encontrado"]}
+    def _save_assistant_message(
+        self,
+        chat_id: UUID,
+        content: str,
+        token_count: Optional[int],
+        executed_strategy_id: Optional[UUID] = None,
+    ) -> None:
+        try:
+            self.history_service.create_message(
+                data=ChatHistoryCreate(
+                    chat_id=chat_id,
+                    user_id=self.user_id,
+                    role="assistant",
+                    content=content,
+                    token_count=token_count,
+                    is_function_call=False,
+                    executed_strategy_id=executed_strategy_id,
+                )
+            )
+            logger.info("[OrchestratorService] Assistant message stored")
+        except Exception as e:
+            logger.exception("[OrchestratorService] Failed to store assistant message: %s", e)

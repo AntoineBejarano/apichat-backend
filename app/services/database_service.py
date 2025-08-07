@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Union
 
 import sqlalchemy
 from sqlalchemy.orm import Session
@@ -20,16 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseService(BaseService):
-    """Gestión de conexiones y consultas SQL para cada usuario."""
-
     def __init__(self, factory: "ServiceFactory") -> None:
         super().__init__(factory)
         logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user.id)
 
-    # ---------------------------------------------------------
-    # CRUD CONEXIONES
-    # ---------------------------------------------------------
-
+    # ───────────────── CRUD ─────────────────
     def create_connection(self, data: DatabaseConnectionCreate) -> DatabaseConnection:
         logger.info("[DatabaseService] ➕ Creando conexión DB para user_id=%s", self.user.id)
         connection = DatabaseConnection(user_id=self.user.id, **data.model_dump())
@@ -38,7 +33,7 @@ class DatabaseService(BaseService):
         self.db.refresh(connection)
         return connection
 
-    def update_connection(self, db_id: int, updates: DatabaseConnectionUpdate) -> DatabaseConnection:
+    def update_connection(self, db_id: Union[int, str, "UUID"], updates: DatabaseConnectionUpdate) -> DatabaseConnection:
         logger.info("[DatabaseService] 🔄 Actualizando DB id=%s para user_id=%s", db_id, self.user.id)
         conn = self.get_record(db_id)
         if not conn:
@@ -51,6 +46,16 @@ class DatabaseService(BaseService):
         self.db.refresh(conn)
         return conn
 
+    def delete_connection(self, db_id: Union[int, str, "UUID"]) -> bool:
+        logger.warning("[DatabaseService] 🗑️ Eliminando DB id=%s para user_id=%s", db_id, self.user.id)
+        conn = self.get_record(db_id)
+        if not conn:
+            return False
+        self.db.delete(conn)
+        self.db.commit()
+        return True
+
+    # ─────────────── Queries / utils ───────────────
     def get_user_databases(self) -> List[DatabaseConnection]:
         logger.info("[DatabaseService] 📥 Listando todas las conexiones DB para user_id=%s", self.user.id)
         return (
@@ -59,27 +64,17 @@ class DatabaseService(BaseService):
             .all()
         )
 
-    def get_record(self, db_id: int) -> Optional[DatabaseConnection]:
+    # alias para compatibilidad con código antiguo
+    def list_all_for_user(self) -> List[DatabaseConnection]:
+        return self.get_user_databases()
+
+    def get_record(self, db_id: Union[int, str, "UUID"]) -> Optional[DatabaseConnection]:
         logger.debug("[DatabaseService] 🔎 Buscando DB id=%s para user_id=%s", db_id, self.user.id)
         return (
             self.db.query(DatabaseConnection)
-            .filter_by(id=db_id, user_id=self.user.id)
+            .filter(DatabaseConnection.id == db_id, DatabaseConnection.user_id == self.user.id)
             .first()
         )
-
-    def delete_connection(self, db_id: int) -> bool:
-        logger.warning("[DatabaseService] 🗑️ Eliminando DB id=%s para user_id=%s", db_id, self.user.id)
-        conn = self.get_record(db_id)
-        if not conn:
-            return False
-
-        self.db.delete(conn)
-        self.db.commit()
-        return True
-
-    # ---------------------------------------------------------
-    # INSTANCIAS SQL
-    # ---------------------------------------------------------
 
     def build_sqlalchemy_engine(self, record: DatabaseConnection):
         uri = build_sqlalchemy_uri(record)
@@ -94,12 +89,12 @@ class DatabaseService(BaseService):
             logger.error("[DatabaseService] ❌ Error creando SQLDatabase: %s", exc)
             return None
 
-    def get_sql_database_by_id(self, db_id: int) -> Optional[SQLDatabase]:
+    def get_sql_database_by_id(self, db_id: Union[int, str, "UUID"]) -> Optional[SQLDatabase]:
         logger.info("[DatabaseService] 🔄 Obteniendo SQLDatabase para DB id=%s", db_id)
         record = self.get_record(db_id)
         return self.get_sql_database_from_record(record) if record else None
 
-    def get_sql_instance(self, db_id: int) -> SQLDatabase:
+    def get_sql_instance(self, db_id: Union[int, str, "UUID"]) -> SQLDatabase:
         logger.info("[DatabaseService] 🎯 Obteniendo instancia SQL para DB id=%s", db_id)
         db_instance = self.get_sql_database_by_id(db_id)
         if not db_instance:
@@ -107,14 +102,14 @@ class DatabaseService(BaseService):
             raise ValueError(f"No se pudo conectar a la base de datos {db_id}")
         return db_instance
 
-    # ---------------------------------------------------------
-    # VALIDACIÓN DE CONEXIONES EXISTENTES
-    # ---------------------------------------------------------
+    # Opcional: soporte de proxy (placeholder). Si no usas proxy real, deja que llame al normal.
+    def get_sql_instance_with_proxy(self, db_id: Union[int, str, "UUID"], proxy_config: Optional[dict]) -> SQLDatabase:
+        if proxy_config:
+            logger.info("[DatabaseService] 🌐 Proxy DB recibido (no-op): %s", proxy_config)
+        # Aquí podrías construir el engine usando túneles/SSH/DSN con proxy. Por ahora, directo:
+        return self.get_sql_instance(db_id)
 
-    def test_connection_by_id(self, db_id: int) -> bool:
-        """
-        Valida si una conexión existente (guardada en la DB) es válida.
-        """
+    def test_connection_by_id(self, db_id: Union[int, str, "UUID"]) -> bool:
         try:
             record = self.get_record(db_id)
             if not record:
@@ -131,24 +126,18 @@ class DatabaseService(BaseService):
             logger.warning("[DatabaseService] ❌ Error al validar DB id=%s: %s", db_id, e)
             return False
 
+    # Mantén este helper para llamadas antiguas desde otros servicios
     def get_sql_instance_from_action(self, action: dict, proxy_config: Optional[dict] = None) -> SQLDatabase:
-        """
-        Recibe una acción (que contiene el ID de la DB) y devuelve una instancia SQLDatabase.
-        Soporta configuración de proxy si es necesario en el futuro.
-        """
         db_id = action.get("database_id") or action.get("db_id")
         if not db_id:
             raise ValueError("Acción db_query sin 'database_id'")
 
         logger.info("[DatabaseService] 📡 Obteniendo SQL instance para acción con DB id=%s", db_id)
-        
-        # Aquí podrías adaptar si usas proxies en la conexión (por ahora no se usa)
+        if proxy_config:
+            return self.get_sql_instance_with_proxy(db_id, proxy_config)
         return self.get_sql_instance(db_id)
 
     def execute_sql(self, db_conn: SQLDatabase, sql: str) -> list:
-        """
-        Ejecuta una sentencia SQL directamente usando langchain_community.SQLDatabase.
-        """
         try:
             logger.info("[DatabaseService] 💾 Ejecutando SQL: %s", sql)
             result = db_conn.run(sql)
@@ -157,3 +146,15 @@ class DatabaseService(BaseService):
         except Exception as e:
             logger.error("[DatabaseService] ❌ Error al ejecutar SQL: %s", e)
             raise
+
+    def get_dialect_name(self, db_id: int) -> Optional[str]:
+            """
+            Devuelve el nombre del dialecto (postgresql, mysql, mssql, sqlite, etc.)
+            extraído del URI SQLAlchemy.
+            """
+            record = self.get_record(db_id)
+            if not record:
+                return None
+            uri = build_sqlalchemy_uri(record)  # p.ej. "postgresql+psycopg2://..."
+            scheme = uri.split("://", 1)[0]     # "postgresql+psycopg2"
+            return scheme.split("+", 1)[0].lower()

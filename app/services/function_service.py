@@ -59,3 +59,12 @@ class FunctionService:
         self.db.delete(function)
         self.db.commit()
         return True
+
+    def list_all_for_user(self) -> List[Function]:
+        """
+        Devuelve todas las funciones asociadas a las apps del usuario autenticado.
+        """
+        apps = self.db.query(App.id).filter(App.user_id == self.user_id).subquery()
+        functions = self.db.query(Function).filter(Function.app_id.in_(apps)).all()
+        logger.info(f"[FunctionService] 📦 list_all_for_user() → {len(functions)} funciones encontradas")
+        return functions
