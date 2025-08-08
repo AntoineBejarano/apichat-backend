@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 from typing import Dict, Any, List, Optional
 from uuid import UUID
+from datetime import datetime
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -84,17 +85,31 @@ async def websocket_chat(
                         "steps": steps,
                     })
 
-                # Mensaje final de la IA
-                await websocket.send_json({
-                    "type": "response",
-                    "message": response.get("assistant_response", "🤖 No response generated"),
-                })
+                # Mensaje final de la IA - formateado para mejor legibilidad
+                assistant_response = response.get("assistant_response", "🤖 No response generated")
+                
+                # Verificar si hay errores en la respuesta
+                if "error" in assistant_response.lower() or "error" in response:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": assistant_response,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                else:
+                    # Formatear la respuesta para que sea más legible
+                    await websocket.send_json({
+                        "type": "response",
+                        "message": assistant_response,
+                        "formatted": True,
+                        "timestamp": datetime.now().isoformat()
+                    })
 
             except Exception as e:
                 logger.error(f"❌ Error while handling message - {str(e)}")
                 await websocket.send_json({
                     "type": "error",
                     "message": f"❌ Failed to process message: {str(e)}",
+                    "timestamp": datetime.now().isoformat()
                 })
 
     except WebSocketDisconnect:

@@ -1,0 +1,64 @@
+# =============================================================================
+# APIchat Backend - Development Requirements
+# =============================================================================
+
+# Incluir todas las dependencias de producción
+-r requirements.txt
+
+# =============================================================================
+# Development Tools
+# =============================================================================
+black>=23.0.0                    # Code formatting
+flake8>=6.0.0                    # Linting
+mypy>=1.7.0                      # Type checking
+isort>=5.12.0                    # Import sorting
+pre-commit>=3.5.0                # Git hooks
+
+# =============================================================================
+# Testing & Quality
+# =============================================================================
+pytest-cov>=4.1.0                # Coverage reporting
+pytest-mock>=3.12.0              # Mocking in tests
+pytest-xdist>=3.3.0              # Parallel test execution
+coverage>=7.3.0                  # Code coverage
+bandit>=1.7.0                    # Security linting
+
+# =============================================================================
+# Documentation
+# =============================================================================
+mkdocs>=1.5.0                    # Documentation site
+mkdocs-material>=9.4.0           # Material theme
+mkdocstrings>=0.24.0             # Auto-doc generation
+mkdocstrings-python>=1.7.0       # Python docstrings
+
+# =============================================================================
+# Debugging & Profiling
+# =============================================================================
+ipython>=8.15.0                  # Interactive shell
+ipdb>=0.13.0                     # Debugger
+memory-profiler>=0.61.0          # Memory profiling
+line-profiler>=4.1.0             # Line-by-line profiling
+
+# =============================================================================
+# Database Tools
+# =============================================================================
+alembic>=1.13.0                  # Database migrations
+pgcli>=4.0.0                     # PostgreSQL CLI
+
+# =============================================================================
+# Monitoring & Observability
+# =============================================================================
+prometheus-client>=0.19.0        # Metrics collection
+sentry-sdk>=1.40.0              # Error tracking
+structlog>=23.2.0                # Structured logging
+
+# =============================================================================
+# Performance Testing
+# =============================================================================
+locust>=2.17.0                   # Load testing
+
+# =============================================================================
+# Development Environment
+# =============================================================================
+python-dotenv>=1.0.0             # Environment variables
+watchdog>=3.0.0                  # File watching for auto-reload 

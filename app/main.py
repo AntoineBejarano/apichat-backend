@@ -11,7 +11,8 @@ from app.routers import (
     chat_history_router, openapi_router, strategy_router, user_router, proxy_router,
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
     billing_router, integration_router, permission_router, usage_router, event_definition_router,
-    event_trigger_router, trigger_router, app_router
+    event_trigger_router, trigger_router, app_router, performance_router, cache_router,
+    background_task_router
 )
 from app.routers.chat_ws_router import router as ws_router
 from app.utils.error_handler import register_error_handlers
@@ -127,7 +128,7 @@ app.include_router(strategy_router.router); logger.info("📊 Strategies router 
 app.include_router(user_router.router); logger.info("👤 User router loaded.")
 app.include_router(proxy_router.router); logger.info("🔌 Proxy router loaded.")
 app.include_router(mcp_integration_router.router); logger.info("🔌 MCP Integration router loaded.")
-app.include_router(session_router.router); logger.info("🕒 Session router loaded.")
+app.include_router(session_router.router);
 app.include_router(user_role_router.router); logger.info("👥 User_Role router loaded.")
 app.include_router(role_router.router); logger.info("🧩 Role router loaded.")
 app.include_router(billing_router.router); logger.info("💳 Billing router loaded.")
@@ -137,6 +138,9 @@ app.include_router(usage_router.router); logger.info("📊 Usage router loaded")
 app.include_router(event_definition_router.router); logger.info("📘 EventDefinition router loaded")
 app.include_router(event_trigger_router.router); logger.info("📡 EventTrigger router loaded")
 app.include_router(trigger_router.router); logger.info("🎯 Trigger router loaded")
+app.include_router(performance_router.router); logger.info("📊 Performance router loaded")
+app.include_router(cache_router.router); logger.info("🗄️ Cache router loaded")
+app.include_router(background_task_router.router); logger.info("🚀 Background Task router loaded")
 
 app.include_router(ws_router); logger.info("🔄 WebSocket router loaded.")
 

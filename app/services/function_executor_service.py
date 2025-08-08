@@ -174,35 +174,53 @@ class FunctionExecutor:
     
     
     def execute_and_log(self, function_id: int, params: dict, proxy: dict = None) -> Any:
-        logger.info("[FunctionExecutor] 🚀 Ejecutando función con logging: id=%s", function_id)
-
+        """Ejecutar función y registrar el log"""
         try:
+            # Ejecutar función
             result = self.execute_by_id(function_id, params)
-
-            # 🔢 Contar tokens (entrada + salida estimada)
-            input_tokens = count_tokens(str(params))
-            output_tokens = count_tokens(str(result))
-            total_tokens = input_tokens + output_tokens
-
-            # 🧾 Guardar uso de tokens
-            usage_service = self.factory.get_usage_service()
-            usage_service.register_token_usage(input_tokens, output_tokens, model="function")
-
-            # 🧠 Log de ejecución
+            
+            # Contar tokens
+            tokens_used = count_tokens(str(result))
+            
+            # Registrar log
             call_log = FunctionCallLog(
                 user_id=self.user_id,
                 function_id=function_id,
-                input_data=params,
-                output_data=result,
-                token_count=total_tokens
+                parameters=json.dumps(params),
+                result=json.dumps(result),
+                tokens_used=tokens_used,
+                execution_time=0.0  # TODO: Implementar timing
             )
             self.db.add(call_log)
             self.db.commit()
-
-            logger.info("[FunctionExecutor] ✅ Función ejecutada y registrada: %s tokens", total_tokens)
-            return result
-
+            
+            return result, tokens_used, call_log.id
+            
         except Exception as e:
-            logger.exception("[FunctionExecutor] ❌ Error en ejecución con logging")
-            raise HTTPException(status_code=500, detail=f"Error en ejecución: {str(e)}")
+            logger.exception("[FunctionExecutor] ❌ Error en execute_and_log")
+            raise
+
+    def get_available_functions(self) -> list[dict]:
+        """Obtener funciones disponibles para el usuario"""
+        try:
+            functions = (
+                self.db.query(Function)
+                .filter(Function.user_id == self.user_id, Function.active == True)
+                .all()
+            )
+            
+            return [
+                {
+                    "id": fn.id,
+                    "name": fn.name,
+                    "description": fn.description,
+                    "execution_type": fn.execution_type,
+                    "parameters": fn.parameters,
+                    "active": fn.active
+                }
+                for fn in functions
+            ]
+        except Exception as e:
+            logger.error(f"[FunctionExecutor] ❌ Error obteniendo funciones: {e}")
+            return []
 

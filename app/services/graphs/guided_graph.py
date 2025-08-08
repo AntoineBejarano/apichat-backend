@@ -42,6 +42,15 @@ class GuidedGraph:
 
         async def plan_or_reply(state: GuidedState) -> GuidedState:
             try:
+                # Validar que el mensaje existe
+                if not state.get("message"):
+                    logger.error("[GuidedGraph] ❌ No se proporcionó mensaje")
+                    return {
+                        **state,
+                        "error": "No se proporcionó mensaje",
+                        "assistant_response": "Error: No se proporcionó mensaje."
+                    }
+
                 logger.info("[GuidedGraph] 📥 Generating plan / reply")
 
                 # 1) Inferir dialecto (si no viene ya)
@@ -62,6 +71,7 @@ class GuidedGraph:
                     available_functions=state.get("functions", []),
                     available_mcp_tools=state.get("available_mcp_tools"),
                     history=state.get("history", []),
+                    database_schemas=state.get("database_schemas"),  # Nuevo parámetro
                 )
 
                 # — Plan con acciones

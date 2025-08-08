@@ -1,27 +1,102 @@
-fastapi
-uvicorn[standard]
-openai
-python-dotenv
-pydantic
-httpx
-authlib
-asyncpg
-pydantic[email]
-langchain-community
-psycopg2-binary
-pymysql
-langchain-experimental
-python-multipart
-art
-stripe
-croniter
-schemathesis==3.25.6
-pytest
+# =============================================================================
+# APIchat Backend - Requirements
+# =============================================================================
+
+# =============================================================================
+# Core Framework
+# =============================================================================
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic[email]>=2.5.0
+python-multipart>=0.0.6
+
+# =============================================================================
+# Database & ORM
+# =============================================================================
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.0
+pymysql>=1.1.0
+
+# =============================================================================
+# AI & Language Models
+# =============================================================================
+openai>=1.0.0
+langchain>=0.1.0
+langchain-openai>=0.1.0
+langchain-community>=0.1.0
+langgraph>=0.1.0
+tiktoken>=0.5.0
+
+# System Monitoring
+# =============================================================================
+psutil>=5.9.0
+sqlparse>=0.4.0
+
+# =============================================================================
+# Authentication & Security
+# =============================================================================
+authlib>=1.2.0
 bcrypt==4.0.1
 passlib==1.7.4
 itsdangerous>=2.1.2
-langgraph>=0.0.10
-tiktoken
-faiss-cpu
-langchain
-sqlalchemy
+python-jose[cryptography]>=3.3.0
+
+# =============================================================================
+# HTTP & Networking
+# =============================================================================
+httpx>=0.25.0
+requests>=2.31.0
+
+# =============================================================================
+# Configuration & Environment
+# =============================================================================
+python-dotenv>=1.0.0
+
+# =============================================================================
+# Utilities & Tools
+# =============================================================================
+art>=5.2
+croniter>=2.0.0
+faiss-cpu>=1.7.0
+
+# =============================================================================
+# Payment & Billing
+# =============================================================================
+stripe>=7.0.0
+
+# =============================================================================
+# Testing & Development
+# =============================================================================
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+schemathesis==3.25.6
+
+# =============================================================================
+# Performance & Monitoring
+# =============================================================================
+# Notas: Estas dependencias están incluidas en el código pero no requieren instalación externa
+# - cProfile (built-in)
+# - tracemalloc (built-in)
+# - time (built-in)
+# - logging (built-in)
+# - asyncio (built-in)
+# - functools (built-in)
+# - contextlib (built-in)
+
+# =============================================================================
+# Optional Dependencies (para desarrollo avanzado)
+# =============================================================================
+# redis>=5.0.0                    # Para cache distribuido
+# celery>=5.3.0                   # Para tareas asíncronas
+# prometheus-client>=0.19.0       # Para métricas avanzadas
+# sentry-sdk>=1.40.0              # Para error tracking
+# alembic>=1.13.0                 # Para migraciones avanzadas
+
+# =============================================================================
+# Background Processing (Fase 3)
+# =============================================================================
+# concurrent.futures (built-in)   # Para ThreadPoolExecutor y ProcessPoolExecutor
+# threading (built-in)            # Para workers en background
+# queue (built-in)                # Para cola de tareas priorizada

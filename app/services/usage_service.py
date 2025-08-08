@@ -1,5 +1,7 @@
 import logging
 from datetime import datetime
+from functools import lru_cache
+from typing import Optional
 
 from sqlalchemy import func
 from fastapi import HTTPException
@@ -17,6 +19,28 @@ class UsageService:
     def __init__(self, factory):
         self.db = factory.db
         self.user = factory.user
+        self._cache = {}
+        self._cache_timestamp = None
+        self._cache_ttl = 60  # 1 minuto
+
+    def _is_cache_valid(self) -> bool:
+        """Verifica si el cache está válido"""
+        if not self._cache_timestamp:
+            return False
+        return (datetime.utcnow() - self._cache_timestamp).seconds < self._cache_ttl
+
+    def _get_cached_usage(self) -> Optional[dict]:
+        """Obtiene datos de uso desde cache si está válido"""
+        if self._is_cache_valid():
+            logger.debug(f"📊 Usando cache para user_id={self.user.id}")
+            return self._cache
+        return None
+
+    def _set_cache(self, data: dict):
+        """Establece cache con timestamp"""
+        self._cache = data
+        self._cache_timestamp = datetime.utcnow()
+        logger.debug(f"📊 Cache actualizado para user_id={self.user.id}")
 
     def register_token_usage(self, prompt_tokens: int, completion_tokens: int, model: str):
         total = prompt_tokens + completion_tokens
@@ -31,6 +55,9 @@ class UsageService:
         )
         self.db.add(usage)
         self.db.commit()
+        
+        # Invalidar cache después de registrar uso
+        self._cache_timestamp = None
 
     def get_usage(self) -> UsageOut:
         logger.info(f"📊 Obteniendo uso total de tokens para usuario {self.user.id}")
@@ -70,6 +97,11 @@ class UsageService:
         )
 
     def get_monthly_token_usage(self) -> int:
+        # Intentar obtener desde cache primero
+        cached = self._get_cached_usage()
+        if cached and 'monthly_tokens' in cached:
+            return cached['monthly_tokens']
+
         start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         usage = self.db.query(
             func.coalesce(func.sum(TokenUsage.total_tokens), 0)
@@ -77,14 +109,38 @@ class UsageService:
             TokenUsage.user_id == self.user.id,
             TokenUsage.timestamp >= start_of_month
         ).scalar()
-        return usage or 0
+        
+        result = usage or 0
+        
+        # Actualizar cache
+        if cached:
+            cached['monthly_tokens'] = result
+            self._set_cache(cached)
+        else:
+            self._set_cache({'monthly_tokens': result})
+            
+        return result
 
     def get_monthly_function_executions(self) -> int:
+        # Intentar obtener desde cache primero
+        cached = self._get_cached_usage()
+        if cached and 'monthly_executions' in cached:
+            return cached['monthly_executions']
+
         start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        return self.db.query(FunctionCallLog).filter(
+        result = self.db.query(FunctionCallLog).filter(
             FunctionCallLog.user_id == self.user.id,
             FunctionCallLog.timestamp >= start_of_month
         ).count()
+        
+        # Actualizar cache
+        if cached:
+            cached['monthly_executions'] = result
+            self._set_cache(cached)
+        else:
+            self._set_cache({'monthly_executions': result})
+            
+        return result
 
     def check_limit(self):
         # Validar plan desde subscription activa

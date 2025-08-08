@@ -52,6 +52,14 @@ class ChatMessage(BaseModel):
     db_ids: Optional[List[UUID]] = []
     app_ids: Optional[List[UUID]] = []
 
+    def model_dump(self, **kwargs):
+        """Override model_dump to handle timestamp automatically"""
+        data = super().model_dump(**kwargs)
+        # Si timestamp es None, no lo incluimos en el JSON
+        if data.get("timestamp") is None:
+            data.pop("timestamp", None)
+        return data
+
     model_config = {
         "from_attributes": False
     }

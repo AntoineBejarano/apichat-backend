@@ -1,0 +1,83 @@
+# =============================================================================
+# MkDocs Configuration for APIchat
+# =============================================================================
+
+site_name: APIchat Documentation
+site_description: AI-Powered Automation Platform Documentation
+site_author: APIchat Team
+
+# =============================================================================
+# Theme Configuration
+# =============================================================================
+theme:
+  name: material
+  language: es
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+
+# =============================================================================
+# Plugins
+# =============================================================================
+plugins:
+  - search
+
+# =============================================================================
+# Navigation - Organizada como un libro completo
+# =============================================================================
+nav:
+  - 🏠 Inicio: index.md
+  - 📖 Resumen Ejecutivo: EXECUTIVE_SUMMARY.md
+  - 🏗️ Arquitectura y Roadmap: ARCHITECTURE_ROADMAP.md
+  - 📊 Fases Completadas:
+    - Fase 1 - Cache Detallado: phases/phase1-cache.md
+    - Fase 2 - Vector Search: phases/phase2-vector.md
+    - Fase 3 - Optimización Final: phases/phase3-optimization.md
+  - 🔧 API Reference:
+    - Background Tasks: api/background-tasks.md
+  - 🔮 Próximos Pasos: NEXT_STEPS_TECHNICAL.md
+
+# =============================================================================
+# Markdown Extensions
+# =============================================================================
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# =============================================================================
+# Copyright
+# =============================================================================
+copyright: Copyright &copy; 2024 APIchat Team 

@@ -1,42 +1,12 @@
 import logging
-from typing import Optional, TYPE_CHECKING, Union
-from fastapi import Request, HTTPException, status, WebSocket
-from sqlalchemy.orm import Session
+from typing import Union, Optional
 from datetime import datetime, timezone
+from fastapi import HTTPException, status, Request
+from sqlalchemy.orm import Session
+from fastapi import WebSocket
 
 from app.models.user_model import User
 from app.models.session_model import Session as SessionModel
-
-if TYPE_CHECKING:
-    from app.services.agent_service import AgentService
-    from app.services.function_service import FunctionService
-    from app.services.integration_service import IntegrationService
-    from app.services.database_service import DatabaseService
-    from app.services.openai_service import OpenAIService
-    from app.services.orchestrator_service import OrchestratorService
-    from app.services.user_service import UserService
-    from app.services.session_service import SessionService
-    from app.services.strategy_service import StrategyService
-    from app.services.function_executor_service import FunctionExecutor
-    from app.services.openapi_service import OpenAPIProcessor
-    from app.services.chat_history_service import ChatHistoryService
-    from app.services.chat_service import ChatService
-    from app.services.langchain_service import LangchainService
-    from app.services.app_service import AppService
-    from app.services.proxy_service import ProxyService
-    from app.services.sql_executor_service import SQLExecutorService
-    from app.services.user_role_service import UserRoleService 
-    from app.services.role_service import RoleService
-    from app.services.billing_service import BillingService
-    from app.services.permission_service import PermissionService
-    from app.services.usage_service import UsageService
-    from app.services.event_definition_service import EventDefinitionService
-    from app.services.event_trigger_service import EventTriggerService
-    from app.services.trigger_service import TriggerService
-    from app.services.executed_strategy_service import ExecutedStrategyService
-    from app.services.execution_engine_service import ExecutionEngineService
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +18,29 @@ class ServiceFactory:
 
         self._user: Optional[User] = None
 
-        # Lazy-loaded services (los tuyos sin tocar)
+        # ⚡ OPTIMIZACIÓN: Pre-inicializar servicios críticos
+        self._usage_service = None
+        self._chat_history_service = None
+        self._openai_service = None
         self._agent_service = None
+        self._database_service = None
+        self._cache_service = None
+        self._schema_explorer_service = None
+        self._detailed_schema_cache = None
+        self._vector_search_service = None
+        self._prompt_engineering_service = None
+        self._query_validation_service = None
+        self._performance_monitoring_service = None
+        
+        # Lazy-loaded services (los demás)
         self._function_service = None
         self._integration_service = None
-        self._database_service = None
-        self._openai_service = None
         self._executor_service = None
         self._user_service = None
         self._session_service = None
         self._strategy_service = None
         self._openapi_processor = None
         self._mcp_integration_service = None
-        self._chat_history_service = None
         self._chat_service = None
         self._langchain_service = None
         self._apps_service = None
@@ -71,7 +51,7 @@ class ServiceFactory:
         self._billing_service = None
         self._permission_service = None
         self._orchestrator_service = None
-        self._usage_service = None
+        self._background_task_service = None
         self._event_definition_service = None
         self._event_trigger_service = None
         self._trigger_service = None
@@ -118,7 +98,28 @@ class ServiceFactory:
         logger.info(f"✅ Usuario autenticado: {user.email}")
         return user
 
-    # Servicios con logs por inicialización
+    # ⚡ OPTIMIZACIÓN: Servicios críticos pre-inicializados
+    def get_usage_service(self) -> "UsageService":
+        if not self._usage_service:
+            from app.services.usage_service import UsageService
+            logger.debug("⚙️ Inicializando UsageService")
+            self._usage_service = UsageService(self)
+        return self._usage_service
+
+    def get_chat_history_service(self) -> "ChatHistoryService":
+        if not self._chat_history_service:
+            from app.services.chat_history_service import ChatHistoryService
+            logger.debug("⚙️ Inicializando ChatHistoryService")
+            self._chat_history_service = ChatHistoryService(self)
+        return self._chat_history_service
+
+    def get_openai_service(self) -> "OpenAIService":
+        if not self._openai_service:
+            from app.services.openai_service import OpenAIService
+            logger.debug("⚙️ Inicializando OpenAIService")
+            self._openai_service = OpenAIService(self)
+        return self._openai_service
+
     def get_agent_service(self) -> "AgentService":
         if not self._agent_service:
             from app.services.agent_service import AgentService
@@ -126,6 +127,67 @@ class ServiceFactory:
             self._agent_service = AgentService(self)
         return self._agent_service
 
+    def get_database_service(self) -> "DatabaseService":
+        if not self._database_service:
+            from app.services.database_service import DatabaseService
+            logger.debug("⚙️ Inicializando DatabaseService")
+            self._database_service = DatabaseService(self)
+        return self._database_service
+
+    def get_cache_service(self) -> "CacheService":
+        if not self._cache_service:
+            from app.services.cache_service import CacheService
+            logger.debug("⚙️ Inicializando CacheService")
+            self._cache_service = CacheService()
+        return self._cache_service
+
+    def get_schema_explorer_service(self) -> "SchemaExplorerService":
+        if not self._schema_explorer_service:
+            from app.services.schema_explorer_service import SchemaExplorerService
+            logger.debug("⚙️ Inicializando SchemaExplorerService")
+            cache_service = self.get_cache_service()
+            database_service = self.get_database_service()
+            self._schema_explorer_service = SchemaExplorerService(cache_service, database_service)
+        return self._schema_explorer_service
+
+    def get_detailed_schema_cache(self) -> "DetailedSchemaCache":
+        if not self._detailed_schema_cache:
+            from app.services.detailed_schema_cache import DetailedSchemaCache
+            logger.debug("🦄 Inicializando DetailedSchemaCache")
+            self._detailed_schema_cache = DetailedSchemaCache()
+        return self._detailed_schema_cache
+
+    def get_vector_search_service(self) -> "VectorSearchService":
+        if not self._vector_search_service:
+            from app.services.vector_search_service import VectorSearchService
+            logger.debug("🔍 Inicializando VectorSearchService")
+            # Obtener API key de OpenAI desde configuración
+            openai_api_key = None  # TODO: Obtener desde configuración
+            self._vector_search_service = VectorSearchService(openai_api_key)
+        return self._vector_search_service
+
+    def get_prompt_engineering_service(self) -> "PromptEngineeringService":
+        if not self._prompt_engineering_service:
+            from app.services.prompt_engineering_service import PromptEngineeringService
+            logger.debug("🎯 Inicializando PromptEngineeringService")
+            self._prompt_engineering_service = PromptEngineeringService()
+        return self._prompt_engineering_service
+
+    def get_query_validation_service(self) -> "QueryValidationService":
+        if not self._query_validation_service:
+            from app.services.query_validation_service import QueryValidationService
+            logger.debug("⚙️ Inicializando QueryValidationService")
+            self._query_validation_service = QueryValidationService(self)
+        return self._query_validation_service
+
+    def get_performance_monitoring_service(self) -> "PerformanceMonitoringService":
+        if not self._performance_monitoring_service:
+            from app.services.performance_monitoring_service import PerformanceMonitoringService
+            logger.debug("⚙️ Inicializando PerformanceMonitoringService")
+            self._performance_monitoring_service = PerformanceMonitoringService(self)
+        return self._performance_monitoring_service
+
+    # Servicios lazy-loaded (menos críticos)
     def get_function_service(self) -> "FunctionService":
         if not self._function_service:
             from app.services.function_service import FunctionService
@@ -139,20 +201,6 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando IntegrationService")
             self._integration_service = IntegrationService(self)
         return self._integration_service
-
-    def get_database_service(self) -> "DatabaseService":
-        if not self._database_service:
-            from app.services.database_service import DatabaseService
-            logger.debug("⚙️ Inicializando DatabaseService")
-            self._database_service = DatabaseService(self)
-        return self._database_service
-
-    def get_openai_service(self) -> "OpenAIService":
-        if not self._openai_service:
-            from app.services.openai_service import OpenAIService
-            logger.debug("⚙️ Inicializando OpenAIService")
-            self._openai_service = OpenAIService(self)
-        return self._openai_service
 
     def get_executor_service(self) -> "FunctionExecutor":
         if not self._executor_service:
@@ -190,18 +238,14 @@ class ServiceFactory:
         return self._openapi_processor
 
     def get_mcp_integration_service(self):
-        if not self._mcp_integration_service:
+        if self._mcp_integration_service is None:
             from app.services.mcp_integration_service import MCPIntegrationService
-            logger.debug("⚙️ Inicializando MCPIntegrationService")
             self._mcp_integration_service = MCPIntegrationService(self)
         return self._mcp_integration_service
 
-    def get_chat_history_service(self) -> "ChatHistoryService":
-        if not self._chat_history_service:
-            from app.services.chat_history_service import ChatHistoryService
-            logger.debug("⚙️ Inicializando ChatHistoryService")
-            self._chat_history_service = ChatHistoryService(self)
-        return self._chat_history_service
+    def get_mcp_service(self):
+        """Alias para get_mcp_integration_service para compatibilidad"""
+        return self.get_mcp_integration_service()
 
     def get_chat_service(self) -> "ChatService":
         if not self._chat_service:
@@ -210,18 +254,18 @@ class ServiceFactory:
             self._chat_service = ChatService(self)
         return self._chat_service
 
-    def get_langchain_service(self) -> "LangchainService":
+    def get_langchain_service(self) -> "LangChainService":
         if not self._langchain_service:
-            from app.services.langchain_service import LangchainService
+            from app.services.langchain_service import LangChainService
             logger.debug("⚙️ Inicializando LangChainService")
-            self._langchain_service = LangchainService(self)
+            self._langchain_service = LangChainService(self)
         return self._langchain_service
 
-    def get_apps_service(self) -> "AppService":
+    def get_apps_service(self) -> "AppsService":
         if not self._apps_service:
-            from app.services.app_service import AppService
-            logger.debug("⚙️ Inicializando AppService")
-            self._apps_service = AppService(self)
+            from app.services.apps_service import AppsService
+            logger.debug("⚙️ Inicializando AppsService")
+            self._apps_service = AppsService(self)
         return self._apps_service
 
     def get_proxy_service(self) -> "ProxyService":
@@ -273,6 +317,13 @@ class ServiceFactory:
             self._orchestrator_service = OrchestratorService(self)
         return self._orchestrator_service
 
+    def get_background_task_service(self) -> "BackgroundTaskService":
+        if not self._background_task_service:
+            from app.services.background_task_service import BackgroundTaskService
+            logger.debug("⚙️ Inicializando BackgroundTaskService")
+            self._background_task_service = BackgroundTaskService()
+        return self._background_task_service
+
     def get_usage_service(self) -> "UsageService":
         if not self._usage_service:
             from app.services.usage_service import UsageService
@@ -305,12 +356,19 @@ class ServiceFactory:
         if not self._executed_strategy_service:
             from app.services.executed_strategy_service import ExecutedStrategyService
             logger.debug("⚙️ Inicializando ExecutedStrategyService")
-            self._executed_strategy_service = ExecutedStrategyService(self.db, self.user.id)
+            self._executed_strategy_service = ExecutedStrategyService(self)
         return self._executed_strategy_service
 
     def get_execution_engine_service(self) -> "ExecutionEngineService":
-        if self._execution_engine_service is None:
+        if not self._execution_engine_service:
             from app.services.execution_engine_service import ExecutionEngineService
             logger.debug("⚙️ Inicializando ExecutionEngineService")
             self._execution_engine_service = ExecutionEngineService(self)
         return self._execution_engine_service
+
+
+def get_service_factory():
+    """Dependency para obtener el ServiceFactory"""
+    from app.core.database import get_db
+    db = next(get_db())
+    return ServiceFactory(db=db)
