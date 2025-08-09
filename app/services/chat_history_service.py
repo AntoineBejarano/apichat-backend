@@ -13,12 +13,14 @@ Todos los accesos a BD usan SQLAlchemy ORM y emiten logs detallados.
 from __future__ import annotations
 
 import logging
+import hashlib
 from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID
 from functools import lru_cache
 
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 
 from app.models.chat_history_model import ChatHistory
 from app.schemas.chat_history_schema import ChatHistoryCreate
@@ -41,29 +43,85 @@ class ChatHistoryService:
         logger.info("[ChatHistoryService] Inicializado para user_id=%s", self.user_id)
 
     # ─────────────────────────────────────────────
-    #   Crear mensaje
+    #   Utilidades de idempotencia
+    # ─────────────────────────────────────────────
+    def _generate_idempotency_key(self, chat_id: UUID, user_id: UUID, content: str, role: str) -> str:
+        """
+        Genera clave de idempotencia SHA256 para evitar mensajes duplicados.
+        Formula: sha256(chat_id + user_id + content + role)
+        """
+        # Crear string determinístico para el hash
+        key_data = f"{chat_id}:{user_id}:{content}:{role}"
+        return hashlib.sha256(key_data.encode('utf-8')).hexdigest()
+    
+    # ─────────────────────────────────────────────
+    #   Crear mensaje (CON IDEMPOTENCIA)
     # ─────────────────────────────────────────────
     def create_message(self, data: ChatHistoryCreate) -> ChatHistory:
-        logger.info("[ChatHistoryService] Creando nuevo mensaje para user_id=%s", self.user_id)
+        """
+        Crea un nuevo mensaje con idempotencia para evitar duplicados en reintentos.
+        Si ya existe un mensaje con la misma idempotency_key, devuelve el existente.
+        """
+        logger.info("[ChatHistoryService] Creando mensaje idempotente para user_id=%s", self.user_id)
 
-        msg = ChatHistory(
-            user_id=self.user_id,
+        # 🔧 Generar clave de idempotencia
+        idempotency_key = data.idempotency_key or self._generate_idempotency_key(
             chat_id=data.chat_id,
-            role=data.role,
+            user_id=self.user_id,
             content=data.content,
-            name=data.name,
-            token_count=data.token_count,
-            is_function_call=data.is_function_call,
-            function_call_id=data.function_call_id,
+            role=data.role
         )
-        self.db.add(msg)
-        self.db.commit()
-        self.db.refresh(msg)
         
-        # Invalidar cache después de crear mensaje
-        self._invalidate_cache(data.chat_id)
+        # 🔍 Verificar si ya existe un mensaje con esta clave
+        existing_msg = self.db.query(ChatHistory).filter(
+            ChatHistory.idempotency_key == idempotency_key
+        ).first()
         
-        return msg
+        if existing_msg:
+            logger.info(f"[ChatHistoryService] ♻️ Mensaje duplicado detectado - devolviendo existente (id={existing_msg.id})")
+            return existing_msg
+
+        # ✨ Crear nuevo mensaje
+        try:
+            msg = ChatHistory(
+                user_id=self.user_id,
+                chat_id=data.chat_id,
+                role=data.role,
+                content=data.content,
+                name=data.name,
+                token_count=data.token_count,
+                is_function_call=data.is_function_call,
+                function_call_id=data.function_call_id,
+                executed_strategy_id=data.executed_strategy_id,
+                idempotency_key=idempotency_key  # 🔧 Incluir clave de idempotencia
+            )
+            self.db.add(msg)
+            self.db.commit()
+            self.db.refresh(msg)
+            
+            # Invalidar cache después de crear mensaje
+            self._invalidate_cache(data.chat_id)
+            
+            logger.info(f"[ChatHistoryService] ✅ Mensaje creado con idempotencia (id={msg.id}, key={idempotency_key[:16]}...)")
+            return msg
+            
+        except IntegrityError as e:
+            # 🔄 Race condition: otro proceso creó el mensaje entre nuestro check y insert
+            self.db.rollback()
+            logger.warning(f"[ChatHistoryService] 🔄 Race condition detectada - buscando mensaje existente")
+            
+            # Buscar el mensaje que fue creado por el otro proceso
+            existing_msg = self.db.query(ChatHistory).filter(
+                ChatHistory.idempotency_key == idempotency_key
+            ).first()
+            
+            if existing_msg:
+                logger.info(f"[ChatHistoryService] ♻️ Mensaje encontrado tras race condition (id={existing_msg.id})")
+                return existing_msg
+            else:
+                # Si no encontramos el mensaje, re-lanzar la excepción original
+                logger.error(f"[ChatHistoryService] ❌ IntegrityError sin mensaje duplicado: {e}")
+                raise
 
     # ─────────────────────────────────────────────
     #   Obtener historial de un chat (OPTIMIZADO)

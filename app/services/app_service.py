@@ -1,7 +1,8 @@
 import logging
 import requests
 from fastapi import HTTPException
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
+from uuid import UUID
 
 from app.models.app_model import App
 from app.schemas.app_schema import AppCreate, AppUpdate, AppOut
@@ -41,7 +42,7 @@ class AppService(BaseService):
         logger.info(f"[AppService] 📦 Getting all Apps for user_id={self.user.id}")
         return self.db.query(App).filter(App.user_id == self.user.id).all()
 
-    def get_by_id(self, app_id: int) -> App:
+    def get_by_id(self, app_id: Union[UUID, str]) -> App:
         logger.info(f"[AppService] 🔍 Fetching App ID={app_id} for user_id={self.user.id}")
         app = self.db.query(App).filter(App.id == app_id, App.user_id == self.user.id).first()
         if not app:
@@ -49,7 +50,7 @@ class AppService(BaseService):
             raise HTTPException(status_code=404, detail="App not found")
         return app
 
-    def update(self, app_id: int, app_data: AppUpdate) -> App:
+    def update(self, app_id: Union[UUID, str], app_data: AppUpdate) -> App:
         logger.info(f"[AppService] ✏️ Updating App ID={app_id} for user_id={self.user.id}")
         app = self.get_by_id(app_id)
 
@@ -67,7 +68,7 @@ class AppService(BaseService):
         logger.info(f"[AppService] ✅ App ID={app.id} updated")
         return app
 
-    def delete(self, app_id: int) -> dict:
+    def delete(self, app_id: Union[UUID, str]) -> dict:
         logger.info(f"[AppService] 🗑️ Deleting App ID={app_id} for user_id={self.user.id}")
         app = self.get_by_id(app_id)
         self.db.delete(app)

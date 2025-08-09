@@ -35,6 +35,7 @@ PROMPT_SQL_HEADER = "### SQL Schema (read-only)"
 PROMPT_SQL_DIALECT_HEADER = "### SQL Dialect"
 PROMPT_FUNCTIONS_HEADER = "### Functions disponibles"
 PROMPT_MCP_HEADER = "### MCP Tools disponibles"
+PROMPT_APPS_HEADER = "### Aplicaciones disponibles"
 
 PLANNER_SYSTEM_PROMPT_PREFIX = (
     "Tu tarea es actuar como un asistente conversacional inteligente capaz de generar planes de acción en formato JSON "
@@ -183,6 +184,9 @@ class OpenAIService:
         available_mcp_tools: Optional[dict] = None,
         history: Optional[List[Dict[str, Any]]] = None,
         database_schemas: Optional[Dict[str, Any]] = None,  # Nuevo parámetro
+        db_ids: Optional[List[UUID]] = None,  # Para el contexto enriquecido
+        use_enriched_context: bool = True,  # Flag para usar contexto enriquecido
+        app_descriptors_compact: Optional[str] = None,  # NUEVO: Descriptores de apps
     ) -> Dict[str, Any]:
 
         # Validar que user_message no sea None
@@ -195,7 +199,7 @@ class OpenAIService:
 
         # ⚡ OPTIMIZACIÓN: Cache de prompts
         cache_key = self._generate_prompt_cache_key(
-            db_schema, available_functions, available_mcp_tools
+            db_schema, available_functions, available_mcp_tools, app_descriptors_compact
         )
         
         # 1) Contexto histórico (limitado para optimizar)
@@ -203,28 +207,48 @@ class OpenAIService:
             msgs = self.history_service.get_history(chat_id, limit=6)  # Reducido de 8 a 6
             history = [m.model_dump() for m in msgs]
 
-        # 2) Construir esquema de BD desde database_schemas si está disponible
-        if database_schemas and not db_schema:
-            logger.info(f"[OpenAIService] 🔍 Construyendo esquema desde cache: {len(database_schemas)} DBs")
-            db_schema = self._build_schema_from_cache(database_schemas)
-            logger.info(f"[OpenAIService] 📋 Esquema generado: {len(db_schema)} caracteres")
-            logger.debug(f"[OpenAIService] 📋 Esquema completo: {db_schema}")
-        elif database_schemas and db_schema:
-            logger.info(f"[OpenAIService] 🔍 Usando esquema existente + cache: {len(database_schemas)} DBs")
-            # Combinar esquema existente con cache
-            cache_schema = self._build_schema_from_cache(database_schemas)
-            db_schema = f"{db_schema}\n\n{cache_schema}"
-        elif not database_schemas and db_schema:
-            logger.info(f"[OpenAIService] 📋 Usando esquema existente: {len(db_schema)} caracteres")
-        else:
-            logger.warning(f"[OpenAIService] ⚠️ No hay esquema disponible")
+        # 2) Construir contexto de esquema (SIMPLE - solo lista de tablas)
+        if use_enriched_context and db_ids:
+            logger.info(f"[OpenAIService] 📋 Usando lista simple de tablas para {len(db_ids)} DBs")
+            try:
+                # 🔧 Usar el nuevo sistema de cache detallado
+                cache_service = self.factory.get_detailed_schema_cache_service()
+                schemas = []
+                for db_id in db_ids:
+                    cache_entry = cache_service.get_schema_cache(self.factory.user.id, db_id)
+                    if cache_entry and cache_entry.compact:
+                        schemas.append(f"-- DATABASE {db_id} --\n{cache_entry.compact}")
+                
+                db_schema = "\n\n".join(schemas) if schemas else "No hay esquemas disponibles"
+                logger.info(f"[OpenAIService] ✨ Schema compacto generado: {len(db_schema)} caracteres")
+            except Exception as e:
+                logger.exception(f"[OpenAIService] ❌ Error generando lista de tablas: {e}")
+                # Fallback al método tradicional
+                use_enriched_context = False
+        
+        # Fallback: usar método tradicional si el enriquecido falla o está deshabilitado
+        if not use_enriched_context:
+            if database_schemas and not db_schema:
+                logger.info(f"[OpenAIService] 🔍 Construyendo esquema desde cache: {len(database_schemas)} DBs")
+                db_schema = self._build_schema_from_cache(database_schemas)
+                logger.info(f"[OpenAIService] 📋 Esquema generado: {len(db_schema)} caracteres")
+                logger.debug(f"[OpenAIService] 📋 Esquema completo: {db_schema}")
+            elif database_schemas and db_schema:
+                logger.info(f"[OpenAIService] 🔍 Usando esquema existente + cache: {len(database_schemas)} DBs")
+                # Combinar esquema existente con cache
+                cache_schema = self._build_schema_from_cache(database_schemas)
+                db_schema = f"{db_schema}\n\n{cache_schema}"
+            elif not database_schemas and db_schema:
+                logger.info(f"[OpenAIService] 📋 Usando esquema existente: {len(db_schema)} caracteres")
+            else:
+                logger.warning(f"[OpenAIService] ⚠️ No hay esquema disponible")
 
         # 3) Construcción de mensajes optimizada
         messages = [
             {
                 "role": "system",
                 "content": self._get_cached_or_build_prompt(
-                    cache_key, db_schema, available_functions, available_mcp_tools
+                    cache_key, db_schema, available_functions, available_mcp_tools, app_descriptors_compact
                 ),
             },
             *history,
@@ -349,20 +373,22 @@ class OpenAIService:
         self, 
         db_schema: Optional[str], 
         functions: List[Function], 
-        mcp_tools: Optional[dict]
+        mcp_tools: Optional[dict],
+        app_descriptors_compact: Optional[str] = None
     ) -> str:
         """Genera clave única para cache de prompts"""
         function_ids = [str(f.id) for f in functions]
         mcp_tool_names = list(mcp_tools.get("tools", [])) if mcp_tools else []
         
-        return f"{hash(db_schema)}_{hash(tuple(function_ids))}_{hash(tuple(mcp_tool_names))}"
+        return f"{hash(db_schema)}_{hash(tuple(function_ids))}_{hash(tuple(mcp_tool_names))}_{hash(app_descriptors_compact)}"
 
     def _get_cached_or_build_prompt(
         self, 
         cache_key: str, 
         db_schema: Optional[str], 
         functions: List[Function], 
-        mcp_tools: Optional[dict]
+        mcp_tools: Optional[dict],
+        app_descriptors_compact: Optional[str] = None
     ) -> str:
         """Obtiene prompt desde cache o lo construye"""
         current_time = time.time()
@@ -375,7 +401,7 @@ class OpenAIService:
                 return cached_prompt
         
         # Construir nuevo prompt
-        prompt = self._build_combined_planner_prompt(db_schema, functions, mcp_tools)
+        prompt = self._build_combined_planner_prompt(db_schema, functions, mcp_tools, app_descriptors_compact)
         
         # Guardar en cache
         self._prompt_cache[cache_key] = (prompt, current_time)
@@ -501,6 +527,7 @@ class OpenAIService:
         db_schema: Optional[str],
         functions: List[Function],
         mcp_tools: Optional[dict],
+        app_descriptors_compact: Optional[str] = None,
     ) -> str:
 
         parts: List[str] = [PLANNER_SYSTEM_PROMPT_PREFIX.strip()]
@@ -541,6 +568,10 @@ class OpenAIService:
             tl = [f"• {t['name']}: {t.get('description', '')[:50]}"  # Limitar descripción
                   for t in limited_tools]
             parts.append(f"{PROMPT_MCP_HEADER}\n" + "\n".join(tl))
+
+        # 🆕 Descriptores de aplicaciones
+        if app_descriptors_compact:
+            parts.append(f"{PROMPT_APPS_HEADER}\n{app_descriptors_compact}")
 
         parts.append(PROMPT_SUFFIX)
         return "\n\n".join(parts)

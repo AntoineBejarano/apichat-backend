@@ -27,6 +27,12 @@ class ServiceFactory:
         self._cache_service = None
         self._schema_explorer_service = None
         self._detailed_schema_cache = None
+        self._detailed_schema_cache_service = None
+        self._sql_guardrails_service = None
+        self._description_selector_service = None
+        self._intent_classifier_service = None
+        self._app_descriptor_cache_service = None
+        self._telemetry_service = None
         self._vector_search_service = None
         self._prompt_engineering_service = None
         self._query_validation_service = None
@@ -57,6 +63,7 @@ class ServiceFactory:
         self._trigger_service = None
         self._executed_strategy_service = None
         self._execution_engine_service = None
+
 
     @property
     def user(self) -> User:
@@ -365,6 +372,54 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando ExecutionEngineService")
             self._execution_engine_service = ExecutionEngineService(self)
         return self._execution_engine_service
+
+
+
+    def get_detailed_schema_cache_service(self) -> "DetailedSchemaCacheService":
+        if not self._detailed_schema_cache_service:
+            from app.services.detailed_schema_cache_service import DetailedSchemaCacheService
+            logger.debug("⚙️ Inicializando DetailedSchemaCacheService")
+            self._detailed_schema_cache_service = DetailedSchemaCacheService(self.db)
+        return self._detailed_schema_cache_service
+
+    def get_sql_guardrails_service(self) -> "SQLGuardrailsService":
+        if not self._sql_guardrails_service:
+            from app.services.sql_guardrails_service import SQLGuardrailsService
+            logger.debug("⚙️ Inicializando SQLGuardrailsService")
+            self._sql_guardrails_service = SQLGuardrailsService(self)
+        return self._sql_guardrails_service
+
+    def get_description_selector_service(self):
+        """Obtener servicio de selección por descripción"""
+        if self._description_selector_service is None:
+            from app.services.description_selector_service import DescriptionSelectorService
+            logger.debug("⚙️ Inicializando DescriptionSelectorService")
+            self._description_selector_service = DescriptionSelectorService(self)
+        return self._description_selector_service
+
+    def get_intent_classifier_service(self):
+        """Obtener servicio de clasificación de intenciones"""
+        if self._intent_classifier_service is None:
+            from app.services.intent_classifier_service import IntentClassifierService
+            logger.debug("⚙️ Inicializando IntentClassifierService")
+            self._intent_classifier_service = IntentClassifierService(self)
+        return self._intent_classifier_service
+
+    def get_app_descriptor_cache_service(self):
+        """Obtener servicio de cache de descriptores de apps"""
+        if self._app_descriptor_cache_service is None:
+            from app.services.app_descriptor_cache_service import AppDescriptorCacheService
+            logger.debug("⚙️ Inicializando AppDescriptorCacheService")
+            self._app_descriptor_cache_service = AppDescriptorCacheService(self)
+        return self._app_descriptor_cache_service
+
+    def get_telemetry_service(self):
+        """Obtener servicio de telemetría"""
+        if self._telemetry_service is None:
+            from app.services.telemetry_service import TelemetryService
+            logger.debug("⚙️ Inicializando TelemetryService")
+            self._telemetry_service = TelemetryService(self)
+        return self._telemetry_service
 
 
 def get_service_factory():

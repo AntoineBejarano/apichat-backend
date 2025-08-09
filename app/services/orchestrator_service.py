@@ -59,7 +59,7 @@ class OrchestratorService:
         self.history_service = factory.get_chat_history_service()
         logger.info("[OrchestratorService] Initialized for user_id=%s", self.user_id)
 
-    # ===================================================
+        # ===================================================
     #  PUBLIC ENTRY-POINT
     # ===================================================
     @monitor_performance("orchestrator_handle_message")
@@ -77,26 +77,20 @@ class OrchestratorService:
         # 📊 Profiling de memoria
         memory_profiler.take_snapshot("orchestrator_start")
 
-        # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo
-        tasks = []
-        
-        # 1) Límite de uso (async)
-        usage_task = asyncio.create_task(self._check_usage_limit_async())
-        
-        # 2) Guardar mensaje del usuario (async)
-        store_task = asyncio.create_task(self._store_user_message_async(chat_id, message))
-        
-        # 3) Cargar contexto en paralelo
+        # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo (sin duplicación)
+        # 🔧 FIX: _load_context_parallel ya maneja store_task y usage_task internamente
         context_tasks = await self._load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
         
         # Actualizar el contexto con el parámetro explorer
         context_tasks["explorer"] = explorer
 
-        # ⏳ Esperar a que terminen las tareas asíncronas
-        try:
-            await asyncio.gather(usage_task, store_task, return_exceptions=True)
-        except Exception as e:
-            logger.warning("[OrchestratorService] Error en tareas asíncronas: %s", e)
+        # 🔧 FIX: Validar compact_schemas antes de ejecutar el grafo
+        if db_ids and not self._validate_compact_schemas(context_tasks.get("compact_schemas", {}), db_ids):
+            logger.error("[OrchestratorService] ❌ Sin schemas válidos para DBs solicitadas - abortando ejecución")
+            return {
+                "assistant_response": "❌ Error: No se pudo obtener información de las bases de datos solicitadas. Por favor, verifica la conexión.",
+                "error": "missing_valid_schemas"
+            }
 
         # 🎯 Ejecutar el grafo
         graph_runner = self._select_graph_runner(explorer)
@@ -108,26 +102,39 @@ class OrchestratorService:
             # 🔄 Ejecutar el plan si se generó uno
             if execution_results.get("plan"):
                 logger.info("[OrchestratorService] 🚀 Ejecutando plan generado")
-                logger.info(f"[OrchestratorService] 📋 Plan: {execution_results['plan']}")
+                plan_actions = len(execution_results['plan'].actions) if hasattr(execution_results['plan'], 'actions') else 'N/A'
+                logger.info(f"[OrchestratorService] 📋 Plan generado con {plan_actions} acciones")
                 execution_engine = self.factory.get_execution_engine_service()
                 
                 # Asegurar que el contexto tenga db_ids
                 execution_context = context_tasks.copy()
                 if db_ids:
-                    execution_context["db_ids"] = [str(db_id) for db_id in db_ids]
+                    execution_context["db_ids"] = db_ids  # 🔧 Mantener como UUID end-to-end
                 
-                final_results = execution_engine.run(
-                    plan=execution_results["plan"].model_dump(),
-                    chat_id=chat_id,
-                    ctx=execution_context
+                # 🔧 FIX: Mover execution_engine.run a thread pool para evitar bloquear el loop
+                loop = asyncio.get_running_loop()
+                final_results = await loop.run_in_executor(
+                    None,  # Usar default thread pool
+                    lambda: execution_engine.run(
+                        plan=execution_results["plan"].model_dump(),
+                        chat_id=chat_id,
+                        ctx=execution_context
+                    )
                 )
                 # Combinar resultados
                 execution_results.update(final_results)
                 logger.info("[OrchestratorService] ✅ Plan ejecutado correctamente")
-                logger.info(f"[OrchestratorService] 📤 Resultados finales: {final_results}")
+                logger.info(f"[OrchestratorService] 📤 Variables generadas: {len(final_results.get('variables', {}))}")
             else:
                 logger.info("[OrchestratorService] 📝 No se generó plan, usando respuesta directa")
-                logger.info(f"[OrchestratorService] 📤 Resultados del grafo: {execution_results}")
+                # Manejar tanto diccionarios como objetos ChatMessage
+                if hasattr(execution_results, 'get'):
+                    # Es un diccionario
+                    content_length = len(str(execution_results.get('message', {}).get('content', '')))
+                else:
+                    # Es un objeto (probablemente ChatMessage)
+                    content_length = len(str(execution_results))
+                logger.info(f"[OrchestratorService] 📤 Respuesta directa generada (longitud: {content_length} chars)")
                 
         except Exception as e:
             logger.exception("[OrchestratorService] Graph execution failed: %s", e)
@@ -152,6 +159,182 @@ class OrchestratorService:
             "execution_results": execution_results,
             "steps": execution_results.get("steps", []),
         }
+
+    async def run_iterative_rag(
+        self,
+        chat_id: UUID,
+        message: "ChatMessage",
+        db_ids: List[UUID],
+        app_ids: List[str],
+        explorer: bool = False,
+        max_iterations: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Versión iterativa del orchestrator que usa RAG para replanificar
+        basándose en resultados intermedios.
+        """
+        logger.info(f"[OrchestratorService] 🔄 Iniciando flujo RAG iterativo (max {max_iterations} iteraciones)")
+
+        
+        # Inicialización similar al método run original
+        perfmon = self.factory.get_performance_monitoring_service()
+        perfmon.take_snapshot("iterative_orchestrator_start")
+        
+        # 🔧 FIX: _load_context_parallel ya maneja usage y store internamente
+        context_tasks = await self._load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
+        context_tasks["explorer"] = explorer
+        
+        # Variables para el bucle iterativo
+        iteration = 1
+        accumulated_results = {}
+        final_answer = None
+        
+        # Evaluador de resultados
+        # 🔧 Result evaluator eliminado - funcionalidad integrada en el flujo principal
+        
+        while iteration <= max_iterations and not final_answer:
+            logger.info(f"[OrchestratorService] 🔄 Iteración {iteration}/{max_iterations}")
+            
+            # 🔧 FIX: Validar compact_schemas antes de cada iteración
+            db_ids = context_tasks.get("db_ids", [])
+            if db_ids and not self._validate_compact_schemas(context_tasks.get("compact_schemas", {}), db_ids):
+                logger.error(f"[OrchestratorService] ❌ Sin schemas válidos en iteración {iteration} - abortando")
+                return {
+                    "assistant_response": "❌ Error: No se pudo obtener información de las bases de datos en esta iteración.",
+                    "error": "missing_valid_schemas_iteration"
+                }
+
+            # Ejecutar grafo (exploración o plan específico)
+            # 🔧 SIMPLIFICADO: Solo usar exploración en todas las iteraciones
+            graph_runner = self._select_graph_runner(True)  # Siempre exploración
+            execution_results = await graph_runner.run(context_tasks)
+            
+            # Si el grafo devuelve una respuesta directa, terminar
+            if execution_results.get("assistant_response") and not execution_results.get("plan"):
+                final_answer = execution_results["assistant_response"]
+                logger.info(f"[OrchestratorService] ✅ Respuesta directa obtenida en iteración {iteration}")
+                break
+            
+            # Acumular resultados
+            if execution_results.get("variables"):
+                accumulated_results.update(execution_results["variables"])
+            
+            # 🔧 SIMPLIFICADO: Evaluación básica sin evaluador externo
+            logger.info(f"[OrchestratorService] 📊 Iteración {iteration} completada - {len(accumulated_results)} variables acumuladas")
+            
+            # Decidir si continuar basándose en criterios simples
+            if accumulated_results and iteration >= 2:
+                logger.info("[OrchestratorService] ✅ Información suficiente encontrada después de 2 iteraciones")
+                
+                # Generar respuesta final con toda la información acumulada
+                final_answer = await self._generate_final_answer(
+                    message.content, accumulated_results, context_tasks
+                )
+                break
+            
+            iteration += 1
+        
+        # Si llegamos al máximo de iteraciones sin respuesta completa
+        if not final_answer:
+            logger.warning(f"[OrchestratorService] ⚠️ Máximo de iteraciones alcanzado ({max_iterations})")
+            final_answer = await self._generate_final_answer(
+                message.content, accumulated_results, context_tasks
+            )
+        
+        # Guardar respuesta del asistente
+        await self._save_assistant_message_async(
+            chat_id=chat_id,
+            content=final_answer,
+            token_count=None,  # TODO: calcular tokens
+            executed_strategy_id=None,
+        )
+        
+        perfmon.take_snapshot("iterative_orchestrator_end")
+        
+        return {
+            "assistant_response": final_answer,
+            "execution_results": accumulated_results,
+            "iterations_used": iteration - 1,
+            "steps": [],  # TODO: agregar pasos detallados
+        }
+
+    def _validate_compact_schemas(self, compact_schemas: Dict, db_ids: List) -> bool:
+        """Validar que hay compact_schemas válidos para las DBs solicitadas"""
+        if not compact_schemas or not db_ids:
+            return False
+        
+        for db_id in db_ids:
+            # Convertir a str si es UUID para comparación
+            db_key = str(db_id) if hasattr(db_id, 'hex') else db_id
+            
+            # Buscar tanto con UUID como con str
+            schema_found = False
+            for key in [db_id, db_key, str(db_id)]:
+                if key in compact_schemas and compact_schemas[key] and compact_schemas[key].strip():
+                    schema_found = True
+                    break
+            
+            if not schema_found:
+                logger.warning(f"[OrchestratorService] ⚠️ No hay compact_schema válido para DB {db_id}")
+                return False
+        
+        logger.info(f"[OrchestratorService] ✅ Compact schemas válidos para {len(db_ids)} DBs")
+        return True
+
+    async def _generate_final_answer(
+        self, 
+        question: str, 
+        accumulated_results: Dict[str, Any], 
+        context: Dict[str, Any]
+    ) -> str:
+        """
+        Genera la respuesta final basándose en todos los resultados acumulados.
+        """
+        logger.info("[OrchestratorService] 📝 Generando respuesta final con información acumulada")
+        
+        # Construir prompt con toda la información
+        results_summary = self._format_results_for_final_answer(accumulated_results)
+        
+        final_prompt = f"""
+Pregunta del usuario: {question}
+
+Información encontrada en la base de datos:
+{results_summary}
+
+Por favor, responde la pregunta del usuario de manera clara y completa usando la información encontrada.
+Si no encuentras información específica, menciona qué se buscó y qué alternativas podrían existir.
+"""
+        
+        try:
+            openai_service = self.factory.get_openai_service()
+            response = openai_service.complete_chat([
+                {"role": "system", "content": "Eres un asistente experto que responde preguntas basándose en datos de base de datos. Sé claro, preciso y útil."},
+                {"role": "user", "content": final_prompt}
+            ])
+            return response
+        except Exception as e:
+            logger.exception(f"[OrchestratorService] ❌ Error generando respuesta final: {e}")
+            return f"He encontrado información en tu base de datos, pero hubo un error al generar la respuesta final. Información encontrada: {results_summary}"
+
+    def _format_results_for_final_answer(self, results: Dict[str, Any]) -> str:
+        """Formatea los resultados acumulados para la respuesta final"""
+        formatted = []
+        
+        for key, value in results.items():
+            if isinstance(value, list):
+                if len(value) <= 20:  # Mostrar listas pequeñas completas
+                    formatted.append(f"- {key}: {value}")
+                else:
+                    formatted.append(f"- {key}: {value[:10]}... (y {len(value)-10} más)")
+            elif isinstance(value, dict):
+                if value.get("error"):
+                    formatted.append(f"- {key}: Error - {value['error']}")
+                else:
+                    formatted.append(f"- {key}: {value}")
+            else:
+                formatted.append(f"- {key}: {value}")
+        
+        return "\n".join(formatted) if formatted else "No se encontró información específica."
 
     # ===================================================
     #  ASYNC HELPERS (con sesiones separadas)
@@ -200,7 +383,7 @@ class OrchestratorService:
         """Cargar contexto en paralelo con optimizaciones avanzadas"""
         try:
             # Crear loop para operaciones asíncronas
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()  # 🔧 Python 3.11+ compatible
             
             # Tareas paralelas optimizadas - solo cargar lo esencial
             tasks = [
@@ -211,22 +394,38 @@ class OrchestratorService:
                 self._load_apps_async(app_ids)
             ]
             
-            # Ejecutar todas las tareas en paralelo
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 🔧 FIX: Ejecutar con timeout para evitar bloqueos
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=30.0  # 30 segundos timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error("[OrchestratorService] ⏰ Timeout en _load_context_parallel - usando valores por defecto")
+                results = [False, [], True, {'schemas': {}, 'compact_schemas': {}, 'cache_status': {}}, []]
             
             # Procesar resultados
             user_message_stored = results[0] if not isinstance(results[0], Exception) else False
             history = results[1] if not isinstance(results[1], Exception) else []
             usage_ok = results[2] if not isinstance(results[2], Exception) else True
-            database_schemas = results[3] if not isinstance(results[3], Exception) else {}
+            schema_result = results[3] if not isinstance(results[3], Exception) else {
+                'schemas': {}, 'compact_schemas': {}, 'cache_status': {}
+            }
             apps = results[4] if not isinstance(results[4], Exception) else []
+            
+            # Extraer componentes del schema result
+            database_schemas = schema_result.get('schemas', {})  # Legacy format
+            compact_schemas = schema_result.get('compact_schemas', {})  # Para LLM
+            cache_status = schema_result.get('cache_status', {})  # Para debugging
             
             # Construir contexto básico - sin optimizaciones complejas por ahora
             context = {
                 "chat_id": chat_id,
                 "message": message,
                 "history": history,
-                "database_schemas": database_schemas,
+                "database_schemas": database_schemas,  # Legacy format (mantener compatibilidad)
+                "compact_schemas": compact_schemas,  # 🔧 NUEVO: Para el LLM
+                "cache_status": cache_status,  # Para debugging
                 "apps": apps,
                 "explorer": explorer,
                 # Servicios básicos - se cargarán solo si se necesitan
@@ -297,9 +496,9 @@ class OrchestratorService:
                     )
                     
                     # 4. Agregar al contexto optimizado
-                    optimized_context["optimized_schema"][str(db_id)] = optimized_schema
+                    optimized_context["optimized_schema"][db_id] = optimized_schema  # 🔧 UUID como clave
                     optimized_context["semantic_hints"].extend(optimized_prompt.semantic_hints)
-                    optimized_context["prompt_optimization"][str(db_id)] = {
+                    optimized_context["prompt_optimization"][db_id] = {  # 🔧 UUID como clave
                         "system_prompt": optimized_prompt.system_prompt,
                         "user_prompt": optimized_prompt.user_prompt,
                         "confidence_score": optimized_prompt.confidence_score,
@@ -375,55 +574,194 @@ class OrchestratorService:
 
     @monitor_performance("load_database_schemas")
     @profile_function("load_database_schemas")
-    async def _load_database_schemas_async(self, db_ids: List[UUID]) -> Dict[UUID, List[Dict[str, Any]]]:
-        """Cargar esquemas de base de datos de forma async"""
+    async def _load_database_schemas_async(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        Cargar esquemas de base de datos con ensure_warm (L1/L2/L3 → introspección).
+        
+        Returns:
+            Dict con:
+            - 'schemas': Dict[UUID, List[Dict]] - Esquemas detallados (legacy)
+            - 'compact_schemas': Dict[UUID, str] - Esquemas compactos para LLM
+            - 'cache_status': Dict[UUID, str] - Estado del cache por DB
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._load_database_schemas, db_ids)
+        return await loop.run_in_executor(None, self._ensure_warm_schemas, db_ids)
 
-    def _load_database_schemas(self, db_ids: List[UUID]) -> Dict[UUID, List[Dict[str, Any]]]:
-        """Cargar esquemas de base de datos usando cache detallado"""
+    def _ensure_warm_schemas(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        Implementa ensure_warm: L1/L2/L3 → introspección mínima.
+        Garantiza que siempre hay schema compacto disponible para el LLM.
+        """
         try:
-            schema_explorer = self.factory.get_schema_explorer_service()
-            detailed_cache = self.factory.get_detailed_schema_cache()
+            cache_service = self.factory.get_detailed_schema_cache_service()
             
-            schemas = {}
+            schemas = {}  # Legacy format
+            compact_schemas = {}  # Para el LLM
+            cache_status = {}  # Para debugging
+            
             for db_id in db_ids:
-                # Intentar obtener esquema detallado
-                detailed_schema = detailed_cache.get_detailed_schema(db_id)
-                if detailed_schema:
-                    # Convertir a formato compatible con el sistema actual
-                    tables = []
-                    for table_name, table_info in detailed_schema.tables.items():
-                        table_dict = {
-                            "name": table_name,
-                            "columns": [
-                                {
-                                    "name": col.name,
-                                    "type": col.type,
-                                    "nullable": col.nullable,
-                                    "default": col.default,
-                                    "primary_key": col.primary_key,
-                                    "semantic_type": col.semantic_type.value
-                                }
-                                for col in table_info.columns.values()
-                            ],
-                            "primary_keys": table_info.primary_keys,
-                            "foreign_keys": table_info.foreign_keys,
-                            "indexes": table_info.indexes,
-                            "row_count": table_info.row_count
-                        }
-                        tables.append(table_dict)
-                    schemas[db_id] = tables
-                else:
-                    # Fallback al método anterior
-                    schemas[db_id] = schema_explorer.get_schema_for_user_dbs(self.user_id, [db_id]).get(db_id, [])
+                logger.info(f"[OrchestratorService] 🔍 Ensure warm para DB {db_id}")
+                
+                try:
+                    # 🔧 PASO 1: Intentar obtener de cache (L1/L2)
+                    cache_entry = cache_service.get_schema_cache(self.user_id, db_id)
+                    
+                    if cache_entry and cache_entry.compact:
+                        # ✅ Cache HIT - tenemos schema compacto
+                        logger.info(f"[OrchestratorService] ⚡ Cache HIT para DB {db_id}")
+                        compact_schemas[db_id] = cache_entry.compact
+                        cache_status[db_id] = "cache_hit"
+                        
+                        # Convertir snapshot a formato legacy si es necesario
+                        if cache_entry.snapshot and cache_entry.snapshot.tables:
+                            schemas[db_id] = self._convert_snapshot_to_legacy(cache_entry.snapshot.tables)
+                        else:
+                            schemas[db_id] = []
+                    
+                    else:
+                        # ❌ Cache MISS - hacer introspección mínima (L3)
+                        logger.warning(f"[OrchestratorService] 🔄 Cache MISS para DB {db_id} - introspección mínima")
+                        cache_status[db_id] = "cache_miss_introspecting"
+                        
+                        # Hacer introspección básica y crear cache
+                        introspected_schema = self._introspect_minimal_schema(db_id)
+                        
+                        if introspected_schema:
+                            # Crear cache entry
+                            from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
+                            
+                            snapshot = SchemaSnapshot(
+                                tables=introspected_schema['tables'],
+                                dialect=introspected_schema.get('dialect', 'unknown')
+                            )
+                            
+                            # Crear y guardar cache
+                            cache_entry = cache_service.create_or_update_cache(
+                                user_id=self.user_id,
+                                db_id=db_id,
+                                snapshot=snapshot,
+                                enrichment_level=EnrichmentLevel.BASIC
+                            )
+                            
+                            compact_schemas[db_id] = cache_entry.compact
+                            schemas[db_id] = self._convert_snapshot_to_legacy(introspected_schema['tables'])
+                            cache_status[db_id] = "cache_created"
+                            
+                            logger.info(f"[OrchestratorService] ✨ Cache creado para DB {db_id}")
+                        else:
+                            # Introspección falló - schema vacío
+                            logger.error(f"[OrchestratorService] ❌ Introspección falló para DB {db_id}")
+                            compact_schemas[db_id] = "-- No schema available --"
+                            schemas[db_id] = []
+                            cache_status[db_id] = "introspection_failed"
+                
+                except Exception as e:
+                    logger.exception(f"[OrchestratorService] ❌ Error ensure_warm DB {db_id}: {e}")
+                    compact_schemas[db_id] = f"-- Error loading schema: {str(e)} --"
+                    schemas[db_id] = []
+                    cache_status[db_id] = "error"
             
-            logger.info(f"[OrchestratorService] 📊 Esquemas detallados cargados: {len(schemas)}/{len(db_ids)} DBs")
-            return schemas
+            # Log resumen
+            hits = sum(1 for status in cache_status.values() if status == "cache_hit")
+            misses = sum(1 for status in cache_status.values() if status.startswith("cache_miss"))
+            
+            logger.info(f"[OrchestratorService] 📊 Ensure warm completado: {hits} hits, {misses} misses, {len(db_ids)} total")
+            
+            return {
+                'schemas': schemas,  # Legacy format para compatibilidad
+                'compact_schemas': compact_schemas,  # Para el LLM
+                'cache_status': cache_status  # Para debugging
+            }
             
         except Exception as e:
-            logger.exception(f"[OrchestratorService] ❌ Error cargando esquemas detallados: {e}")
-            return {}
+            logger.exception(f"[OrchestratorService] ❌ Error crítico en ensure_warm: {e}")
+            # Fallback seguro
+            return {
+                'schemas': {db_id: [] for db_id in db_ids},
+                'compact_schemas': {db_id: "-- Error loading schemas --" for db_id in db_ids},
+                'cache_status': {db_id: "critical_error" for db_id in db_ids}
+            }
+    
+    def _introspect_minimal_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """Introspección mínima de schema para crear cache básico"""
+        try:
+            database_service = self.factory.get_database_service()
+            db_instance = database_service.get_sql_instance(db_id)
+            
+            if not db_instance:
+                return None
+            
+            # Query básica para obtener tablas y columnas
+            tables_query = """
+                SELECT 
+                    table_name,
+                    column_name,
+                    data_type,
+                    is_nullable,
+                    column_default
+                FROM information_schema.columns 
+                WHERE table_schema = 'public'
+                ORDER BY table_name, ordinal_position
+            """
+            
+            # 🔧 FIX: Usar API pública con engine.connect() y text() para obtener filas
+            from sqlalchemy import text
+            with db_instance._engine.connect() as conn:
+                result = conn.execute(text(tables_query))
+                rows = [dict(row._mapping) for row in result]
+            
+            # Procesar resultado en formato de snapshot
+            tables = {}
+            for row in rows:
+                table_name = row['table_name']
+                if table_name not in tables:
+                    tables[table_name] = {
+                        'columns': {},
+                        'primary_keys': [],
+                        'foreign_keys': [],
+                        'indexes': []
+                    }
+                
+                tables[table_name]['columns'][row['column_name']] = {
+                    'type': row['data_type'],
+                    'nullable': row['is_nullable'] == 'YES',
+                    'default': row['column_default'],
+                    'primary_key': False  # Se puede enriquecer después
+                }
+            
+            logger.info(f"[OrchestratorService] 🔍 Introspección básica: {len(tables)} tablas")
+            
+            return {
+                'tables': tables,
+                'dialect': 'postgresql'  # Asumimos PostgreSQL por ahora
+            }
+            
+        except Exception as e:
+            logger.exception(f"[OrchestratorService] ❌ Error introspección mínima DB {db_id}: {e}")
+            return None
+    
+    def _convert_snapshot_to_legacy(self, snapshot_tables: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convierte formato de snapshot a formato legacy para compatibilidad"""
+        tables = []
+        for table_name, table_info in snapshot_tables.items():
+            table_dict = {
+                "name": table_name,
+                "columns": [
+                    {
+                        "name": col_name,
+                        "type": col_info.get('type', 'unknown'),
+                        "nullable": col_info.get('nullable', True),
+                        "default": col_info.get('default'),
+                        "primary_key": col_info.get('primary_key', False)
+                    }
+                    for col_name, col_info in table_info.get('columns', {}).items()
+                ],
+                "primary_keys": table_info.get('primary_keys', []),
+                "foreign_keys": table_info.get('foreign_keys', []),
+                "indexes": table_info.get('indexes', [])
+            }
+            tables.append(table_dict)
+        return tables
 
     @monitor_performance("load_agent_prompt")
     @profile_function("load_agent_prompt")
@@ -670,14 +1008,22 @@ class OrchestratorService:
 
     def _extract_assistant_response(self, execution_results: Dict[str, Any]) -> str:
         """Extraer la respuesta del asistente de los resultados de ejecución"""
-        logger.info(f"[OrchestratorService] 🔍 Extrayendo respuesta de: {execution_results}")
+        logger.info(f"[OrchestratorService] 🔍 Extrayendo respuesta del resultado (keys: {list(execution_results.keys()) if isinstance(execution_results, dict) else 'no dict'})")
         
         if isinstance(execution_results, dict):
             # Buscar la respuesta en diferentes campos posibles
             for key in ["assistant_response", "response", "content", "message"]:
                 if key in execution_results and execution_results[key]:
-                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en '{key}': {execution_results[key]}")
-                    return str(execution_results[key])
+                    # 🔧 FIX: Si es un dict con 'content', extraer el content
+                    response_value = execution_results[key]
+                    if isinstance(response_value, dict) and 'content' in response_value:
+                        actual_response = response_value['content']
+                        logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en '{key}.content' (longitud: {len(str(actual_response))} chars)")
+                        return str(actual_response)
+                    else:
+                        response_length = len(str(response_value))
+                        logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en '{key}' (longitud: {response_length} chars)")
+                        return str(response_value)
             
             # Si hay error, devolver mensaje de error
             if "error" in execution_results:

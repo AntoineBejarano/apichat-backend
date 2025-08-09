@@ -21,4 +21,4 @@ class EventTriggerOut(EventTriggerBase):
     updated_at: Optional[datetime]
 
     class Config:
-        orm_mode = True
+        from_attributes = True

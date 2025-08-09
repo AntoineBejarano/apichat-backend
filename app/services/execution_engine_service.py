@@ -49,9 +49,20 @@ class ExecutionEngineService:
         for idx, action in enumerate(actions, start=1):
             logger.info(f"[ExecutionEngine] ▶️ Ejecutando acción {idx}/{len(actions)}: {action['type']}")
             
+            # 🛡️ Aplicar guardrails SQL si es query de BD
+            if action['type'] == 'db_query':
+                action = self._apply_sql_guardrails(action, variables)
+            
             try:
                 if action["type"] == "db_query":
-                    result = self._run_db_query(action, variables)
+                    # Verificar si guardrails bloquearon la query
+                    if action.get('_guardrails_error'):
+                        warnings = action.get('_guardrails_warnings', [])
+                        error_msg = "Query bloqueada por guardrails de seguridad:\n" + "\n".join(warnings)
+                        logger.error(f"[ExecutionEngine] 🚫 {error_msg}")
+                        result = {"error": error_msg, "blocked_by_guardrails": True}
+                    else:
+                        result = self._run_db_query(action, variables)
                 elif action["type"] == "api_function":
                     result = self._run_api_function(action, variables, chat_id)
                 elif action["type"] == "mcp_tool":
@@ -127,7 +138,24 @@ class ExecutionEngineService:
                 logger.error(f"[ExecutionEngine] ❌ Error ejecutando SQL: {e}")
                 error_msg = str(e).lower()
                 
-                # Si hay error de columna, intentar obtener información de la tabla
+                # 🔄 NUEVO: Detectar errores de drift de esquema y activar refresh
+                if self._is_schema_drift_error(error_msg):
+                    logger.warning(f"[ExecutionEngine] 🔄 Detectado posible drift de esquema, intentando refresh del cache")
+                    
+                    # Intentar refresh del cache y reintentar UNA vez
+                    if not ctx.get('_cache_refreshed'):  # Evitar loops infinitos
+                        refresh_success = self._refresh_schema_cache(db_id)
+                        if refresh_success:
+                            ctx['_cache_refreshed'] = True  # Marcar que ya se hizo refresh
+                            logger.info(f"[ExecutionEngine] ♻️ Cache refrescado, reintentando query...")
+                            try:
+                                return db_service.execute_sql(db_conn, fixed_sql)
+                            except Exception as retry_error:
+                                logger.error(f"[ExecutionEngine] ❌ Error después del refresh: {retry_error}")
+                                # Continuar con el manejo normal de errores
+                                pass
+                
+                # Manejo original de errores de columnas
                 if "column" in error_msg and ("does not exist" in error_msg or "undefined" in error_msg):
                     logger.info("[ExecutionEngine] 🔍 Intentando obtener información de la tabla...")
                     # Extraer nombre de tabla del error o SQL
@@ -409,3 +437,198 @@ class ExecutionEngineService:
             return f"PRAGMA table_info('{table_name}');"
         else:
             return f"SELECT * FROM {table_name} LIMIT 0;"
+    
+    # =====================================================
+    # GUARDRAILS SQL
+    # =====================================================
+    
+    def _apply_sql_guardrails(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Aplica guardrails SQL a una acción de query.
+        
+        Args:
+            action: Acción de tipo db_query
+            variables: Variables del contexto
+            
+        Returns:
+            Acción modificada con query validada/corregida
+        """
+        try:
+            from app.services.sql_guardrails_service import SQLGuardrailsService
+            
+            guardrails = SQLGuardrailsService(self.factory)
+            
+            original_query = action.get('query', '')
+            db_id = action.get('db_id')
+            
+            if not original_query or not db_id:
+                logger.warning("[ExecutionEngine] 🛡️ Acción sin query o db_id - saltando guardrails")
+                return action
+            
+            # Validar y corregir query
+            fixed_query, warnings, is_safe = guardrails.validate_and_fix_query(
+                query=original_query,
+                user_id=self.user_id,
+                db_id=db_id,  # 🔧 Siempre UUID ahora
+                context=variables
+            )
+            
+            # Log de guardrails
+            if warnings:
+                logger.info(f"[ExecutionEngine] 🛡️ Guardrails aplicados - {len(warnings)} warnings:")
+                for warning in warnings:
+                    logger.info(f"  {warning}")
+            
+            if not is_safe:
+                logger.error("[ExecutionEngine] 🚫 Query marcada como no segura por guardrails")
+                # En lugar de ejecutar, devolver error
+                action_copy = action.copy()
+                action_copy['_guardrails_error'] = True
+                action_copy['_guardrails_warnings'] = warnings
+                return action_copy
+            
+            # Actualizar query si fue modificada
+            if fixed_query != original_query:
+                logger.info("[ExecutionEngine] 🔧 Query corregida por guardrails")
+                action_copy = action.copy()
+                action_copy['query'] = fixed_query
+                action_copy['_original_query'] = original_query
+                action_copy['_guardrails_applied'] = True
+                action_copy['_guardrails_warnings'] = warnings
+                return action_copy
+            
+            # Query no modificada pero validada
+            if warnings:
+                action_copy = action.copy()
+                action_copy['_guardrails_warnings'] = warnings
+                return action_copy
+            
+            return action
+            
+        except Exception as e:
+            logger.exception(f"[ExecutionEngine] ❌ Error aplicando guardrails: {e}")
+            # En caso de error, devolver acción original pero con advertencia
+            action_copy = action.copy()
+            action_copy['_guardrails_error'] = True
+            action_copy['_guardrails_warnings'] = [f"❌ Error en guardrails: {str(e)}"]
+            return action_copy
+    
+    # ────────────────────────────────────────────────────────────────
+    #   RECUPERACIÓN DE ERRORES CON CACHE REFRESH
+    # ────────────────────────────────────────────────────────────────
+    def _is_schema_drift_error(self, error_msg: str) -> bool:
+        """Detecta si un error podría ser causado por drift de esquema"""
+        drift_indicators = [
+            "relation does not exist",
+            "table does not exist", 
+            "column does not exist",
+            "undefined table",
+            "undefined column",
+            "no such table",
+            "no such column",
+            "unknown column",
+            "unknown table",
+            "invalid column name",
+            "invalid table name"
+        ]
+        
+        error_lower = error_msg.lower()
+        return any(indicator in error_lower for indicator in drift_indicators)
+    
+    def _refresh_schema_cache(self, db_id: UUID) -> bool:
+        """
+        Refresca el cache de esquema para una base de datos específica.
+        Retorna True si el refresh fue exitoso.
+        """
+        try:
+            logger.info(f"[ExecutionEngine] 🔄 Refrescando cache de esquema para DB {db_id}")
+            
+            # Invalidar cache existente
+            cache_service = self.factory.get_detailed_schema_cache_service()
+            cache_service.invalidate_cache(self.user_id, db_id)
+            
+            # Generar nuevo cache
+            # Usamos el mismo método que usa el orchestrator para generar schemas
+            from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
+            
+            # Introspección directa usando DatabaseService
+            database_service = self.factory.get_database_service()
+            sql_instance = database_service.get_sql_instance(db_id)
+            
+            if not sql_instance:
+                logger.error(f"[ExecutionEngine] ❌ No se pudo obtener instancia SQL para DB {db_id}")
+                return False
+            
+            # Query para obtener información de tablas y columnas
+            tables_query = """
+                SELECT table_name, column_name, data_type, is_nullable, column_default 
+                FROM information_schema.columns 
+                WHERE table_schema = 'public'
+                ORDER BY table_name, ordinal_position
+            """
+            
+            # Usar el engine directamente para obtener resultados estructurados
+            from sqlalchemy import text
+            if hasattr(sql_instance, '_engine'):
+                engine = sql_instance._engine
+                
+                with engine.connect() as conn:
+                    result = conn.execute(text(tables_query))
+                    rows = [dict(row._mapping) for row in result]
+                    
+                    # Procesar filas en estructura de tablas
+                    tables = {}
+                    for row in rows:
+                        table_name = row['table_name']
+                        column_name = row['column_name']
+                        data_type = row['data_type']
+                        is_nullable = row['is_nullable']
+                        column_default = row['column_default']
+                        
+                        if table_name not in tables:
+                            tables[table_name] = {
+                                'columns': {},
+                                'primary_keys': [],
+                                'foreign_keys': [],
+                                'indexes': []
+                            }
+                        
+                        tables[table_name]['columns'][column_name] = {
+                            'type': data_type,
+                            'nullable': is_nullable == 'YES',
+                            'default': column_default,
+                            'primary_key': False
+                        }
+                    
+                    if tables:
+                        # Crear snapshot y actualizar cache
+                        dialect = database_service.get_dialect_name(db_id) or 'postgresql'
+                        snapshot = SchemaSnapshot(
+                            tables=tables,
+                            enrichment_level=EnrichmentLevel.BASIC,
+                            dialect=dialect
+                        )
+                        
+                        cache_entry = cache_service.create_or_update_cache(
+                            user_id=self.user_id,
+                            db_id=db_id,
+                            snapshot=snapshot,
+                            enrichment_level=EnrichmentLevel.BASIC
+                        )
+                        
+                        if cache_entry:
+                            logger.info(f"[ExecutionEngine] ✅ Cache refrescado exitosamente para DB {db_id}: {len(tables)} tablas")
+                            return True
+                        else:
+                            logger.error(f"[ExecutionEngine] ❌ Error creando entrada de cache para DB {db_id}")
+                            return False
+                    else:
+                        logger.warning(f"[ExecutionEngine] ⚠️ No se encontraron tablas en DB {db_id}")
+                        return False
+            else:
+                logger.error(f"[ExecutionEngine] ❌ No se pudo acceder al engine para DB {db_id}")
+                return False
+                
+        except Exception as e:
+            logger.exception(f"[ExecutionEngine] ❌ Error refrescando cache para DB {db_id}: {e}")
+            return False

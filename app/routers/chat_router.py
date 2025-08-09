@@ -71,6 +71,7 @@ async def send_message(
     db_ids: Optional[List[UUID]] = None,
     app_ids: Optional[List[UUID]] = None,
     explorer: bool = False,
+    iterative_rag: bool = False,
     factory: ServiceFactory = Depends(get_factory),
 ):
     """
@@ -83,6 +84,7 @@ async def send_message(
     - db_ids: Lista de IDs de bases de datos para contexto (opcional)
     - app_ids: Lista de IDs de aplicaciones para contexto (opcional)
     - explorer: Modo explorador (opcional, default: False)
+    - iterative_rag: Usar flujo RAG iterativo (opcional, default: False)
     """
     try:
         # Si no se proporciona chat_id, usar el chat más reciente o crear uno nuevo
@@ -95,23 +97,46 @@ async def send_message(
                 new_chat = chat_service.create_chat(ChatCreate(name="Auto Chat"))
                 chat_id = new_chat.id
 
-        # Llamar al orchestrator con los mismos parámetros que el WebSocket
-        response = await factory.get_orchestrator_service().handle_user_message(
-            chat_id=chat_id,
-            db_ids=db_ids or [],
-            app_ids=app_ids or [],
-            explorer=explorer,
-            agent_id=agent_id,
-            message=message,
-        )
+        # Decidir qué flujo usar
+        orchestrator_service = factory.get_orchestrator_service()
+        
+        if iterative_rag:
 
-        return {
+            # Usar el nuevo flujo RAG iterativo
+            response = await orchestrator_service.run_iterative_rag(
+                chat_id=chat_id,
+                message=message,
+                db_ids=db_ids or [],
+                app_ids=app_ids or [],
+                explorer=explorer,
+                max_iterations=3
+            )
+        else:
+            # Usar el flujo tradicional
+            response = await orchestrator_service.handle_user_message(
+                chat_id=chat_id,
+                db_ids=db_ids or [],
+                app_ids=app_ids or [],
+                explorer=explorer,
+                agent_id=agent_id,
+                message=message,
+            )
+
+        # Preparar respuesta
+        result = {
             "success": True,
             "chat_id": chat_id,
             "assistant_response": response.get("assistant_response", "🤖 No response generated"),
             "execution_results": response.get("execution_results", {}),
             "steps": response.get("steps", []),
         }
+        
+        # Agregar información específica del flujo iterativo si se usó
+        if iterative_rag:
+            result["iterative_rag"] = True
+            result["iterations_used"] = response.get("iterations_used", 0)
+        
+        return result
 
     except Exception as e:
         raise HTTPException(

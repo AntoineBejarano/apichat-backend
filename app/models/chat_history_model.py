@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, ForeignKey, DateTime, Text, Boolean, Integer, Index
+from sqlalchemy import Column, String, ForeignKey, DateTime, Text, Boolean, Integer, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -19,6 +19,9 @@ class ChatHistory(Base):
     content = Column(Text, nullable=False)
     name = Column(String, nullable=True)
     token_count = Column(Integer, nullable=True)
+    
+    # 🔧 Campo de idempotencia para evitar duplicados en reintentos
+    idempotency_key = Column(String(64), nullable=False, index=True)  # SHA256 hash
 
     is_function_call = Column(Boolean, nullable=False, default=False)
     function_call_id = Column(UUID(as_uuid=True), ForeignKey("function_call_logs.id"), nullable=True)
@@ -39,6 +42,9 @@ class ChatHistory(Base):
 
     # ⚡ ÍNDICES COMPUESTOS PARA OPTIMIZAR CONSULTAS FRECUENTES
     __table_args__ = (
+        # 🔧 Restricción de idempotencia - evita mensajes duplicados
+        UniqueConstraint('idempotency_key', name='uq_chat_history_idempotency'),
+        
         # Índice para consultas por chat_id + timestamp (historial de chat)
         Index('idx_chat_history_chat_timestamp', 'chat_id', 'timestamp'),
         
