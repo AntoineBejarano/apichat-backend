@@ -127,7 +127,7 @@ def execute_strategy_route(
             body.agent_id,
             body.parameters,
         )
-        return StrategyExecuteResponse(**outcome.dict())
+        return StrategyExecuteResponse(**outcome.model_dump())
     except HTTPException:
         raise
     except Exception as e:
@@ -151,7 +151,7 @@ def import_strategy_route(
     payload: StrategyImportSchema,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    return factory.get_strategy_service().import_from_json(payload.dict())
+    return factory.get_strategy_service().import_from_json(payload.model_dump())
 
 
 @router.get(

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
@@ -52,7 +52,7 @@ class MCPIntegrationService:
             mcp.mcp_type = data.mcp_type
         if data.mcp_metadata is not None:
             mcp.mcp_metadata = data.mcp_metadata.model_dump()
-        mcp.updated_at = datetime.utcnow()
+        mcp.updated_at = datetime.now(timezone.utc)
 
         self.db.commit()
         self.db.refresh(mcp)

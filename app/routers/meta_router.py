@@ -7,7 +7,7 @@ y conocer la versión desplegada.
 
 import importlib.metadata
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends, Request, status, HTTPException
@@ -48,7 +48,7 @@ def health_check(factory: ServiceFactory = Depends(get_factory)) -> Dict[str, st
 
     Devuelve un diccionario con el estado de cada subsistema.
     """
-    status_report = {"timestamp": datetime.utcnow().isoformat()}
+    status_report = {"timestamp": datetime.now(timezone.utc).isoformat()}
     db = factory.db
 
     # --- Base de datos -------------------------------------------------

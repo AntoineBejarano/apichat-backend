@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
 
@@ -27,7 +27,7 @@ class UsageService:
         """Verifica si el cache está válido"""
         if not self._cache_timestamp:
             return False
-        return (datetime.utcnow() - self._cache_timestamp).seconds < self._cache_ttl
+        return (datetime.now(timezone.utc) - self._cache_timestamp).seconds < self._cache_ttl
 
     def _get_cached_usage(self) -> Optional[dict]:
         """Obtiene datos de uso desde cache si está válido"""
@@ -39,7 +39,7 @@ class UsageService:
     def _set_cache(self, data: dict):
         """Establece cache con timestamp"""
         self._cache = data
-        self._cache_timestamp = datetime.utcnow()
+        self._cache_timestamp = datetime.now(timezone.utc)
         logger.debug(f"📊 Cache actualizado para user_id={self.user.id}")
 
     def register_token_usage(self, prompt_tokens: int, completion_tokens: int, model: str):
@@ -102,7 +102,7 @@ class UsageService:
         if cached and 'monthly_tokens' in cached:
             return cached['monthly_tokens']
 
-        start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_of_month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         usage = self.db.query(
             func.coalesce(func.sum(TokenUsage.total_tokens), 0)
         ).filter(
@@ -127,7 +127,7 @@ class UsageService:
         if cached and 'monthly_executions' in cached:
             return cached['monthly_executions']
 
-        start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_of_month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         result = self.db.query(FunctionCallLog).filter(
             FunctionCallLog.user_id == self.user.id,
             FunctionCallLog.timestamp >= start_of_month

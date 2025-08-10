@@ -26,7 +26,7 @@ class SchedulerService:
         Escanea todas las estrategias activas con trigger_type='cron',
         y ejecuta las que deben activarse en este momento según croniter.
         """
-        now = datetime.utcnow().replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         logger.info("[SchedulerService] 🕒 Ejecutando chequeo de estrategias CRON (%s)", now.isoformat())
 
         # Buscar estrategias activas con trigger_type = 'cron'

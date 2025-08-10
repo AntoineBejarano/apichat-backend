@@ -3,18 +3,15 @@ from typing import TYPE_CHECKING, List, Optional
 from uuid import UUID
 from sqlalchemy.engine import create_engine
 
-from langchain.agents import initialize_agent, AgentType
-from langchain_community.chat_models import ChatOpenAI
 from langchain_experimental.sql import SQLDatabaseChain
 from langchain_community.utilities import SQLDatabase
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_core.documents import Document
 
 from app.models.database_model import DatabaseConnection
 from app.models.function_model import Function
 from app.models.app_model import App
-
 from app.core.config import settings
 
 if TYPE_CHECKING:
@@ -26,9 +23,13 @@ logger = logging.getLogger(__name__)
 class LangchainService:
     def __init__(self, factory: "ServiceFactory"):
         self.factory = factory
+        model = getattr(settings, "OPENAI_SQL_MODEL", None) or settings.OPENAI_MODEL
         self.llm = ChatOpenAI(
-            temperature=settings.OPENAI_TEMPERATURE,
-            model=settings.OPENAI_MODEL
+            temperature=getattr(settings, "OPENAI_TEMPERATURE", 0),
+            model=model,
+            max_tokens=600,
+            timeout=30,
+            max_retries=1,
         )
 
     def build_connection_string(self, db: DatabaseConnection) -> str:
@@ -38,15 +39,10 @@ class LangchainService:
         logger.info(f"[LangchainService] 🧠 Preguntando a DB {db.id}: '{question}'")
         try:
             engine = create_engine(self.build_connection_string(db))
-            sql_db = SQLDatabase(engine)
-
-            db_chain = SQLDatabaseChain.from_llm(
-                llm=self.llm,
-                db=sql_db,
-                verbose=False
-            )
-
-            return db_chain.run(question)
+            sql_db = SQLDatabase(engine, sample_rows_in_table_info=0)
+            db_chain = SQLDatabaseChain.from_llm(llm=self.llm, db=sql_db, verbose=False, use_query_checker=True)
+            out = db_chain.invoke({"query": question})
+            return out if isinstance(out, str) else str(out)
         except Exception as e:
             logger.exception(f"[LangchainService] ❌ Error con LangChain SQLDatabaseChain: {str(e)}")
             raise RuntimeError("Error procesando la pregunta con LangChain SQLDatabaseChain.")
@@ -58,7 +54,7 @@ class LangchainService:
     class FunctionRetriever:
         def __init__(self, functions: List[Function]):
             self.functions = functions
-            self.embeddings = OpenAIEmbeddings()
+            self.embeddings = OpenAIEmbeddings(model=getattr(settings, "OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-small"))
             self.vectorstore = self._build_vectorstore()
 
         def _build_vectorstore(self):
@@ -72,13 +68,13 @@ class LangchainService:
             return [f for f in self.functions if f.id in relevant_ids]
 
     def get_app_retriever(self) -> "LangchainService.AppRetriever":
-        apps: List[App] = self.factory.get_apps_service().list_all_for_user()
+        apps: List[App] = self.factory.get_apps_service().get_all()
         return self.AppRetriever(apps)
 
     class AppRetriever:
         def __init__(self, apps: List[App]):
             self.apps = apps
-            self.embeddings = OpenAIEmbeddings()
+            self.embeddings = OpenAIEmbeddings(model=getattr(settings, "OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-small"))
             self.vectorstore = self._build_vectorstore()
 
         def _build_vectorstore(self):
@@ -98,7 +94,7 @@ class LangchainService:
     class DatabaseRetriever:
         def __init__(self, databases: List[DatabaseConnection]):
             self.databases = databases
-            self.embeddings = OpenAIEmbeddings()
+            self.embeddings = OpenAIEmbeddings(model=getattr(settings, "OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-small"))
             self.vectorstore = self._build_vectorstore()
 
         def _build_vectorstore(self):

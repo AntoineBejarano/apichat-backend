@@ -20,7 +20,7 @@ class RoleService:
 
     def create(self, role_data: RoleCreate) -> Role:
         logger.info("[RoleService] ➕ Creating new role: %s", role_data.name)
-        role = Role(**role_data.dict())
+        role = Role(**role_data.model_dump())
         self.db.add(role)
         self.db.commit()
         self.db.refresh(role)
@@ -41,7 +41,7 @@ class RoleService:
     def update(self, role_id: int, updates: RoleUpdate) -> Role:
         role = self.get_by_id(role_id)
         logger.info("[RoleService] ✏️ Updating role ID=%s", role_id)
-        for field, value in updates.dict(exclude_unset=True).items():
+        for field, value in updates.model_dump(exclude_unset=True).items():
             setattr(role, field, value)
         self.db.commit()
         self.db.refresh(role)

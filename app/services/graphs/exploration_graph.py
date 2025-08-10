@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional, TypedDict
 from uuid import UUID
+from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph
 from app.core.service_factory import ServiceFactory
@@ -128,7 +129,8 @@ class ExplorationGraph:
                                 snapshot = SchemaSnapshot(
                                     tables=introspected_schema['tables'],
                                     enrichment_level=EnrichmentLevel.BASIC,
-                                    dialect=introspected_schema.get('dialect', 'postgresql')
+                                    dialect=introspected_schema.get('dialect', 'postgresql'),
+                                    generated_at=datetime.now(timezone.utc)
                                 )
                                 
                                 # Crear cache
@@ -228,9 +230,13 @@ class ExplorationGraph:
                 total_chars = sum(len(schema) for schema in compact_schemas.values())
                 logger.info(f"[ExplorationGraph] 📋 Schemas listos: {total_chars} chars total")
             
+            # 🔧 FIX: Asegurar que db_ids sean siempre strings para consistencia con compact_schemas
+            # compact_schemas usa string keys, así que db_ids deben ser strings también
+            normalized_db_ids = [str(db_id) for db_id in db_ids]
+            
             return {
                 **state,
-                "db_ids": db_ids,
+                "db_ids": normalized_db_ids,  # 🔧 Siempre strings para consistencia
                 "db_conns": db_conns,
                 "db_dialect": db_dialect,
                 "apps": apps,

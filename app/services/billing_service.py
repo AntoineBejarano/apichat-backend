@@ -4,7 +4,7 @@ import stripe
 import logging
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.config import settings
 from app.models.plan_model import Plan
@@ -59,7 +59,7 @@ class BillingService:
             plan_id=plan_id,
             stripe_subscription_id=stripe_subscription_id,
             status="active",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         self.db.add(subscription)
         self.db.commit()
@@ -75,7 +75,7 @@ class BillingService:
         try:
             stripe.Subscription.delete(sub.stripe_subscription_id)
             sub.status = "cancelled"
-            sub.ended_at = datetime.utcnow()
+            sub.ended_at = datetime.now(timezone.utc)
             self.db.commit()
             logger.info(f"✅ Suscripción cancelada en Stripe y en la base de datos")
         except Exception as e:
@@ -121,7 +121,7 @@ class BillingService:
                 old_status = sub.status
                 sub.status = stripe_sub.status
                 if stripe_sub.status == "canceled" and not sub.ended_at:
-                    sub.ended_at = datetime.utcnow()
+                    sub.ended_at = datetime.now(timezone.utc)
                 if old_status != sub.status:
                     logger.info(f"🔁 Suscripción {sub.id} cambió de {old_status} a {sub.status}")
             except Exception as e:

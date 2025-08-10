@@ -74,7 +74,7 @@ class SchemaSnapshot(BaseModel):
     statistics: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Estadísticas de tablas")
     dialect: Optional[str] = Field(None, description="Dialecto de la BD (postgresql, mysql, etc.)")
     version: str = Field(default="1.0", description="Versión del formato de snapshot")
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class DetailedSchemaCacheCreate(BaseModel):
@@ -106,8 +106,9 @@ class DetailedSchemaCacheResponse(BaseModel):
     last_accessed: datetime
     enriched_at: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class DetailedSchemaCacheUpdate(BaseModel):
@@ -148,10 +149,23 @@ class FingerprintGenerator:
         """
         import hashlib
         import json
+        from datetime import datetime, timezone
         
-        # Serializar snapshot de forma determinística
+        def _serialize_datetime(obj):
+            """Convierte objetos datetime a strings ISO para serialización JSON"""
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            elif isinstance(obj, dict):
+                return {k: _serialize_datetime(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_serialize_datetime(item) for item in obj]
+            else:
+                return obj
+        
+        # Serializar snapshot de forma determinística, convirtiendo datetime a strings
         snapshot_dict = snapshot.model_dump()
-        content = json.dumps(snapshot_dict, sort_keys=True, separators=(',', ':'))
+        serializable_dict = _serialize_datetime(snapshot_dict)
+        content = json.dumps(serializable_dict, sort_keys=True, separators=(',', ':'))
         return hashlib.sha256(content.encode()).hexdigest()[:32]
 
 

@@ -353,7 +353,7 @@ class SchemaExplorerService:
                 "foreign_keys": table_info.foreign_keys
             }
         
-        schema_str = json.dumps(schema_data, sort_keys=True)
+        schema_str = json.dumps(schema_data, sort_keys=True, default=str)
         return hashlib.sha256(schema_str.encode()).hexdigest()
     
     def get_table_info(self, db_id: UUID, table_name: str) -> Optional[Dict[str, Any]]:

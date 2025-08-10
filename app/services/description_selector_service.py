@@ -58,7 +58,7 @@ class DescriptionSelectorService(BaseService):
             
             # Obtener Apps del usuario
             app_service = self.factory.get_app_service()
-            user_apps = app_service.get_user_apps()
+            user_apps = app_service.get_all()
             
             apps = []
             for app in user_apps:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json, re, logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypedDict
 from uuid import UUID
 
@@ -53,6 +54,10 @@ class ExecutionEngineService:
             if action['type'] == 'db_query':
                 action = self._apply_sql_guardrails(action, variables)
             
+            # 🛡️ NUEVO: Aplicar guardrails de formato para chat
+            if action['type'] == 'db_query':
+                action = self._apply_chat_format_guardrails(action, variables)
+            
             try:
                 if action["type"] == "db_query":
                     # Verificar si guardrails bloquearon la query
@@ -88,6 +93,9 @@ class ExecutionEngineService:
                 if idx > 1:
                     logger.warning(f"[ExecutionEngine] ⚠️ Parando ejecución debido a error en acción {idx}")
                     break
+
+        # 🔧 NUEVO: Resolver placeholders faltantes antes del renderizado
+        variables = self._resolve_missing_placeholders(variables, plan.get("assistant_response", ""))
 
         # 3) ────── Render final de assistant_response ──────
         assistant_resp = self._render_text(
@@ -133,7 +141,16 @@ class ExecutionEngineService:
             rendered_sql = self._render_text(sql, ctx)
             fixed_sql = self._rewrite_sql_for_dialect(rendered_sql, dialect)
             try:
-                return db_service.execute_sql(db_conn, fixed_sql)
+                raw_result = db_service.execute_sql(db_conn, fixed_sql)
+                
+                # 🔧 NUEVO: Aplicar formateo automático para chat
+                formatted_result = self._format_result_for_chat(raw_result, "db_query")
+                
+                # 🔧 NUEVO: Agregar metadata de guardrails si se aplicaron
+                if action.get('_chat_guardrails_applied'):
+                    formatted_result['_guardrails_info'] = action['_chat_guardrails_applied']
+                
+                return formatted_result
             except Exception as e:
                 logger.error(f"[ExecutionEngine] ❌ Error ejecutando SQL: {e}")
                 error_msg = str(e).lower()
@@ -258,7 +275,9 @@ class ExecutionEngineService:
 
         if question := action.get("question"):
             rendered_q = self._render_text(question, ctx)
-            return self.factory.get_langchain_service().ask_database_question(db_conn, rendered_q)
+            # Obtener el DatabaseConnection para pasar a ask_database_question
+            db_record = db_service.get_record(db_id)
+            return self.factory.get_langchain_service().ask_database_question(db_record, rendered_q)
 
         raise ValueError("Acción db_query sin 'sql' ni 'question'")
 
@@ -313,18 +332,40 @@ class ExecutionEngineService:
         """
         Sustituye {{variable}} y (de forma tolerante) {variable}
         por str(variables[variable]) si existe.
+        
+        🔧 NUEVO: Valida que no queden placeholders sin resolver
         """
         # 1) {{var}}
         def repl_double(m):
             key = m.group(1).strip()
-            return str(variables.get(key, f"{{{{{key}}}}}"))
+            if key in variables:
+                return str(variables[key])
+            else:
+                # 🔧 NUEVO: Log de placeholder no resuelto
+                logger.warning(f"[ExecutionEngine] 🚫 Placeholder no resuelto en renderizado: {{{{key}}}}")
+                return f"{{{{{key}}}}}"
+        
         out = re.sub(r"\{\{(.*?)\}\}", repl_double, template)
 
         # 2) {var}  -> solo identificadores simples para evitar romper JSON/SQL
         def repl_single(m):
             key = m.group(1)
-            return str(variables[key]) if key in variables else m.group(0)
+            if key in variables:
+                return str(variables[key])
+            else:
+                # 🔧 NUEVO: Log de placeholder no resuelto
+                logger.warning(f"[ExecutionEngine] 🚫 Placeholder no resuelto en renderizado: {key}")
+                return m.group(0)
+        
         out = re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", repl_single, out)
+
+        # 🔧 NUEVO: Validación final - verificar si quedan placeholders
+        remaining_placeholders = re.findall(r'\{\{([^}]+)\}\}', out)
+        if remaining_placeholders:
+            logger.error(f"[ExecutionEngine] 🚫 Placeholders sin resolver después del renderizado: {remaining_placeholders}")
+            # 🔧 NUEVO: Reemplazar con mensaje de error controlado
+            out = re.sub(r'\{\{[^}]+\}\}', "[VARIABLE NO DISPONIBLE]", out)
+            out += "\n\n⚠️ *Algunas variables no pudieron ser resueltas en la respuesta.*"
 
         return out
 
@@ -458,11 +499,11 @@ class ExecutionEngineService:
             
             guardrails = SQLGuardrailsService(self.factory)
             
-            original_query = action.get('query', '')
-            db_id = action.get('db_id')
+            original_query = action.get('sql', '')
+            db_id = action.get('database_id')
             
             if not original_query or not db_id:
-                logger.warning("[ExecutionEngine] 🛡️ Acción sin query o db_id - saltando guardrails")
+                logger.warning("[ExecutionEngine] 🛡️ Acción sin sql o database_id - saltando guardrails")
                 return action
             
             # Validar y corregir query
@@ -491,8 +532,8 @@ class ExecutionEngineService:
             if fixed_query != original_query:
                 logger.info("[ExecutionEngine] 🔧 Query corregida por guardrails")
                 action_copy = action.copy()
-                action_copy['query'] = fixed_query
-                action_copy['_original_query'] = original_query
+                action_copy['sql'] = fixed_query
+                action_copy['_original_sql'] = original_query
                 action_copy['_guardrails_applied'] = True
                 action_copy['_guardrails_warnings'] = warnings
                 return action_copy
@@ -606,7 +647,8 @@ class ExecutionEngineService:
                         snapshot = SchemaSnapshot(
                             tables=tables,
                             enrichment_level=EnrichmentLevel.BASIC,
-                            dialect=dialect
+                            dialect=dialect,
+                            generated_at=datetime.now(timezone.utc)
                         )
                         
                         cache_entry = cache_service.create_or_update_cache(
@@ -632,3 +674,273 @@ class ExecutionEngineService:
         except Exception as e:
             logger.exception(f"[ExecutionEngine] ❌ Error refrescando cache para DB {db_id}: {e}")
             return False
+
+    # ────────────────────────────────────────────────────────────────
+    #   NUEVO: Resolución de placeholders faltantes
+    # ────────────────────────────────────────────────────────────────
+    def _resolve_missing_placeholders(self, variables: Dict[str, Any], template: str) -> Dict[str, Any]:
+        """
+        Resuelve placeholders faltantes en la plantilla:
+        1. Detecta todos los placeholders {{...}}
+        2. Genera automáticamente variables *_formatted faltantes
+        3. Registra telemetría de placeholders faltantes
+        """
+        if not template:
+            return variables
+
+        # Extraer todos los placeholders del template
+        placeholders = re.findall(r'\{\{([^}]+)\}\}', template)
+        logger.info(f"[ExecutionEngine] 🔍 Detectados {len(placeholders)} placeholders en template")
+
+        missing_placeholders = []
+        auto_generated = []
+        blocked_placeholders = []
+
+        for placeholder in placeholders:
+            placeholder = placeholder.strip()
+            
+            # Si ya existe la variable, está bien
+            if placeholder in variables:
+                logger.debug(f"[ExecutionEngine] ✅ Placeholder '{placeholder}' ya resuelto")
+                continue
+
+            # Si termina en _formatted, intentar generar automáticamente
+            if placeholder.endswith('_formatted'):
+                base_var = placeholder[:-10]  # Remover '_formatted'
+                if base_var in variables:
+                    formatted_value = self._auto_format_variable(base_var, variables[base_var])
+                    variables[placeholder] = formatted_value
+                    auto_generated.append(placeholder)
+                    logger.info(f"[ExecutionEngine] 🔧 Auto-generado '{placeholder}' para '{base_var}'")
+                    continue
+                else:
+                    missing_placeholders.append(placeholder)
+                    logger.warning(f"[ExecutionEngine] ⚠️ Placeholder '{placeholder}' requiere '{base_var}' que no existe")
+                    continue
+
+            # Si no existe de ninguna forma, es un placeholder faltante
+            missing_placeholders.append(placeholder)
+            logger.warning(f"[ExecutionEngine] ❌ Placeholder '{placeholder}' no existe en variables")
+
+        # Telemetría y logging
+        if missing_placeholders:
+            logger.warning(f"[ExecutionEngine] 🚫 Placeholders faltantes: {missing_placeholders}")
+            # Registrar evento de telemetría si está disponible
+            try:
+                telemetry = self.factory.get_telemetry_service()
+                telemetry.record_event(
+                    event_type="missing_placeholders_detected",
+                    user_id=self.user_id,
+                    metadata={
+                        "missing_placeholders": missing_placeholders,
+                        "auto_generated": auto_generated,
+                        "template_length": len(template),
+                        "variables_count": len(variables)
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"[ExecutionEngine] No se pudo registrar telemetría: {e}")
+
+        if auto_generated:
+            logger.info(f"[ExecutionEngine] ✅ Placeholders auto-generados: {auto_generated}")
+
+        return variables
+
+    def _auto_format_variable(self, var_name: str, value: Any) -> str:
+        """
+        Genera automáticamente una versión formateada de una variable.
+        Aplica formateo inteligente basado en el tipo de dato.
+        """
+        try:
+            if isinstance(value, list):
+                if not value:
+                    return "No hay datos disponibles"
+                
+                # Si es lista homogénea, crear tabla Markdown
+                if len(value) <= 20:
+                    return self._format_list_as_table(value)
+                else:
+                    # Truncar y mostrar contador
+                    truncated = value[:20]
+                    table = self._format_list_as_table(truncated)
+                    return f"{table}\n\n*+{len(value) - 20} elementos más*"
+            
+            elif isinstance(value, dict):
+                # Pretty-print JSON compacto
+                return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+            
+            elif isinstance(value, (str, int, float, bool)):
+                return str(value)
+            
+            else:
+                # Para otros tipos, usar representación string
+                return str(value)
+                
+        except Exception as e:
+            logger.warning(f"[ExecutionEngine] ⚠️ Error auto-formateando '{var_name}': {e}")
+            return str(value)
+
+    def _format_list_as_table(self, items: List[Any]) -> str:
+        """
+        Formatea una lista como tabla Markdown.
+        Detecta automáticamente si es lista de dicts o valores simples.
+        """
+        if not items:
+            return "No hay datos"
+        
+        # Si es lista de dicts, crear tabla con columnas
+        if isinstance(items[0], dict):
+            if not items[0]:
+                return "Datos vacíos"
+            
+            # Obtener todas las claves únicas
+            all_keys = set()
+            for item in items:
+                if isinstance(item, dict):
+                    all_keys.update(item.keys())
+            
+            if not all_keys:
+                return "Datos sin estructura"
+            
+            # Crear tabla Markdown
+            keys_list = sorted(all_keys)
+            table = "| " + " | ".join(keys_list) + " |\n"
+            table += "|" + "|".join(["---"] * len(keys_list)) + "|\n"
+            
+            for item in items:
+                if isinstance(item, dict):
+                    row = []
+                    for key in keys_list:
+                        value = item.get(key, "")
+                        # Truncar valores muy largos
+                        if isinstance(value, str) and len(value) > 50:
+                            value = value[:47] + "..."
+                        row.append(str(value))
+                    table += "| " + " | ".join(row) + " |\n"
+            
+            return table
+        
+        else:
+            # Lista simple de valores
+            return "\n".join([f"• {item}" for item in items])
+
+    def _apply_chat_format_guardrails(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if action.get('type') != 'db_query':
+                return action
+
+            # si guardrails SQL ya marcó error, no tocar
+            if action.get('_guardrails_error'):
+                return action
+
+            original_sql = action.get('sql')
+            # si no hay SQL (modo NL2SQL por 'question'), no aplicamos guardrails de chat
+            if not original_sql or not isinstance(original_sql, str) or not original_sql.strip():
+                logger.debug("[ExecutionEngine] chat guardrails: no 'sql' present (NL2SQL flow) -> skip")
+                return action
+
+            sql_upper = original_sql.upper()
+
+            # bloquear SELECT * (pero permitir COUNT(*))
+            if re.search(r'\bSELECT\s+\*\b', sql_upper) and 'COUNT(*)' not in sql_upper:
+                logger.warning("[ExecutionEngine] 🚫 SELECT * detectado - bloqueando query")
+                ac = action.copy()
+                ac['_guardrails_error'] = True
+                ac['_guardrails_warnings'] = [
+                    "SELECT * no permitido por seguridad",
+                    "Especifica columnas concretas (ej.: SELECT id, nombre FROM tabla LIMIT 20)"
+                ]
+                return ac
+
+            # si no hay LIMIT, añadirlo solo para SELECTs (no DDL/DML)
+            is_select = sql_upper.strip().startswith("SELECT")
+            has_limit = re.search(r'\bLIMIT\s+\d+\b', sql_upper) is not None
+            if is_select and not has_limit:
+                logger.info("[ExecutionEngine] 🔒 Agregando LIMIT 20 a query sin límite")
+                base = original_sql.rstrip().rstrip(';')
+                ac = action.copy()
+                ac['sql'] = f"{base} LIMIT 20;"
+                meta = ac.get('_chat_guardrails_applied', {})
+                meta.update({'limit_added': True, 'max_rows': 20})
+                ac['_chat_guardrails_applied'] = meta
+                action = ac
+                sql_upper = ac['sql'].upper()
+
+            # advertencia: SELECT sin WHERE (solo aviso si tampoco hay LIMIT explícito)
+            if is_select and 'WHERE' not in sql_upper and not has_limit:
+                ac = action.copy()
+                meta = ac.get('_chat_guardrails_applied', {})
+                meta.update({'warning': "Query sin filtros WHERE – puede devolver demasiadas filas"})
+                ac['_chat_guardrails_applied'] = meta
+                action = ac
+
+            return action
+
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error aplicando guardrails de chat: {e}")
+            return action
+
+
+    def _format_result_for_chat(self, result: Any, action_type: str = "db_query") -> Dict[str, Any]:
+        """
+        Formatea resultados para ser apropiados y legibles en chat.
+        Aplica límites automáticos y formateo inteligente.
+        """
+        try:
+            if action_type == "db_query":
+                if isinstance(result, list):
+                    # 🔒 LIMITAR resultados para chat
+                    if len(result) > 20:
+                        preview_result = result[:20]
+                        return {
+                            "data": preview_result,
+                            "total_rows": len(result),
+                            "is_preview": True,
+                            "preview_limit": 20,
+                            "message": f"Mostrando vista previa de {len(result)} filas (limitado a 20 para chat)",
+                            "formatted": True,
+                            "format_type": "preview_with_count"
+                        }
+                    
+                    # Formatear como tabla legible
+                    if result:
+                        return {
+                            "data": result,
+                            "total_rows": len(result),
+                            "is_preview": False,
+                            "formatted": True,
+                            "format_type": "full_table",
+                            "table_markdown": self._format_list_as_table(result)
+                        }
+                    
+                    # Sin resultados
+                    return {
+                        "data": [],
+                        "total_rows": 0,
+                        "is_preview": False,
+                        "formatted": True,
+                        "format_type": "no_results",
+                        "message": "No se encontraron resultados"
+                    }
+                
+                elif isinstance(result, dict):
+                    # Resultado ya formateado
+                    return result
+                
+                else:
+                    # Otros tipos de resultado
+                    return {
+                        "data": result,
+                        "formatted": True,
+                        "format_type": "raw_data"
+                    }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error formateando resultado para chat: {e}")
+            return {
+                "data": result,
+                "formatted": False,
+                "error": f"Error formateando: {str(e)}"
+            }

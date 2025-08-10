@@ -31,7 +31,7 @@ def create_app(
     app_data: AppCreate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    app_service = factory.get_apps_service()
+    app_service = factory.get_app_service()
     return app_service.create(app_data)
 
 
@@ -42,7 +42,7 @@ def create_app(
     response_description="Lista de Apps del usuario",
 )
 def list_apps(factory: ServiceFactory = Depends(get_factory)):
-    app_service = factory.get_apps_service()
+    app_service = factory.get_app_service()
     return app_service.get_all()
 
 
@@ -53,7 +53,7 @@ def list_apps(factory: ServiceFactory = Depends(get_factory)):
     response_description="Detalles de la App",
 )
 def get_app(app_id: UUID, factory: ServiceFactory = Depends(get_factory)):
-    app_service = factory.get_apps_service()
+    app_service = factory.get_app_service()
     return app_service.get_by_id(app_id)
 
 
@@ -68,7 +68,7 @@ def update_app(
     app_update: AppUpdate,
     factory: ServiceFactory = Depends(get_factory),
 ):
-    app_service = factory.get_apps_service()
+    app_service = factory.get_app_service()
     return app_service.update(app_id, app_update)
 
 
@@ -79,5 +79,5 @@ def update_app(
     response_description="App eliminada exitosamente",
 )
 def delete_app(app_id: UUID, factory: ServiceFactory = Depends(get_factory)):
-    app_service = factory.get_apps_service()
+    app_service = factory.get_app_service()
     app_service.delete(app_id)

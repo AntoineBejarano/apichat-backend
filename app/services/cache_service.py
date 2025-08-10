@@ -66,7 +66,7 @@ class CacheService:
     
     def _generate_schema_hash(self, tables: List[Dict[str, Any]]) -> str:
         """Generar hash del esquema para detectar cambios"""
-        schema_str = json.dumps(tables, sort_keys=True)
+        schema_str = json.dumps(tables, sort_keys=True, default=str)
         return hashlib.md5(schema_str.encode()).hexdigest()
     
     def _is_cache_valid(self, cache_entry: Dict[str, Any]) -> bool:

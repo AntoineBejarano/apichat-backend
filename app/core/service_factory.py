@@ -49,7 +49,7 @@ class ServiceFactory:
         self._mcp_integration_service = None
         self._chat_service = None
         self._langchain_service = None
-        self._apps_service = None
+        self._app_service = None  # Unificado: solo _app_service
         self._proxy_service = None
         self._sql_executor_service = None
         self._user_role_service = None
@@ -261,19 +261,20 @@ class ServiceFactory:
             self._chat_service = ChatService(self)
         return self._chat_service
 
-    def get_langchain_service(self) -> "LangChainService":
+    def get_langchain_service(self) -> "LangchainService":
         if not self._langchain_service:
-            from app.services.langchain_service import LangChainService
-            logger.debug("⚙️ Inicializando LangChainService")
-            self._langchain_service = LangChainService(self)
+            from app.services.langchain_service import LangchainService
+            logger.debug("⚙️ Inicializando LangchainService")
+            self._langchain_service = LangchainService(self)
         return self._langchain_service
 
-    def get_apps_service(self) -> "AppsService":
-        if not self._apps_service:
-            from app.services.apps_service import AppsService
-            logger.debug("⚙️ Inicializando AppsService")
-            self._apps_service = AppsService(self)
-        return self._apps_service
+    def get_apps_service(self) -> "AppService":
+        # Alias para mantener compatibilidad, pero ahora devuelve AppService
+        if not self._app_service:
+            from app.services.app_service import AppService
+            logger.debug("⚙️ Inicializando AppService")
+            self._app_service = AppService(self)
+        return self._app_service
 
     def get_proxy_service(self) -> "ProxyService":
         if not self._proxy_service:
@@ -373,13 +374,19 @@ class ServiceFactory:
             self._execution_engine_service = ExecutionEngineService(self)
         return self._execution_engine_service
 
+    def get_app_service(self) -> "AppService":
+        if not self._app_service:
+            from app.services.app_service import AppService
+            logger.debug("⚙️ Inicializando AppService")
+            self._app_service = AppService(self)
+        return self._app_service
 
 
     def get_detailed_schema_cache_service(self) -> "DetailedSchemaCacheService":
         if not self._detailed_schema_cache_service:
             from app.services.detailed_schema_cache_service import DetailedSchemaCacheService
             logger.debug("⚙️ Inicializando DetailedSchemaCacheService")
-            self._detailed_schema_cache_service = DetailedSchemaCacheService(self.db)
+            self._detailed_schema_cache_service = DetailedSchemaCacheService(self)
         return self._detailed_schema_cache_service
 
     def get_sql_guardrails_service(self) -> "SQLGuardrailsService":

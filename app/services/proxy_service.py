@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy.orm import Session
@@ -84,7 +84,7 @@ class ProxyService(BaseService):
         for field, value in updates.model_dump(exclude_unset=True).items():
             setattr(proxy, field, value)
 
-        proxy.updated_at = datetime.utcnow()
+        proxy.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(proxy)
         logger.debug("[ProxyService] ✅ Proxy updated successfully.")

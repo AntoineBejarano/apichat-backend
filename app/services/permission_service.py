@@ -23,7 +23,7 @@ class PermissionService:
 
     def create(self, permission_data: PermissionCreate) -> Permission:
         logger.info("[PermissionService] ➕ Creating permission: %s", permission_data.name)
-        permission = Permission(**permission_data.dict())
+        permission = Permission(**permission_data.model_dump())
         self.db.add(permission)
         self.db.commit()
         self.db.refresh(permission)
@@ -44,7 +44,7 @@ class PermissionService:
     def update(self, permission_id: int, updates: PermissionUpdate) -> Permission:
         permission = self.get_by_id(permission_id)
         logger.info("[PermissionService] ✏️ Updating permission ID=%s", permission_id)
-        for field, value in updates.dict(exclude_unset=True).items():
+        for field, value in updates.model_dump(exclude_unset=True).items():
             setattr(permission, field, value)
         self.db.commit()
         self.db.refresh(permission)

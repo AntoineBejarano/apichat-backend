@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
@@ -19,7 +19,7 @@ from app.services.base_service import BaseService
 from app.utils.logger import logger
 
 
-class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchemaCacheCreate, DetailedSchemaCacheUpdate]):
+class DetailedSchemaCacheService(BaseService):
     """
     Servicio de cache multi-capa para esquemas de base de datos.
     
@@ -29,8 +29,8 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
     - L3: Invalidación inteligente
     """
     
-    def __init__(self, db: Session):
-        super().__init__(DetailedSchemaCache, db)
+    def __init__(self, factory):
+        super().__init__(factory)
         self._memory_cache: Dict[str, Dict[str, Any]] = {}  # L1 cache
         self._cache_ttl = timedelta(hours=1)  # TTL para memory cache
     
@@ -51,7 +51,7 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
         if not cached_at:
             return False
             
-        return datetime.utcnow() - cached_at < self._cache_ttl
+        return datetime.now(timezone.utc) - cached_at < self._cache_ttl
     
     def _set_memory_cache(self, user_id: UUID, db_id: UUID, fingerprint_light: str, compact: str):
         """Guarda en cache de memoria"""
@@ -59,7 +59,7 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
         self._memory_cache[key] = {
             'fingerprint_light': fingerprint_light,
             'compact': compact,
-            'cached_at': datetime.utcnow()
+            'cached_at': datetime.now(timezone.utc)
         }
     
     def _get_memory_cache(self, user_id: UUID, db_id: UUID) -> Optional[Dict[str, Any]]:
@@ -122,7 +122,7 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
             return None
         
         # Actualizar last_accessed
-        cache_entry.last_accessed = datetime.utcnow()
+        cache_entry.last_accessed = datetime.now(timezone.utc)
         self.db.commit()
         
         # Actualizar L1 cache
@@ -177,33 +177,35 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
             logger.info("[SchemaCacheService] 🔄 Actualizando cache existente")
             existing.fingerprint = fingerprint_full
             existing.fingerprint_light = fingerprint_light
-            existing.snapshot = snapshot.model_dump()
+            existing.snapshot = snapshot.model_dump(mode="json")
             existing.compact = compact_schema
             existing.table_count = table_count
             existing.total_columns = total_columns
             existing.enrichment_level = enrichment_level
-            existing.generated_at = datetime.utcnow()
-            existing.last_accessed = datetime.utcnow()
+            existing.generated_at = datetime.now(timezone.utc)
+            existing.last_accessed = datetime.now(timezone.utc)
             
             if enrichment_level > EnrichmentLevel.BASIC:
-                existing.enriched_at = datetime.utcnow()
+                existing.enriched_at = datetime.now(timezone.utc)
             
             cache_entry = existing
         else:
             # Crear nuevo
             logger.info("[SchemaCacheService] ✨ Creando nuevo cache")
-            cache_data = DetailedSchemaCacheCreate(
+            cache_entry = DetailedSchemaCache(
                 user_id=user_id,
                 db_id=db_id,
                 fingerprint=fingerprint_full,
                 fingerprint_light=fingerprint_light,
-                snapshot=snapshot,
+                snapshot=snapshot.model_dump(mode="json"),
                 compact=compact_schema,
                 table_count=table_count,
                 total_columns=total_columns,
-                enrichment_level=enrichment_level
+                enrichment_level=enrichment_level,
+                            generated_at=datetime.now(timezone.utc),
+            last_accessed=datetime.now(timezone.utc)
             )
-            cache_entry = self.create(cache_data)
+            self.db.add(cache_entry)
         
         self.db.commit()
         
@@ -273,7 +275,7 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
     
     def cleanup_old_caches(self, older_than_days: int = 30) -> int:
         """Limpia caches antiguos sin acceso reciente"""
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=older_than_days)
         
         deleted_count = self.db.query(DetailedSchemaCache).filter(
             DetailedSchemaCache.last_accessed < cutoff_date
@@ -303,11 +305,11 @@ class DetailedSchemaCacheService(BaseService[DetailedSchemaCache, DetailedSchema
             db_id=db_id,
             fingerprint='',  # No disponible en L1
             fingerprint_light=memory_cache['fingerprint_light'],
-            snapshot=SchemaSnapshot(tables={}),  # Mínimo
+            snapshot=SchemaSnapshot(tables={}, generated_at=datetime.now(timezone.utc)),  # Mínimo
             compact=memory_cache['compact'],
             table_count=0,
             total_columns=0,
             enrichment_level=EnrichmentLevel.BASIC,
             generated_at=memory_cache['cached_at'],
-            last_accessed=datetime.utcnow()
+            last_accessed=datetime.now(timezone.utc)
         )

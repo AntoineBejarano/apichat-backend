@@ -117,7 +117,7 @@ class AppDescriptorCacheService(BaseService):
                 return None
             
             # Obtener funciones de la app
-            functions = function_service.get_by_app_id(app_id)
+            functions = function_service.get_by_app(app_id)
             
             # Generar fingerprint
             fingerprint = self._generate_fingerprint(app_id)
@@ -229,7 +229,7 @@ class AppDescriptorCacheService(BaseService):
             if not app:
                 return None
             
-            functions = function_service.get_by_app_id(app_id)
+            functions = function_service.get_by_app(app_id)
             
             # Crear string para hash basado en campos relevantes
             fingerprint_data = {
@@ -255,7 +255,7 @@ class AppDescriptorCacheService(BaseService):
                     fingerprint_data["functions"].append(func_data)
             
             # Generar hash MD5
-            fingerprint_str = json.dumps(fingerprint_data, sort_keys=True)
+            fingerprint_str = json.dumps(fingerprint_data, sort_keys=True, default=str)
             return hashlib.md5(fingerprint_str.encode()).hexdigest()
             
         except Exception as e:

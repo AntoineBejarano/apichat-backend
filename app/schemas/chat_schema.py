@@ -49,8 +49,9 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     timestamp: Optional[datetime] = None
     explorer: Optional[bool] = False
-    db_ids: Optional[List[UUID]] = []
-    app_ids: Optional[List[UUID]] = []
+    # 🔧 FIX: Usar default_factory para evitar defaults mutables compartidos
+    db_ids: Optional[List[UUID]] = Field(default_factory=list)
+    app_ids: Optional[List[UUID]] = Field(default_factory=list)
 
     def model_dump(self, **kwargs):
         """Override model_dump to handle timestamp automatically"""

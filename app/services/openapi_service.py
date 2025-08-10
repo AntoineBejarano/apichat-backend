@@ -12,7 +12,7 @@ class OpenAPIProcessor:
         self.db = factory.db
         self.user = factory.user
         self.function_service = factory.get_function_service()
-        self.app_service = factory.get_apps_service()
+        self.app_service = factory.get_app_service()
 
     def process(self, openapi_dict: Dict, app_id: str | None = None) -> List:
         title = openapi_dict.get("info", {}).get("title", "Untitled")

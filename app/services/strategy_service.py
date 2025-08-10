@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 from uuid import UUID, uuid4
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -38,7 +38,7 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
             description=data.description,
             trigger_type=data.trigger_type,
             trigger_config=data.trigger_config,
-            steps=[step.dict() for step in data.steps],
+            steps=[step.model_dump() for step in data.steps],
             is_active=True,
             status="pending",
         )
@@ -75,8 +75,8 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
         strategy.description = data.description
         strategy.trigger_type = data.trigger_type
         strategy.trigger_config = data.trigger_config
-        strategy.steps = [step.dict() for step in data.steps]
-        strategy.updated_at = datetime.utcnow()
+        strategy.steps = [step.model_dump() for step in data.steps]
+        strategy.updated_at = datetime.now(timezone.utc)
 
         self.db.commit()
         self.db.refresh(strategy)
@@ -94,7 +94,7 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
     def mark_as_run(self, strategy_id: UUID, status: str) -> None:
         logger.info(f"⏱️ Marcando estrategia {strategy_id} como ejecutada con estado '{status}'")
         strategy = self.get_strategy_by_id(strategy_id)
-        strategy.last_run_at = datetime.utcnow()
+        strategy.last_run_at = datetime.now(timezone.utc)
         strategy.status = status
         self.db.commit()
 
@@ -153,7 +153,7 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
         success = all(r["status"] == "success" for r in raw_results)
 
         strategy.status = "success" if success else "error"
-        strategy.last_run_at = datetime.utcnow()
+        strategy.last_run_at = datetime.now(timezone.utc)
         self.db.commit()
 
         return StrategyExecutionResult(
@@ -174,7 +174,7 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
                 description=schema.description,
                 trigger_type=TriggerTypeEnum(schema.trigger.type),
                 trigger_config=schema.trigger.config,
-                steps=[step.dict() for step in schema.steps],
+                steps=[step.model_dump() for step in schema.steps],
                 is_active=True,
                 status="pending"
             )

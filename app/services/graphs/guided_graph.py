@@ -117,12 +117,26 @@ class GuidedGraph:
                 intent = state.get("intent")
                 requires_resources = state.get("requires_resources", False)
                 
+                # 🔧 FIX: Validar tipos de db_ids y app_ids para evitar mezclas UUID/string
+                if db_ids and not all(isinstance(db_id, (str, UUID)) for db_id in db_ids):
+                    logger.warning(f"[GuidedGraph] ⚠️ db_ids contiene tipos mixtos: {[type(db_id) for db_id in db_ids]}")
+                    # Normalizar a strings para consistencia
+                    db_ids = [str(db_id) for db_id in db_ids]
+                
+                if app_ids and not all(isinstance(app_id, (str, UUID)) for app_id in app_ids):
+                    logger.warning(f"[GuidedGraph] ⚠️ app_ids contiene tipos mixtos: {[type(app_id) for app_id in app_ids]}")
+                    # Normalizar a strings para consistencia
+                    app_ids = [str(app_id) for app_id in app_ids]
+                
                 # Si no requiere recursos, es chat normal
                 if not requires_resources or intent == IntentType.CHAT:
                     logger.info("[GuidedGraph] 💬 Modo chat normal - sin recursos específicos")
+                    chat_response = await self._handle_chat_response(state)
                     return {
                         **state,
-                        "assistant_response": await self._handle_chat_response(state)
+                        "assistant_response": chat_response,
+                        "db_ids": db_ids,  # 🔧 Usar versiones normalizadas
+                        "app_ids": app_ids
                     }
                 
                 # Si requiere recursos pero no se proporcionaron, pedir aclaración
@@ -137,7 +151,11 @@ class GuidedGraph:
                 
                 # Tiene recursos específicos, continuar con warm-up
                 logger.info(f"[GuidedGraph] 🎯 Recursos específicos: {len(db_ids)} DBs, {len(app_ids)} apps")
-                return state
+                return {
+                    **state,
+                    "db_ids": db_ids,  # 🔧 Usar versiones normalizadas
+                    "app_ids": app_ids
+                }
                 
             except Exception as e:
                 logger.exception("[GuidedGraph] ❌ Error verificando recursos")
@@ -159,25 +177,45 @@ class GuidedGraph:
                     db_ids = state.get("db_ids", [])
                     app_ids = state.get("app_ids", [])
                     
+                    # 🔧 FIX: Normalizar db_ids a strings para consistencia con compact_schemas
+                    # compact_schemas usa string keys, así que db_ids deben ser strings también
+                    normalized_db_ids = [str(db_id) for db_id in db_ids]
+                    
+                    # 🔧 FIX: Monitorear si ya tenemos schemas del orchestrator para evitar duplicación
+                    existing_schemas = state.get("compact_schemas", {})
+                    if existing_schemas:
+                        logger.info(f"[GuidedGraph] 📋 Schemas ya disponibles del orchestrator: {len(existing_schemas)} DBs")
+                        # Calcular tiempo ahorrado
+                        time_saved = time.time() - start_time
+                        logger.info(f"[GuidedGraph] ⏱️ Tiempo ahorrado por schemas pre-existentes: {time_saved:.3f}s")
+                    
                     ctx.metadata.update({
-                        "db_count": len(db_ids),
-                        "app_count": len(app_ids)
+                        "db_count": len(normalized_db_ids),
+                        "app_count": len(app_ids),
+                        "schemas_pre_existing": len(existing_schemas)
                     })
                     
                     # Warm-up DB schemas
-                    final_compact_schemas = state.get("compact_schemas", {})
+                    final_compact_schemas = existing_schemas
                     final_cache_status = state.get("cache_status", {})
                     
-                    if db_ids:
-                        logger.info(f"[GuidedGraph] 🔥 Warming up {len(db_ids)} DB schemas")
+                    if normalized_db_ids:
+                        logger.info(f"[GuidedGraph] 🔥 Warming up {len(normalized_db_ids)} DB schemas")
                         
                         # Si no vienen del orchestrator, usar el servicio directamente
                         if not final_compact_schemas:
+                            logger.info("[GuidedGraph] 🔄 No hay schemas pre-existentes, llamando al orchestrator...")
+                            # 🔧 FIX: Convertir strings de vuelta a UUIDs para el servicio
+                            db_ids_uuid = [UUID(db_id_str) for db_id_str in normalized_db_ids]
                             orchestrator = self.factory.get_orchestrator_service()
-                            db_results = await orchestrator._load_database_schemas_async(db_ids)
+                            db_results = await orchestrator._load_database_schemas_async(db_ids_uuid)
                             
                             final_compact_schemas = db_results.get("compact_schemas", {})
                             final_cache_status = db_results.get("cache_status", {})
+                            
+                            logger.info(f"[GuidedGraph] ✅ Schemas cargados del orchestrator: {len(final_compact_schemas)} DBs")
+                        else:
+                            logger.info(f"[GuidedGraph] ✅ Usando schemas pre-existentes: {len(final_compact_schemas)} DBs")
                         
                         # Registrar eventos de cache para cada DB
                         for db_id, status in final_cache_status.items():
@@ -210,18 +248,24 @@ class GuidedGraph:
                     cache_misses = len(final_cache_status) - cache_hits
                     processing_time = time.time() - start_time
                     
+                    # 🔧 FIX: Logging detallado para monitorear duplicación
+                    if existing_schemas:
+                        logger.info(f"[GuidedGraph] 📊 Resumen: {len(existing_schemas)} schemas pre-existentes, {cache_hits} hits, {cache_misses} misses ({processing_time:.3f}s)")
+                    else:
+                        logger.info(f"[GuidedGraph] 📊 Resumen: {cache_hits} hits, {cache_misses} misses, {len(app_descriptors)} apps ({processing_time:.3f}s)")
+                    
                     # Actualizar telemetría con resultados
                     ctx.metadata.update({
                         "cache_hits": cache_hits,
                         "cache_misses": cache_misses,
                         "apps_loaded": len(app_descriptors),
-                        "total_processing_time_s": processing_time
+                        "total_processing_time_s": processing_time,
+                        "schemas_pre_existing": len(existing_schemas)
                     })
-                    
-                    logger.info(f"[GuidedGraph] ✅ Warm-up completado: {cache_hits} hits, {cache_misses} misses, {len(app_descriptors)} apps ({processing_time:.2f}s)")
                     
                     return {
                         **state,
+                        "db_ids": normalized_db_ids,  # 🔧 Usar versiones normalizadas
                         "compact_schemas": final_compact_schemas,
                         "cache_status": final_cache_status,
                         "app_descriptors": app_descriptors,
@@ -328,11 +372,44 @@ class GuidedGraph:
                     # Procesar resultado
                     if result.get("actions"):
                         plan = PlanModel.model_validate(result)
+                        
+                        # 🔧 NUEVO: Validar plan antes de la ejecución
+                        validation_result = self._validate_plan_for_chat_safety(plan)
+                        if not validation_result["is_safe"]:
+                            logger.warning(f"[GuidedGraph] ⚠️ Plan no seguro para chat: {validation_result['issues']}")
+                            # 🔧 NUEVO: Intentar corregir automáticamente o rechazar
+                            if validation_result["can_auto_fix"]:
+                                logger.info("[GuidedGraph] 🔧 Aplicando correcciones automáticas al plan")
+                                plan = self._apply_chat_safety_fixes(plan, validation_result["issues"])
+                            else:
+                                logger.error("[GuidedGraph] ❌ Plan rechazado por problemas de seguridad para chat")
+                                return {
+                                    **state,
+                                    "error": "El plan generado no es seguro para chat. Reintentando...",
+                                    "assistant_response": "Disculpa, el plan generado no es apropiado para chat. Déjame intentarlo de nuevo."
+                                }
+                        
+                        # 🔧 NUEVO: Validar placeholders también
+                        placeholder_validation = self._validate_plan_placeholders(plan, result.get("assistant_response", ""))
+                        if not placeholder_validation["is_valid"]:
+                            logger.warning(f"[GuidedGraph] ⚠️ Plan con placeholders inválidos: {placeholder_validation['issues']}")
+                            if placeholder_validation["can_auto_fix"]:
+                                logger.info("[GuidedGraph] 🔧 Aplicando correcciones automáticas a placeholders")
+                                plan = self._apply_plan_fixes(plan, placeholder_validation["issues"])
+                            else:
+                                logger.error("[GuidedGraph] ❌ Plan rechazado por placeholders inválidos")
+                                return {
+                                    **state,
+                                    "error": "El plan generado contiene variables no válidas. Reintentando...",
+                                    "assistant_response": "Disculpa, hubo un problema con el plan. Déjame intentarlo de nuevo."
+                                }
+                        
                         ctx.metadata.update({
                             "result_type": "plan",
-                            "action_count": len(plan.actions)
+                            "action_count": len(plan.actions),
+                            "placeholders_validated": True
                         })
-                        logger.info(f"[GuidedGraph] ✅ Plan generado: {len(plan.actions)} acciones")
+                        logger.info(f"[GuidedGraph] ✅ Plan generado y validado: {len(plan.actions)} acciones")
                         return {**state, "plan": plan}
 
                     if result.get("assistant_response"):
@@ -417,15 +494,100 @@ class GuidedGraph:
                 user_message=message,
                 db_schema=None,
                 available_functions=[],
+                available_mcp_tools=None,
                 history=state.get("history", []),
-                use_enriched_context=False
+                db_ids=None,
+                use_enriched_context=False,
+                app_descriptors_compact=None
             )
             
-            return result.get("assistant_response", "¿En qué más puedo ayudarte?")
+            # Extraer respuesta del resultado
+            if isinstance(result, dict):
+                return result.get("assistant_response", "¿En qué más puedo ayudarte?")
+            else:
+                return str(result) if result else "¿En qué más puedo ayudarte?"
             
         except Exception as e:
             logger.exception("[GuidedGraph] ❌ Error en respuesta de chat")
             return "Disculpa, ha ocurrido un error. ¿Podrías intentar de nuevo?"
+
+    # ──────────────────────────────────────────────────────
+    #   NUEVO: Validación y corrección de placeholders del plan
+    # ──────────────────────────────────────────────────────
+    def _validate_plan_placeholders(self, plan: PlanModel, template: str) -> Dict[str, Any]:
+        """
+        Valida que todos los placeholders en el template correspondan a variables
+        generadas por las acciones del plan.
+        """
+        if not template:
+            return {"is_valid": True, "issues": [], "can_auto_fix": True}
+
+        import re
+        
+        # Extraer todos los placeholders del template
+        placeholders = re.findall(r'\{\{([^}]+)\}\}', template)
+        logger.info(f"[GuidedGraph] 🔍 Validando {len(placeholders)} placeholders del plan")
+        
+        # Obtener variables disponibles del plan
+        available_vars = set()
+        for action in plan.actions:
+            if action.store_as:
+                available_vars.add(action.store_as)
+                # También incluir variantes automáticas
+                available_vars.add(f"{action.store_as}_list")
+                available_vars.add(f"{action.store_as}_pretty")
+                available_vars.add(f"{action.store_as}_formatted")
+        
+        issues = []
+        can_auto_fix = True
+        
+        for placeholder in placeholders:
+            placeholder = placeholder.strip()
+            
+            if placeholder in available_vars:
+                logger.debug(f"[GuidedGraph] ✅ Placeholder '{placeholder}' válido")
+                continue
+            
+            # Si termina en _formatted, verificar si existe la base
+            if placeholder.endswith('_formatted'):
+                base_var = placeholder[:-10]
+                if base_var in available_vars:
+                    logger.debug(f"[GuidedGraph] ✅ Placeholder '{placeholder}' será auto-generado para '{base_var}'")
+                    continue
+                else:
+                    issues.append(f"'{placeholder}' requiere '{base_var}' que no está en store_as")
+                    can_auto_fix = False
+            else:
+                issues.append(f"'{placeholder}' no está disponible en store_as")
+                can_auto_fix = False
+        
+        is_valid = len(issues) == 0
+        
+        if issues:
+            logger.warning(f"[GuidedGraph] ⚠️ Placeholders inválidos detectados: {issues}")
+        
+        return {
+            "is_valid": is_valid,
+            "issues": issues,
+            "can_auto_fix": can_auto_fix,
+            "available_vars": list(available_vars),
+            "placeholders_checked": placeholders
+        }
+
+    def _apply_plan_fixes(self, plan: PlanModel, issues: List[str]) -> PlanModel:
+        """
+        Aplica correcciones automáticas al plan para resolver placeholders inválidos.
+        Por ahora, solo registra los problemas para debugging.
+        """
+        logger.info(f"[GuidedGraph] 🔧 Aplicando correcciones automáticas para {len(issues)} issues")
+        
+        # 🔧 FUTURO: Aquí se podrían implementar correcciones automáticas
+        # Por ejemplo, agregar acciones de formateo faltantes
+        
+        for issue in issues:
+            logger.info(f"[GuidedGraph] 🔧 Issue a corregir: {issue}")
+        
+        return plan
 
     def _validate_resources(self, state: GuidedState) -> bool:
         """Valida que los recursos requeridos estén disponibles y válidos"""
@@ -454,3 +616,91 @@ class GuidedGraph:
         except Exception as e:
             logger.exception(f"[GuidedGraph] ❌ Error validando recursos: {e}")
             return False
+
+    def _validate_plan_for_chat_safety(self, plan: PlanModel) -> Dict[str, Any]:
+        """
+        Valida que el plan sea seguro para chat antes de ejecutarlo.
+        Verifica que no genere respuestas inapropiadas o volcados masivos de datos.
+        """
+        issues = []
+        warnings = []
+        can_auto_fix = True
+        
+        logger.info(f"[GuidedGraph] 🔒 Validando seguridad del plan para chat: {len(plan.actions)} acciones")
+        
+        for action in plan.actions:
+            if action.type == "db_query":
+                # Validar SQL
+                sql = action.sql.upper() if action.sql else ""
+                
+                # 🔒 CRÍTICO: Bloquear SELECT * 
+                if "SELECT *" in sql:
+                    issues.append("SELECT * detectado - usar columnas específicas")
+                    can_auto_fix = False
+                
+                # ⚠️ ADVERTENCIA: Verificar LIMIT
+                if "LIMIT" not in sql:
+                    warnings.append("Agregar LIMIT a query para evitar volcados masivos")
+                    can_auto_fix = True  # Se puede corregir automáticamente
+                
+                # 🔒 CRÍTICO: Verificar store_as
+                if not action.store_as:
+                    issues.append("db_query sin store_as - no se puede formatear")
+                    can_auto_fix = False
+                
+                # ⚠️ ADVERTENCIA: Verificar que no sea una query masiva
+                if "WHERE" not in sql and "LIMIT" not in sql:
+                    warnings.append("Query sin filtros ni límites - riesgo de volcado masivo")
+                    can_auto_fix = True
+        
+        # Validar assistant_response
+        if "{{" in plan.assistant_response and "}}" in plan.assistant_response:
+            # Verificar que todos los placeholders tengan acciones correspondientes
+            import re
+            placeholders = re.findall(r'\{\{(\w+)\}\}', plan.assistant_response)
+            for placeholder in placeholders:
+                if not any(action.store_as == placeholder for action in plan.actions):
+                    issues.append(f"Placeholder {{{{{placeholder}}}}} sin acción correspondiente")
+                    can_auto_fix = False
+        
+        # 🔒 CRÍTICO: Verificar que no haya respuestas directas con datos crudos
+        if any(keyword in plan.assistant_response.lower() for keyword in ["[(30, 'ayuso'", "[(1,", "[(2,", "[(3,"]):
+            issues.append("Respuesta contiene datos crudos de base de datos")
+            can_auto_fix = False
+        
+        is_safe = len(issues) == 0
+        
+        if issues:
+            logger.warning(f"[GuidedGraph] ⚠️ Plan no seguro para chat: {issues}")
+        if warnings:
+            logger.info(f"[GuidedGraph] 💡 Advertencias del plan: {warnings}")
+        
+        return {
+            "is_safe": is_safe,
+            "issues": issues,
+            "warnings": warnings,
+            "can_auto_fix": can_auto_fix,
+            "action_count": len(plan.actions)
+        }
+
+    def _apply_chat_safety_fixes(self, plan: PlanModel, issues: List[str]) -> PlanModel:
+        """
+        Aplica correcciones automáticas al plan para resolver problemas de seguridad para chat.
+        """
+        logger.info(f"[GuidedGraph] 🔧 Aplicando correcciones de seguridad para chat: {len(issues)} issues")
+        
+        for issue in issues:
+            logger.info(f"[GuidedGraph] 🔧 Issue a corregir: {issue}")
+            
+            # 🔧 CORRECCIÓN: Agregar LIMIT a queries sin límite
+            if "LIMIT" in issue.lower():
+                for action in plan.actions:
+                    if action.type == "db_query" and action.sql and "LIMIT" not in action.sql.upper():
+                        # Agregar LIMIT 20 al final de la query
+                        if action.sql.strip().endswith(';'):
+                            action.sql = action.sql[:-1] + " LIMIT 20;"
+                        else:
+                            action.sql = action.sql + " LIMIT 20"
+                        logger.info(f"[GuidedGraph] 🔧 Agregado LIMIT 20 a query: {action.sql}")
+        
+        return plan
