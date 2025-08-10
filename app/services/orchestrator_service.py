@@ -1,14 +1,14 @@
 # app/services/orchestrator_service.py
 """
-OrchestratorService
-───────────────────
-1. Guarda el mensaje del usuario.
-2. Lanza Guided / Exploration Graph y obtiene:
-      • una respuesta simple, o
-      • un PlanModel con acciones.
-3. Si hay plan, ejecuta acciones con ExecutionEngineService y
-   renderiza la respuesta final.
-4. Devuelve siempre `assistant_response` al front y registra todo.
+OrchestratorService Refactorizado
+─────────────────────────────────
+Servicio principal que coordina los módulos especializados:
+1. TokenBudgetManager: Control de presupuesto de tokens
+2. ContextLoader: Carga de contexto paralelo
+3. ResponseProcessor: Procesamiento de respuestas
+4. ContextOptimizer: Optimización de contexto
+5. GraphRunner: Ejecución de grafos
+6. MessageHandler: Manejo de mensajes
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import UUID
+import re, difflib
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -30,6 +31,22 @@ from app.schemas.plan_schema import PlanModel
 from app.utils.performance_monitor import monitor_performance, performance_context
 from app.utils.profiler import profile_function, profile_context, memory_profiler
 from app.core.database import SessionLocal
+
+# Importar módulos especializados
+from app.services.orchestrator import (
+    TokenBudgetManager,
+    ContextLoader,
+    ResponseProcessor,
+    ContextOptimizer,
+    GraphRunner,
+    MessageHandler,
+    IterativeRAGHandler,
+    SchemaValidator,
+    ResponseFormatter,
+    SchemaManager,
+    ChatHistoryManager,
+    AppFunctionManager
+)
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -72,17 +89,27 @@ class OrchestratorService:
         self.factory = factory
         self.db = factory.db
         self.user_id = factory.user.id
-        self.history_service = factory.get_chat_history_service()
         
-        # 🔒 CONTROL DE TOKENS - Token bucket para rate limiting
-        self._token_bucket = {
-            "tokens_used": 0,
-            "window_start": time.time(),
-            "window_size": 60,  # 1 minuto
-            "max_tokens_per_window": 10000  # Límite de OpenAI
-        }
+        # 🔒 CONTROL DE TOKENS - Inicializar módulos especializados
+        self.token_budget = TokenBudgetManager()
+        self.context_loader = ContextLoader(factory)
+        self.response_processor = ResponseProcessor()
+        self.context_optimizer = ContextOptimizer()
+        self.graph_runner = GraphRunner(factory)
+        self.message_handler = MessageHandler(factory)
+        self.iterative_rag_handler = IterativeRAGHandler(factory)
+        self.schema_validator = SchemaValidator()
+        self.response_formatter = ResponseFormatter()
+        
+        # 🆕 NUEVOS MÓDULOS ESPECIALIZADOS
+        self.schema_manager = SchemaManager(factory)
+        self.chat_history_manager = ChatHistoryManager(factory)
+        self.app_function_manager = AppFunctionManager(factory)
+        self.agent_manager = AgentManager(factory)
+        self.plan_strategy_manager = PlanStrategyManager(factory)
         
         logger.info(f"[OrchestratorService] Initialized for user_id={self.user_id}")
+        logger.info("[OrchestratorService] ✅ Módulos especializados cargados")
 
         # ===================================================
     #  PUBLIC ENTRY-POINT
@@ -103,19 +130,18 @@ class OrchestratorService:
         memory_profiler.take_snapshot("orchestrator_start")
 
         # 🔒 CONTROL DE TOKENS: Aplicar presupuesto antes de cargar contexto
-        db_ids = self._apply_token_budget_to_db_ids(db_ids)
-        app_ids = self._apply_token_budget_to_app_ids(app_ids)
+        db_ids = self.token_budget.apply_token_budget_to_db_ids(db_ids)
+        app_ids = self.token_budget.apply_token_budget_to_app_ids(app_ids)
         
         # 🔒 CONTROL DE TOKENS: Verificar token bucket antes de proceder
-        if not self._check_token_bucket():
+        if not self.token_budget.check_token_bucket():
             logger.warning("[OrchestratorService] 🔒 Token bucket limitado - usando contexto mínimo")
             return await self._handle_message_with_minimal_context(
                 chat_id, db_ids, app_ids, explorer, agent_id, message
             )
         
-        # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo (sin duplicación)
-        # 🔧 FIX: _load_context_parallel ya maneja store_task y usage_task internamente
-        context_tasks = await self._load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
+        # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo usando ContextLoader
+        context_tasks = await self.context_loader.load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
         
         # Actualizar el contexto con el parámetro explorer
         context_tasks["explorer"] = explorer
@@ -128,21 +154,29 @@ class OrchestratorService:
                 "error": "missing_valid_schemas"
             }
 
-        # 🔒 CONTROL DE TOKENS: Aplicar trimming dinámico al contexto
-        trimmed_context = self._apply_intelligent_context_trimming(context_tasks)
+        # 🔒 CONTROL DE TOKENS: Aplicar trimming dinámico al contexto usando ContextOptimizer
+        trimmed_context = self.context_optimizer.apply_intelligent_context_trimming(context_tasks)
         
-        # 🎯 Ejecutar el grafo
-        graph_runner = self._select_graph_runner(explorer)
-        
+        # 🎯 Ejecutar el grafo usando GraphRunner
         try:
-            execution_results = await graph_runner.run(trimmed_context)
+            execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, trimmed_context)
             logger.info("[OrchestratorService] Graph execution completed")
             
             # 🔄 NORMALIZAR SIEMPRE la salida del grafo a dict antes de tocarla
-            execution_results = self._normalize_graph_output(execution_results)
+            execution_results = self.graph_runner.normalize_graph_output(execution_results)
             logger.info(f"[OrchestratorService] ✅ Salida del grafo normalizada a dict con claves: {list(execution_results.keys())}")
             
-            # 🔒 CONTROL DE TOKENS: Forzar plan cuando hay intención de base de datos
+            # ─────────────────────────────────────────────────────────────
+            # SHORT-CIRCUIT: Si la intención es de ESQUEMA, responder desde caché
+            # ─────────────────────────────────────────────────────────────
+            if self._is_schema_intent(execution_results, message.content):
+                schema_response = self._generate_schema_response(trimmed_context, db_ids, message.content)
+                execution_results["assistant_response"] = schema_response
+                if "plan" in execution_results:
+                    execution_results["plan"] = None
+                logger.info("[OrchestratorService] ✅ Short-circuit de esquema aplicado: respuesta directa desde caché")
+
+            # 🔒 CONTROL DE TOKENS: Forzar plan cuando hay intención de base de datos (salvo esquema)
             if self._should_force_plan(db_ids, message.content, execution_results):
                 logger.info("[OrchestratorService] 🔒 Forzando generación de plan por intención de base de datos")
                 if not execution_results.get("plan"):
@@ -246,6 +280,81 @@ class OrchestratorService:
             logger.info(f"[OrchestratorService] 🎯 DEVOLVIENDO RESPUESTA FINAL tipo normal: {final_response}")
             return final_response
 
+    def _is_schema_intent(self, execution_results: Dict[str, Any], user_message: str) -> bool:
+        """
+        Determina si la intención del usuario es consultar el esquema de la base de datos.
+        """
+        intent_str = (execution_results.get("intent") or "").lower()
+        user_lower = (user_message or "").lower()
+        schema_keywords = [
+            "tabla", "tablas", "columnas", "columna", "esquema", "schema",
+            "estructura", "describe", "ddl", "keys", "primary key", "foreign key"
+        ]
+        
+        return (
+            intent_str in ["db_schema", "schema", "describe_schema", "schema_question", "db_read_schema"]
+            or any(k in user_lower for k in schema_keywords)
+        )
+
+    def _generate_schema_response(self, context: Dict[str, Any], db_ids: Optional[List[UUID]], user_message: str) -> str:
+        """
+        Genera una respuesta para consultas de esquema usando el contexto ya cargado.
+        """
+        table_names: List[str] = []
+        db_schemas = context.get("database_schemas", {}) or {}
+        
+        if db_ids:
+            for _dbid in db_ids:
+                schema_list = db_schemas.get(_dbid)
+                if isinstance(schema_list, list):
+                    for t in schema_list:
+                        if isinstance(t, dict) and t.get("name"):
+                            table_names.append(str(t["name"]))
+
+        # Deduplicar preservando orden
+        seen = set()
+        unique_tables: List[str] = []
+        for n in table_names:
+            if n not in seen:
+                seen.add(n)
+                unique_tables.append(n)
+
+        # Sugerir tablas candidatas de forma GENÉRICA (sin dominios fijos)
+        query_tokens = {t for t in re.split(r"[^a-z0-9_]+", user_message.lower()) if len(t) >= 3}
+        scores = []
+        for name in unique_tables:
+            nl = name.lower()
+            # señal 1: hay algún token de la pregunta como substring en el nombre de tabla
+            hit = any(tok in nl for tok in query_tokens)
+            # señal 2: similitud difusa
+            ratio = difflib.SequenceMatcher(None, " ".join(sorted(query_tokens)), nl).ratio() if query_tokens else 0.0
+            score = (1.0 if hit else 0.0) + ratio
+            scores.append((score, name))
+
+        scores.sort(reverse=True)
+        candidates = [n for sc, n in scores[:3] if sc > 0.3]
+
+        preview_count = min(10, len(unique_tables))
+        lines: List[str] = []
+        if preview_count > 0:
+            lines.append(f"Estas son algunas tablas de tu base (mostrando las primeras {preview_count}):")
+            for n in unique_tables[:preview_count]:
+                lines.append(f"- {n}")
+            if len(unique_tables) > preview_count:
+                lines.append(f"... y {len(unique_tables) - preview_count} más.")
+        else:
+            lines.append("No pude leer nombres de tablas del caché en este momento.")
+
+        if candidates:
+            lines.append("")
+            lines.append("Tablas más relacionadas con tu pregunta:")
+            for c in candidates:
+                lines.append(f"- {c}")
+            lines.append("")
+            lines.append(f"Ejemplo rápido: `SELECT * FROM {candidates[0]} LIMIT 3;`")
+
+        return "\n".join(lines)
+
     async def run_iterative_rag(
         self,
         chat_id: UUID,
@@ -259,118 +368,24 @@ class OrchestratorService:
         Versión iterativa del orchestrator que usa RAG para replanificar
         basándose en resultados intermedios.
         """
-        logger.info(f"[OrchestratorService] 🔄 Iniciando flujo RAG iterativo (max {max_iterations} iteraciones)")
-
+        logger.info(f"[OrchestratorService] 🔄 Delegando RAG iterativo al módulo especializado")
         
-        # Inicialización similar al método run original
-        perfmon = self.factory.get_performance_monitoring_service()
-        perfmon.take_snapshot("iterative_orchestrator_start")
-        
-        # 🔧 FIX: _load_context_parallel ya maneja usage y store internamente
-        context_tasks = await self._load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
-        context_tasks["explorer"] = explorer
-        
-        # Variables para el bucle iterativo
-        iteration = 1
-        accumulated_results = {}
-        final_answer = None
-        
-        # Evaluador de resultados
-        # 🔧 Result evaluator eliminado - funcionalidad integrada en el flujo principal
-        
-        while iteration <= max_iterations and not final_answer:
-            logger.info(f"[OrchestratorService] 🔄 Iteración {iteration}/{max_iterations}")
-            
-            # 🔧 FIX: Validar compact_schemas antes de cada iteración
-            db_ids = context_tasks.get("db_ids", [])
-            if db_ids and not self._validate_compact_schemas(context_tasks.get("compact_schemas", {}), db_ids):
-                logger.error(f"[OrchestratorService] ❌ Sin schemas válidos en iteración {iteration} - abortando")
-                return {
-                    "assistant_response": "❌ Error: No se pudo obtener información de las bases de datos en esta iteración.",
-                    "error": "missing_valid_schemas_iteration"
-                }
-
-            # Ejecutar grafo (exploración o plan específico)
-            # 🔧 SIMPLIFICADO: Solo usar exploración en todas las iteraciones
-            graph_runner = self._select_graph_runner(True)  # Siempre exploración
-            execution_results = await graph_runner.run(context_tasks)
-            
-            # 🔄 NORMALIZAR SIEMPRE la salida del grafo a dict antes de tocarla
-            execution_results = self._normalize_graph_output(execution_results)
-            logger.info(f"[OrchestratorService] ✅ Salida del grafo normalizada en iteración {iteration} (claves: {list(execution_results.keys())})")
-            
-            # Si el grafo devuelve una respuesta directa, terminar
-            if (execution_results.get("assistant_response") and 
-                not execution_results.get("plan")):
-                final_answer = execution_results.get("assistant_response", "")
-                logger.info(f"[OrchestratorService] ✅ Respuesta directa obtenida en iteración {iteration}")
-                break
-            
-            # Acumular resultados
-            if execution_results.get("variables"):
-                accumulated_results.update(execution_results.get("variables", {}))
-            
-            # 🔧 SIMPLIFICADO: Evaluación básica sin evaluador externo
-            logger.info(f"[OrchestratorService] 📊 Iteración {iteration} completada - {len(accumulated_results)} variables acumuladas")
-            
-            # Decidir si continuar basándose en criterios simples
-            if accumulated_results and iteration >= 2:
-                logger.info("[OrchestratorService] ✅ Información suficiente encontrada después de 2 iteraciones")
-                
-                # Generar respuesta final con toda la información acumulada
-                final_answer = await self._generate_final_answer(
-                    message.content, accumulated_results, context_tasks
-                )
-                break
-            
-            iteration += 1
-        
-        # Si llegamos al máximo de iteraciones sin respuesta completa
-        if not final_answer:
-            logger.warning(f"[OrchestratorService] ⚠️ Máximo de iteraciones alcanzado ({max_iterations})")
-            final_answer = await self._generate_final_answer(
-                message.content, accumulated_results, context_tasks
-            )
-        
-        # Guardar respuesta del asistente
-        await self._save_assistant_message_async(
+        # 🔄 REFACTORIZADO: Usar módulo especializado IterativeRAGHandler
+        return await self.iterative_rag_handler.run_iterative_rag(
             chat_id=chat_id,
-            content=final_answer,
-            token_count=None,  # TODO: calcular tokens
-            executed_strategy_id=None,
+            message=message,
+            db_ids=db_ids,
+            app_ids=app_ids,
+            context_loader=self.context_loader,
+            graph_runner=self.graph_runner,
+            explorer=explorer,
+            max_iterations=max_iterations
         )
-        
-        perfmon.take_snapshot("iterative_orchestrator_end")
-        
-        return {
-            "assistant_response": final_answer,
-            "execution_results": accumulated_results,
-            "iterations_used": iteration - 1,
-            "steps": [],  # TODO: agregar pasos detallados
-        }
 
     def _validate_compact_schemas(self, compact_schemas: Dict, db_ids: List) -> bool:
         """Validar que hay compact_schemas válidos para las DBs solicitadas"""
-        if not compact_schemas or not db_ids:
-            return False
-        
-        for db_id in db_ids:
-            # Convertir a str si es UUID para comparación
-            db_key = str(db_id) if hasattr(db_id, 'hex') else db_id
-            
-            # Buscar tanto con UUID como con str
-            schema_found = False
-            for key in [db_id, db_key, str(db_id)]:
-                if key in compact_schemas and compact_schemas[key] and compact_schemas[key].strip():
-                    schema_found = True
-                    break
-            
-            if not schema_found:
-                logger.warning(f"[OrchestratorService] ⚠️ No hay compact_schema válido para DB {db_id}")
-                return False
-        
-        logger.info(f"[OrchestratorService] ✅ Compact schemas válidos para {len(db_ids)} DBs")
-        return True
+        # 🔄 REFACTORIZADO: Usar módulo especializado SchemaValidator
+        return self.schema_validator.validate_compact_schemas(compact_schemas, db_ids)
 
     async def _generate_final_answer(
         self, 
@@ -381,51 +396,17 @@ class OrchestratorService:
         """
         Genera la respuesta final basándose en todos los resultados acumulados.
         """
-        logger.info("[OrchestratorService] 📝 Generando respuesta final con información acumulada")
+        logger.info("[OrchestratorService] 📝 Delegando generación de respuesta final al módulo especializado")
         
-        # Construir prompt con toda la información
-        results_summary = self._format_results_for_final_answer(accumulated_results)
-        
-        final_prompt = f"""
-Pregunta del usuario: {question}
-
-Información encontrada en la base de datos:
-{results_summary}
-
-Por favor, responde la pregunta del usuario de manera clara y completa usando la información encontrada.
-Si no encuentras información específica, menciona qué se buscó y qué alternativas podrían existir.
-"""
-        
-        try:
-            openai_service = self.factory.get_openai_service()
-            response = openai_service.complete_chat([
-                {"role": "system", "content": "Eres un asistente experto que responde preguntas basándose en datos de base de datos. Sé claro, preciso y útil."},
-                {"role": "user", "content": final_prompt}
-            ])
-            return response
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] ❌ Error generando respuesta final: {e}")
-            return f"He encontrado información en tu base de datos, pero hubo un error al generar la respuesta final. Información encontrada: {results_summary}"
+        # 🔄 REFACTORIZADO: Usar módulo especializado IterativeRAGHandler
+        return await self.iterative_rag_handler._generate_final_answer(
+            question, accumulated_results, context
+        )
 
     def _format_results_for_final_answer(self, results: Dict[str, Any]) -> str:
         """Formatea los resultados acumulados para la respuesta final"""
-        formatted = []
-        
-        for key, value in results.items():
-            if isinstance(value, list):
-                if len(value) <= 20:  # Mostrar listas pequeñas completas
-                    formatted.append(f"- {key}: {value}")
-                else:
-                    formatted.append(f"- {key}: {value[:10]}... (y {len(value)-10} más)")
-            elif isinstance(value, dict):
-                if value.get("error"):
-                    formatted.append(f"- {key}: Error - {value['error']}")
-                else:
-                    formatted.append(f"- {key}: {value}")
-            else:
-                formatted.append(f"- {key}: {value}")
-        
-        return "\n".join(formatted) if formatted else "No se encontró información específica."
+        # 🔄 REFACTORIZADO: Usar módulo especializado ResponseFormatter
+        return self.response_formatter.format_results_for_final_answer(results)
 
     # ===================================================
     #  ASYNC HELPERS (con sesiones separadas)
@@ -459,35 +440,8 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
     @monitor_performance("store_user_message")
     @profile_function("store_user_message")
     async def _store_user_message_async(self, chat_id: UUID, message: ChatMessage):
-        """Guardar mensaje del usuario con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                history_service = temp_factory.get_chat_history_service()
-                
-                history_service.create_message(
-                    data=ChatHistoryCreate(
-                        chat_id=chat_id,
-                        user_id=self.user_id,
-                        role=message.role,
-                        content=message.content,
-                        name=message.name,
-                        is_function_call=False,
-                    )
-                )
-                logger.info("[OrchestratorService] User message stored with separate session")
-                return True
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to store user message: {e}")
-            return False
+        """Almacenar mensaje del usuario usando ChatHistoryManager"""
+        await self.chat_history_manager.store_user_message_async(chat_id, message)
 
     @monitor_performance("save_assistant_message")
     @profile_function("save_assistant_message")
@@ -498,35 +452,10 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         token_count: Optional[int],
         executed_strategy_id: Optional[UUID] = None,
     ):
-        """Guardar mensaje del asistente con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                history_service = temp_factory.get_chat_history_service()
-                
-                history_service.create_message(
-                    data=ChatHistoryCreate(
-                        chat_id=chat_id,
-                        user_id=self.user_id,
-                        role="assistant",
-                        content=content,
-                        name=None,
-                        is_function_call=False,
-                    )
-                )
-                logger.info("[OrchestratorService] Assistant message saved with separate session")
-                return True
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to save assistant message: {e}")
-            return False
+        """Guardar mensaje del asistente usando ChatHistoryManager"""
+        await self.chat_history_manager.save_assistant_message_async(
+            chat_id, content, token_count, executed_strategy_id
+        )
 
     @monitor_performance("load_context_parallel")
     @profile_function("load_context_parallel")
@@ -634,105 +563,65 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         return limited_db_ids
     
     def _apply_token_budget_to_app_ids(self, app_ids: Optional[List[UUID]]) -> Optional[List[UUID]]:
-        """
-        Aplica presupuesto de tokens limitando el número de aplicaciones.
-        """
+        """Aplicar token budget a app IDs usando AppFunctionManager"""
         if not app_ids:
-            return app_ids
+            return None
         
-        # Limitar a TOP_K_APPS para controlar tokens
+        # Limitar a TOP_K_APPS para control de tokens
         limited_app_ids = app_ids[:self.TOP_K_APPS]
         
         if len(limited_app_ids) < len(app_ids):
-            logger.info(f"[OrchestratorService] 🔒 Token budget: limitando apps de {len(app_ids)} a {len(limited_app_ids)}")
+            logger.info(f"[OrchestratorService] 🔒 Token budget: apps limitados de {len(app_ids)} a {len(limited_app_ids)}")
         
         return limited_app_ids
     
     def _estimate_tokens_for_context(self, context: Dict[str, Any]) -> int:
-        """
-        Estima el número de tokens para el contexto.
-        """
+        """Estima el número de tokens para un contexto dado usando los managers especializados"""
         try:
-            # Estimación aproximada: 1 token ≈ 4 caracteres
             total_chars = 0
             
-            # Historial
-            history = context.get("history", [])
-            for msg in history:
-                content = msg.get("content", "")
-                total_chars += len(content)
+            # 1. Historial usando ChatHistoryManager
+            if "history" in context:
+                history = context["history"]
+                total_chars += self.chat_history_manager.estimate_history_tokens(history)
             
-            # Schemas de DB
-            schemas = context.get("database_schemas", {})
-            for db_schema in schemas.values():
-                if isinstance(db_schema, list):
-                    for table in db_schema:
-                        if isinstance(table, dict):
-                            total_chars += len(str(table))
+            # 2. Esquemas de base de datos
+            if "compact_schemas" in context:
+                for db_id, schema_data in context["compact_schemas"].items():
+                    if isinstance(schema_data, dict) and "compact" in schema_data:
+                        total_chars += len(schema_data["compact"])
             
-            # Apps
-            apps = context.get("apps", [])
-            for app in apps:
-                if isinstance(app, dict):
-                    total_chars += len(str(app))
+            # 3. Descriptores de apps
+            if "app_descriptors_compact" in context and context["app_descriptors_compact"]:
+                total_chars += len(context["app_descriptors_compact"])
             
-            # Mensaje del usuario
-            message = context.get("message", {})
-            if isinstance(message, dict):
-                total_chars += len(str(message))
+            # 4. Funciones y apps usando AppFunctionManager
+            if "functions" in context or "apps" in context or "mcp_tools" in context:
+                apps = context.get("apps", [])
+                functions = context.get("functions", [])
+                mcp_tools = context.get("mcp_tools", {})
+                total_chars += self.app_function_manager.estimate_app_function_tokens(apps, functions, mcp_tools)
             
+            # Estimación aproximada: 1 token ≈ 4 caracteres
             estimated_tokens = total_chars // 4
-            logger.info(f"[OrchestratorService] 🔍 Tokens estimados: {estimated_tokens} (chars: {total_chars})")
-            
+            logger.debug(f"[OrchestratorService] 🔍 Tokens estimados para contexto: {estimated_tokens}")
             return estimated_tokens
             
         except Exception as e:
-            logger.warning(f"[OrchestratorService] ⚠️ Error estimando tokens: {e}")
+            logger.warning(f"[OrchestratorService] ⚠️ Error estimando tokens del contexto: {e}")
             return 0
     
     def _should_use_lite_payload(self, estimated_tokens: int) -> bool:
-        """
-        Determina si se debe usar payload lite basado en estimación de tokens.
-        """
+        """Determinar si usar payload lite basado en tokens estimados"""
         return estimated_tokens > self.MAX_INPUT_TOKENS
     
     async def _build_lite_payload(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Construye un payload lite para evitar exceder límites de tokens.
-        """
-        logger.info("[OrchestratorService] 🔒 Construyendo payload lite para control de tokens")
+        """Construir payload lite usando AppFunctionManager"""
+        apps = context.get('apps', [])
+        functions = context.get('functions', [])
+        mcp_tools = context.get('mcp_tools', {})
         
-        lite_context = context.copy()
-        
-        # 1. Limitar historial a últimos turnos
-        history = context.get("history", [])
-        if len(history) > self.MAX_HISTORY_TURNS:
-            lite_context["history"] = history[-self.MAX_HISTORY_TURNS:]
-            logger.info(f"[OrchestratorService] 🔒 Historial recortado: {len(history)} → {len(lite_context['history'])} turnos")
-        
-        # 2. Limitar schema a caracteres máximos
-        schemas = context.get("database_schemas", {})
-        if schemas:
-            lite_schemas = {}
-            for db_id, db_schema in schemas.items():
-                if isinstance(db_schema, list):
-                    # Solo incluir lista de tablas y schema truncado
-                    table_names = [table.get("name", "unknown") for table in db_schema if isinstance(table, dict)]
-                    lite_schemas[db_id] = {
-                        "table_names": table_names,
-                        "schema_preview": str(db_schema)[:self.MAX_SCHEMA_CHARS]
-                    }
-            
-            lite_context["database_schemas"] = lite_schemas
-            logger.info(f"[OrchestratorService] 🔒 Schema recortado a {self.MAX_SCHEMA_CHARS} chars")
-        
-        # 3. Limitar apps a TOP_K
-        apps = context.get("apps", [])
-        if len(apps) > self.TOP_K_APPS:
-            lite_context["apps"] = apps[:self.TOP_K_APPS]
-            logger.info(f"[OrchestratorService] 🔒 Apps limitadas: {len(apps)} → {len(lite_context['apps'])}")
-        
-        return lite_context
+        return self.app_function_manager.create_lite_payload(apps, functions, mcp_tools)
 
     async def _optimize_context_with_ai(
         self, 
@@ -805,62 +694,14 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         schema: List[Dict[str, Any]], 
         search_results: List[Any]
     ) -> Dict[str, Any]:
-        """
-        Optimizar esquema basado en resultados de búsqueda vectorial.
-        
-        Args:
-            schema: Esquema original
-            search_results: Resultados de búsqueda vectorial
-            
-        Returns:
-            Esquema optimizado con elementos más relevantes
-        """
-        try:
-            # Crear esquema optimizado
-            optimized_schema = {"tables": {}}
-            
-            # Procesar resultados de búsqueda para priorizar elementos relevantes
-            relevant_elements = {}
-            for result in search_results:
-                element_id = result.element_id
-                similarity_score = result.similarity_score
-                relevance_boost = result.relevance_boost
-                
-                # Calcular score final
-                final_score = similarity_score * relevance_boost
-                relevant_elements[element_id] = final_score
-            
-            # Filtrar y ordenar tablas por relevancia
-            for table in schema:
-                table_name = table.get("name", "")
-                table_relevance = 0.0
-                
-                # Calcular relevancia de la tabla basada en sus columnas
-                for col in table.get("columns", []):
-                    col_name = col.get("name", "")
-                    element_id = f"column_{table_name}_{col_name}"
-                    
-                    if element_id in relevant_elements:
-                        table_relevance += relevant_elements[element_id]
-                
-                # Solo incluir tablas con relevancia significativa
-                if table_relevance > 0.1:  # Threshold mínimo
-                    optimized_schema["tables"][table_name] = {
-                        **table,
-                        "relevance_score": table_relevance
-                    }
-            
-            return optimized_schema
-            
-        except Exception as e:
-            logger.error(f"[OrchestratorService] ❌ Error optimizando esquema: {e}")
-            return {"tables": {}}
+        """Optimizar esquema con resultados de búsqueda usando SchemaManager"""
+        return self.schema_manager.optimize_schema_with_search_results(schema, search_results)
 
     @monitor_performance("load_database_schemas")
     @profile_function("load_database_schemas")
     async def _load_database_schemas_async(self, db_ids: List[UUID]) -> Dict[str, Any]:
         """
-        Cargar esquemas de base de datos con ensure_warm (L1/L2/L3 → introspección).
+        Cargar esquemas de base de datos usando SchemaManager.
         
         Returns:
             Dict con:
@@ -868,192 +709,15 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
             - 'compact_schemas': Dict[UUID, str] - Esquemas compactos para LLM
             - 'cache_status': Dict[UUID, str] - Estado del cache por DB
         """
-        # 🔧 FIX: Crear una nueva sesión para evitar conflictos de concurrencia
-        from app.core.database import SessionLocal
-        
-        def _ensure_warm_schemas_with_new_session(db_ids: List[UUID]) -> Dict[str, Any]:
-            """Wrapper que crea una nueva sesión para evitar conflictos de concurrencia"""
-            db = SessionLocal()
-            try:
-                # Crear un nuevo factory con la nueva sesión
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                
-                # Crear una instancia temporal del servicio con la nueva sesión
-                from app.services.detailed_schema_cache_service import DetailedSchemaCacheService
-                temp_cache_service = DetailedSchemaCacheService(temp_factory)
-                
-                schemas = {}  # Legacy format
-                compact_schemas = {}  # Para el LLM
-                cache_status = {}  # Para debugging
-                
-                for db_id in db_ids:
-                    logger.info(f"[OrchestratorService] 🔍 Ensure warm para DB {db_id}")
-                    
-                    try:
-                        # 🔧 PASO 1: Intentar obtener de cache (L1/L2)
-                        cache_entry = temp_cache_service.get_schema_cache(self.user_id, db_id)
-                        
-                        if cache_entry and cache_entry.compact:
-                            # ✅ Cache HIT - tenemos schema compacto
-                            logger.info(f"[OrchestratorService] ⚡ Cache HIT para DB {db_id}")
-                            compact_schemas[db_id] = cache_entry.compact
-                            cache_status[db_id] = "cache_hit"
-                            
-                            # Convertir snapshot a formato legacy si es necesario
-                            if cache_entry.snapshot and cache_entry.snapshot.tables:
-                                schemas[db_id] = self._convert_snapshot_to_legacy(cache_entry.snapshot.tables)
-                            else:
-                                schemas[db_id] = []
-                        
-                        else:
-                            # ❌ Cache MISS - hacer introspección mínima (L3)
-                            logger.warning(f"[OrchestratorService] 🔄 Cache MISS para DB {db_id} - introspección mínima")
-                            cache_status[db_id] = "cache_miss_introspecting"
-                            
-                            # Hacer introspección básica y crear cache
-                            introspected_schema = self._introspect_minimal_schema(db_id)
-                            
-                            if introspected_schema:
-                                # Crear cache entry
-                                from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
-                                
-                                snapshot = SchemaSnapshot(
-                                    tables=introspected_schema['tables'],
-                                    dialect=introspected_schema.get('dialect', 'unknown'),
-                                    generated_at=datetime.now(timezone.utc)  # Usar datetime.now(timezone.utc) en lugar del valor por defecto
-                                )
-                                
-                                # Crear y guardar cache
-                                cache_entry = temp_cache_service.create_or_update_cache(
-                                    user_id=self.user_id,
-                                    db_id=db_id,
-                                    snapshot=snapshot,
-                                    enrichment_level=EnrichmentLevel.BASIC
-                                )
-                                
-                                compact_schemas[db_id] = cache_entry.compact
-                                schemas[db_id] = self._convert_snapshot_to_legacy(introspected_schema['tables'])
-                                cache_status[db_id] = "cache_created"
-                                
-                                logger.info(f"[OrchestratorService] ✨ Cache creado para DB {db_id}")
-                            else:
-                                # Introspección falló - schema vacío
-                                logger.error(f"[OrchestratorService] ❌ Introspección falló para DB {db_id}")
-                                compact_schemas[db_id] = "-- No schema available --"
-                                schemas[db_id] = []
-                                cache_status[db_id] = "introspection_failed"
-                    
-                    except Exception as e:
-                        logger.exception(f"[OrchestratorService] ❌ Error ensure_warm DB {db_id}: {e}")
-                        compact_schemas[db_id] = f"-- Error loading schema: {str(e)} --"
-                        schemas[db_id] = []
-                        cache_status[db_id] = "error"
-                
-                # Log resumen
-                hits = sum(1 for status in cache_status.values() if status == "cache_hit")
-                misses = sum(1 for status in cache_status.values() if status.startswith("cache_miss"))
-                
-                logger.info(f"[OrchestratorService] 📊 Ensure warm completado: {hits} hits, {misses} misses, {len(db_ids)} total")
-                
-                # 🔒 CONTROL DE TOKENS: Aplicar límite de caracteres a compact_schemas
-                for db_id, schema_content in compact_schemas.items():
-                    if isinstance(schema_content, str) and len(schema_content) > self.MAX_SCHEMA_CHARS:
-                        original_length = len(schema_content)
-                        compact_schemas[db_id] = schema_content[:self.MAX_SCHEMA_CHARS] + "... [truncado]"
-                        logger.info(f"[OrchestratorService] 🔒 Token budget: schema DB {db_id} truncado de {original_length} a {self.MAX_SCHEMA_CHARS} chars")
-                
-                return {
-                    'schemas': schemas,  # Legacy format para compatibilidad
-                    'compact_schemas': compact_schemas,  # Para el LLM
-                    'cache_status': cache_status  # Para debugging
-                }
-            finally:
-                db.close()
-        
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _ensure_warm_schemas_with_new_session, db_ids)
+        return await self.schema_manager.load_database_schemas_async(db_ids)
     
     def _introspect_minimal_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
-        """Introspección mínima de schema para crear cache básico"""
-        try:
-            database_service = self.factory.get_database_service()
-            db_instance = database_service.get_sql_instance(db_id)
-            
-            if not db_instance:
-                return None
-            
-            # Query básica para obtener tablas y columnas
-            tables_query = """
-                SELECT 
-                    table_name,
-                    column_name,
-                    data_type,
-                    is_nullable,
-                    column_default
-                FROM information_schema.columns 
-                WHERE table_schema = 'public'
-                ORDER BY table_name, ordinal_position
-            """
-            
-            # 🔧 FIX: Usar API pública con engine.connect() y text() para obtener filas
-            from sqlalchemy import text
-            with db_instance._engine.connect() as conn:
-                result = conn.execute(text(tables_query))
-                rows = [dict(row._mapping) for row in result]
-            
-            # Procesar resultado en formato de snapshot
-            tables = {}
-            for row in rows:
-                table_name = row['table_name']
-                if table_name not in tables:
-                    tables[table_name] = {
-                        'columns': {},
-                        'primary_keys': [],
-                        'foreign_keys': [],
-                        'indexes': []
-                    }
-                
-                tables[table_name]['columns'][row['column_name']] = {
-                    'type': row['data_type'],
-                    'nullable': row['is_nullable'] == 'YES',
-                    'default': row['column_default'],
-                    'primary_key': False  # Se puede enriquecer después
-                }
-            
-            logger.info(f"[OrchestratorService] 🔍 Introspección básica: {len(tables)} tablas")
-            
-            return {
-                'tables': tables,
-                'dialect': 'postgresql'  # Asumimos PostgreSQL por ahora
-            }
-            
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] ❌ Error introspección mínima DB {db_id}: {e}")
-            return None
-    
+        """Introspección mínima de esquema usando SchemaManager"""
+        return self.schema_manager._introspect_minimal_schema(db_id)
+
     def _convert_snapshot_to_legacy(self, snapshot_tables: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Convierte formato de snapshot a formato legacy para compatibilidad"""
-        tables = []
-        for table_name, table_info in snapshot_tables.items():
-            table_dict = {
-                "name": table_name,
-                "columns": [
-                    {
-                        "name": col_name,
-                        "type": col_info.get('type', 'unknown'),
-                        "nullable": col_info.get('nullable', True),
-                        "default": col_info.get('default'),
-                        "primary_key": col_info.get('primary_key', False)
-                    }
-                    for col_name, col_info in table_info.get('columns', {}).items()
-                ],
-                "primary_keys": table_info.get('primary_keys', []),
-                "foreign_keys": table_info.get('foreign_keys', []),
-                "indexes": table_info.get('indexes', [])
-            }
-            tables.append(table_dict)
-        return tables
+        """Convertir snapshot a formato legacy usando SchemaManager"""
+        return self.schema_manager._convert_snapshot_to_legacy(snapshot_tables)
 
     @monitor_performance("load_agent_prompt")
     @profile_function("load_agent_prompt")
@@ -1087,159 +751,26 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
     @monitor_performance("load_history")
     @profile_function("load_history")
     async def _load_history_async(self, chat_id: UUID) -> List[Dict[str, Any]]:
-        """Cargar historial del chat con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                history_service = temp_factory.get_chat_history_service()
-                
-                # Obtener historial
-                history = history_service.get_chat_history(chat_id)
-                
-                # Convertir a formato de diccionario de forma segura
-                history_dicts = []
-                for msg in history:
-                    try:
-                        # 🔧 FIX: Usar método auxiliar para conversión segura
-                        msg_dict = self._safe_sqlalchemy_to_dict(msg)
-                        
-                        # 🔧 FIX: Asegurar campos requeridos con valores por defecto
-                        msg_dict = {
-                            'role': msg_dict.get('role', 'unknown'),
-                            'content': msg_dict.get('content', ''),
-                            'name': msg_dict.get('name'),
-                            'timestamp': msg_dict.get('timestamp'),
-                            'is_function_call': msg_dict.get('is_function_call', False)
-                        }
-                        
-                        history_dicts.append(msg_dict)
-                        
-                    except Exception as msg_error:
-                        logger.warning(f"[OrchestratorService] Error procesando mensaje del historial: {msg_error}")
-                        # Agregar mensaje básico en caso de error
-                
-                # 🔒 CONTROL DE TOKENS: Aplicar límite de turnos de historial
-                if len(history_dicts) > self.MAX_HISTORY_TURNS:
-                    original_count = len(history_dicts)
-                    history_dicts = history_dicts[-self.MAX_HISTORY_TURNS:]
-                    logger.info(f"[OrchestratorService] 🔒 Token budget: historial limitado de {original_count} a {len(history_dicts)} turnos")
-                
-                logger.info(f"[OrchestratorService] History loaded with separate session: {len(history_dicts)} messages")
-                return history_dicts
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to load history: {e}")
-            return []
+        """Cargar historial del chat usando ChatHistoryManager"""
+        return await self.chat_history_manager.load_history_async(chat_id)
 
     @monitor_performance("load_apps")
     @profile_function("load_apps")
     async def _load_apps_async(self, app_ids: List[UUID]) -> List[Dict[str, Any]]:
-        """Cargar aplicaciones con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                app_service = temp_factory.get_app_service()
-                
-                # Obtener aplicaciones
-                apps = []
-                for app_id in app_ids:
-                    try:
-                        app = app_service.get_by_id(app_id)
-                        if app:
-                            apps.append({
-                                'id': str(app.id),
-                                'name': app.name,
-                                'description': app.description,
-                                'type': app.type,
-                                'config': app.config
-                            })
-                    except Exception as e:
-                        logger.warning(f"[OrchestratorService] Failed to load app {app_id}: {e}")
-                        continue
-                
-                logger.info(f"[OrchestratorService] Apps loaded with separate session: {len(apps)} apps")
-                return apps
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to load apps: {e}")
-            return []
+        """Cargar aplicaciones usando AppFunctionManager"""
+        return await self.app_function_manager.load_apps_async(app_ids)
 
     @monitor_performance("load_functions")
     @profile_function("load_functions")
     async def _load_functions_async(self) -> List[Dict[str, Any]]:
-        """Cargar funciones disponibles con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                function_service = temp_factory.get_function_service()
-                
-                # Obtener funciones disponibles
-                functions = function_service.get_functions()
-                
-                # Convertir a formato de diccionario
-                function_dicts = []
-                for func in functions:
-                    function_dicts.append({
-                        'id': func.id,
-                        'name': func.name,
-                        'description': func.description,
-                        'parameters': func.parameters,
-                        'group_id': func.group_id
-                    })
-                
-                logger.info(f"[OrchestratorService] Functions loaded with separate session: {len(function_dicts)} functions")
-                return function_dicts
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to load functions: {e}")
-            return []
+        """Cargar funciones disponibles usando AppFunctionManager"""
+        return await self.app_function_manager.load_functions_async()
 
     @monitor_performance("load_mcp_tools")
     @profile_function("load_mcp_tools")
     async def _load_mcp_tools_async(self) -> Dict[str, Any]:
-        """Cargar herramientas MCP disponibles con sesión separada para evitar conflictos de concurrencia"""
-        try:
-            # 🔧 FIX: Crear sesión separada para evitar conflictos
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            
-            try:
-                # Crear una nueva instancia del servicio con la sesión separada
-                from app.core.service_factory import ServiceFactory
-                temp_factory = ServiceFactory(db=db, request=self.factory.request)
-                mcp_service = temp_factory.get_mcp_integration_service()
-                
-                # Obtener herramientas MCP disponibles
-                mcp_tools = mcp_service.get_available_tools()
-                
-                logger.info(f"[OrchestratorService] MCP tools loaded with separate session: {len(mcp_tools)} tools")
-                return mcp_tools
-            finally:
-                db.close()
-        except Exception as e:
-            logger.exception(f"[OrchestratorService] Failed to load MCP tools: {e}")
-            return {}
+        """Cargar herramientas MCP disponibles usando AppFunctionManager"""
+        return await self.app_function_manager.load_mcp_tools_async()
 
     # ===================================================
     #  MÉTODOS DE CONTROL DE TOKENS MEJORADOS
@@ -1269,51 +800,50 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         logger.debug(f"[OrchestratorService] 🔒 Token bucket actualizado: {self._token_bucket['tokens_used']} tokens usados")
 
     def _apply_intelligent_context_trimming(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Aplica trimming inteligente basado en presupuesto de tokens"""
+        """Aplicar trimming inteligente usando los managers especializados"""
         trimmed_context = context.copy()
         
-        # 1. Limitar historial
-        if "history" in trimmed_context and len(trimmed_context["history"]) > self.MAX_HISTORY_TURNS:
-            trimmed_context["history"] = trimmed_context["history"][-self.MAX_HISTORY_TURNS:]
-            logger.info(f"[OrchestratorService] 🔒 Historial recortado: {len(context['history'])} → {len(trimmed_context['history'])} turnos")
+        # Trimming de historial usando ChatHistoryManager
+        if 'chat_history' in trimmed_context:
+            history = trimmed_context['chat_history']
+            estimated_tokens = self.chat_history_manager.estimate_history_tokens(history)
+            if estimated_tokens > self.MAX_HISTORY_CHARS:
+                # Aplicar trimming inteligente
+                trimmed_context['chat_history'] = self.chat_history_manager._apply_intelligent_history_trimming(history)
+                logger.info(f"[OrchestratorService] 🔒 Token budget: historial optimizado de {estimated_tokens} a {self.MAX_HISTORY_CHARS} chars")
         
-        # 2. Limitar schema a caracteres máximos
-        if "compact_schemas" in trimmed_context:
-            for db_id, schema_data in trimmed_context["compact_schemas"].items():
-                if isinstance(schema_data, dict) and "compact" in schema_data:
-                    schema_text = schema_data["compact"]
-                    if len(schema_text) > self.MAX_SCHEMA_CHARS:
-                        trimmed_context["compact_schemas"][db_id]["compact"] = (
-                            schema_text[:self.MAX_SCHEMA_CHARS] + "\n\n... (truncado por límite de tokens)"
-                        )
-                        logger.info(f"[OrchestratorService] 🔒 Schema para DB {db_id} recortado: {len(schema_text)} → {self.MAX_SCHEMA_CHARS} caracteres")
+        # Trimming de esquemas usando SchemaManager
+        if 'database_schemas' in trimmed_context:
+            schemas = trimmed_context['database_schemas']
+            for db_id, schema in schemas.items():
+                if isinstance(schema, str) and len(schema) > self.MAX_SCHEMA_CHARS:
+                    trimmed_context['database_schemas'][db_id] = schema[:self.MAX_SCHEMA_CHARS] + "... [truncado]"
+                    logger.info(f"[OrchestratorService] 🔒 Token budget: schema DB {db_id} truncado a {self.MAX_SCHEMA_CHARS} chars")
         
-        # 3. Limitar descriptores de apps
-        if "app_descriptors_compact" in trimmed_context and trimmed_context["app_descriptors_compact"]:
-            app_desc = trimmed_context["app_descriptors_compact"]
-            if len(app_desc) > self.MAX_APP_DESCRIPTOR_CHARS:
-                trimmed_context["app_descriptors_compact"] = (
-                    app_desc[:self.MAX_APP_DESCRIPTOR_CHARS] + "\n\n... (descriptores truncados por límite de tokens)"
-                )
-                logger.info(f"[OrchestratorService] 🔒 Descriptores de apps recortados: {len(app_desc)} → {self.MAX_APP_DESCRIPTOR_CHARS} caracteres")
+        # Trimming de apps usando AppFunctionManager
+        if 'apps' in trimmed_context:
+            apps = trimmed_context['apps']
+            for app in apps:
+                if 'description' in app and len(app['description']) > self.MAX_APP_DESCRIPTOR_CHARS:
+                    app['description'] = app['description'][:self.MAX_APP_DESCRIPTOR_CHARS] + "... [truncado]"
         
-        # 4. Limitar funciones
-        if "functions" in trimmed_context and len(trimmed_context["functions"]) > self.TOP_K_APPS:
-            trimmed_context["functions"] = trimmed_context["functions"][:self.TOP_K_APPS]
-            logger.info(f"[OrchestratorService] 🔒 Funciones limitadas: {len(context['functions'])} → {len(trimmed_context['functions'])}")
-        
-        # 5. Limitar herramientas MCP
-        if "mcp_tools" in trimmed_context and trimmed_context["mcp_tools"]:
-            mcp_tools = trimmed_context["mcp_tools"]
-            if isinstance(mcp_tools, dict) and "tools" in mcp_tools:
-                if len(mcp_tools["tools"]) > 3:
-                    trimmed_context["mcp_tools"]["tools"] = mcp_tools["tools"][:3]
-                    logger.info(f"[OrchestratorService] 🔒 MCP tools limitadas: {len(mcp_tools['tools'])} → 3")
+        # Trimming de funciones usando AppFunctionManager
+        if 'functions' in trimmed_context:
+            functions = trimmed_context['functions']
+            for func in functions:
+                if 'description' in func and len(func['description']) > self.MAX_FUNCTION_DESCRIPTION_CHARS:
+                    func['description'] = func['description'][:self.MAX_FUNCTION_DESCRIPTION_CHARS] + "... [truncado]"
         
         return trimmed_context
 
     def _should_force_plan(self, db_ids: Optional[List[UUID]], user_message: str, execution_results: Dict[str, Any]) -> bool:
         """Determina si se debe forzar la generación de un plan basado en la intención del usuario"""
+        # ⛔ Si la intención es de ESQUEMA, no forzar plan
+        intent_str = (execution_results.get("intent") or "").lower()
+        if intent_str in ["db_schema", "schema", "describe_schema", "schema_question", "db_read_schema"]:
+            logger.info("[OrchestratorService] ⛔ No se fuerza plan: intención de esquema")
+            return False
+
         # 1. Si hay bases de datos especificadas, forzar plan
         if db_ids:
             logger.info("[OrchestratorService] 🔒 Forzando plan por presencia de bases de datos")
@@ -1470,18 +1000,14 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         }
 
     def _estimate_tokens_for_context(self, context: Dict[str, Any]) -> int:
-        """Estima el número de tokens para un contexto dado"""
+        """Estima el número de tokens para un contexto dado usando los managers especializados"""
         try:
             total_chars = 0
             
-            # 1. Historial
+            # 1. Historial usando ChatHistoryManager
             if "history" in context:
-                for msg in context["history"]:
-                    if isinstance(msg, dict):
-                        content = msg.get("content", "")
-                        total_chars += len(content)
-                    elif hasattr(msg, 'content'):
-                        total_chars += len(msg.content or "")
+                history = context["history"]
+                total_chars += self.chat_history_manager.estimate_history_tokens(history)
             
             # 2. Esquemas de base de datos
             if "compact_schemas" in context:
@@ -1493,22 +1019,12 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
             if "app_descriptors_compact" in context and context["app_descriptors_compact"]:
                 total_chars += len(context["app_descriptors_compact"])
             
-            # 4. Funciones
-            if "functions" in context:
-                for func in context["functions"]:
-                    if hasattr(func, 'description') and func.description:
-                        total_chars += len(func.description)
-                    if hasattr(func, 'name'):
-                        total_chars += len(func.name)
-            
-            # 5. Herramientas MCP
-            if "mcp_tools" in context and context["mcp_tools"]:
-                mcp_tools = context["mcp_tools"]
-                if isinstance(mcp_tools, dict) and "tools" in mcp_tools:
-                    for tool in mcp_tools["tools"]:
-                        if isinstance(tool, dict):
-                            total_chars += len(tool.get("name", ""))
-                            total_chars += len(tool.get("description", ""))
+            # 4. Funciones y apps usando AppFunctionManager
+            if "functions" in context or "apps" in context or "mcp_tools" in context:
+                apps = context.get("apps", [])
+                functions = context.get("functions", [])
+                mcp_tools = context.get("mcp_tools", {})
+                total_chars += self.app_function_manager.estimate_app_function_tokens(apps, functions, mcp_tools)
             
             # Estimación aproximada: 1 token ≈ 4 caracteres
             estimated_tokens = total_chars // 4
@@ -1582,106 +1098,9 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
             return len(str(data["message"]))
         return 0
 
-    def _store_user_message_with_session(self, chat_id: UUID, message: ChatMessage) -> None:
-        """Guardar mensaje del usuario con sesión separada"""
-        db = SessionLocal()
-        try:
-            # Crear una nueva instancia del servicio con la sesión separada
-            from app.core.service_factory import ServiceFactory
-            temp_factory = ServiceFactory(db, self.factory.request)
-            history_service = temp_factory.get_chat_history_service()
-            
-            history_service.create_message(
-                data=ChatHistoryCreate(
-                    chat_id=chat_id,
-                    user_id=self.user_id,
-                    role=message.role,
-                    content=message.content,
-                    name=message.name,
-                    is_function_call=False,
-                )
-            )
-            logger.info("[OrchestratorService] User message stored")
-        except Exception as e:
-            logger.exception("[OrchestratorService] Failed to store user message: %s", e)
-        finally:
-            db.close()
-
-    def _save_assistant_message_with_session(
-        self,
-        chat_id: UUID,
-        content: str,
-        token_count: Optional[int],
-        executed_strategy_id: Optional[UUID] = None,
-    ) -> None:
-        """Guardar mensaje del asistente con sesión separada"""
-        db = SessionLocal()
-        try:
-            # Crear una nueva instancia del servicio con la sesión separada
-            from app.core.service_factory import ServiceFactory
-            temp_factory = ServiceFactory(db, self.factory.request)
-            history_service = temp_factory.get_chat_history_service()
-            
-            history_service.create_message(
-                data=ChatHistoryCreate(
-                    chat_id=chat_id,
-                    user_id=self.user_id,
-                    role="assistant",
-                    content=content,
-                    token_count=token_count,
-                    is_function_call=False,
-                    executed_strategy_id=executed_strategy_id,
-                )
-            )
-            logger.info("[OrchestratorService] Assistant message stored")
-        except Exception as e:
-            logger.exception("[OrchestratorService] Failed to store assistant message: %s", e)
-        finally:
-            db.close()
-
-    def _load_history_with_session(self, chat_id: UUID) -> List[Any]:
-        """Cargar historial con sesión separada"""
-        db = SessionLocal()
-        try:
-            # Crear una nueva instancia del servicio con la sesión separada
-            from app.core.service_factory import ServiceFactory
-            temp_factory = ServiceFactory(db, self.factory.request)
-            history_service = temp_factory.get_chat_history_service()
-            
-            return history_service.get_history(chat_id, limit=20)
-        except Exception as e:
-            logger.exception("[OrchestratorService] Failed to load history: %s", e)
-            return []
-        finally:
-            db.close()
-
     def _store_user_message(self, chat_id: UUID, message: ChatMessage) -> None:
-        """Método original (mantenido para compatibilidad)"""
-        try:
-            self.history_service.create_message(
-                data=ChatHistoryCreate(
-                    chat_id=chat_id,
-                    user_id=self.user_id,
-                    role=message.role,
-                    content=message.content,
-                    name=message.name,
-                    is_function_call=False,
-                )
-            )
-            logger.info("[OrchestratorService] User message stored")
-        except Exception as e:
-            logger.exception("[OrchestratorService] Failed to store user message: %s", e)
-
-    def _load_agent_prompt(self, agent_id: Optional[UUID]) -> str:
-        if not agent_id:
-            return ""
-        try:
-            prompt = self.factory.get_agent_service().get_prompt(agent_id)
-            logger.info("[OrchestratorService] Loaded prompt for agent_id=%s", agent_id)
-            return prompt
-        except Exception as e:
-            logger.warning("[OrchestratorService] Agent prompt load failed: %s", e)
-            return ""
+        """Almacenar mensaje del usuario usando ChatHistoryManager"""
+        asyncio.create_task(self.chat_history_manager.store_user_message_async(chat_id, message))
 
     def _save_assistant_message(
         self,
@@ -1690,29 +1109,31 @@ Si no encuentras información específica, menciona qué se buscó y qué altern
         token_count: Optional[int],
         executed_strategy_id: Optional[UUID] = None,
     ) -> None:
-        """Método original (mantenido para compatibilidad)"""
+        """Guardar mensaje del asistente usando ChatHistoryManager"""
+        asyncio.create_task(self.chat_history_manager.save_assistant_message_async(
+            chat_id, content, token_count, executed_strategy_id
+        ))
+
+    def _load_history_with_session(self, chat_id: UUID) -> List[Any]:
+        """Cargar historial con sesión usando ChatHistoryManager"""
+        return self.chat_history_manager._load_history_with_session(chat_id)
+
+    def _load_agent_prompt(self, agent_id: Optional[UUID]) -> str:
+        """Cargar prompt del agente usando AgentManager"""
+        if not agent_id:
+            return ""
         try:
-            self.history_service.create_message(
-                data=ChatHistoryCreate(
-                    chat_id=chat_id,
-                    user_id=self.user_id,
-                    role="assistant",
-                    content=content,
-                    token_count=token_count,
-                    is_function_call=False,
-                    executed_strategy_id=executed_strategy_id,
-                )
-            )
-            logger.info("[OrchestratorService] Assistant message stored")
+            return self.agent_manager.get_agent_prompt(agent_id)
         except Exception as e:
-            logger.exception("[OrchestratorService] Failed to store assistant message: %s", e)
+            logger.warning(f"[OrchestratorService] Agent prompt load failed: {e}")
+            return ""
 
     def _check_usage_limit(self) -> None:
-        """Verificar límites de uso"""
+        """Verificar límites de uso usando UsageService"""
         try:
             self.factory.get_usage_service().check_limit()
         except Exception as e:
-            logger.warning("[OrchestratorService] Usage limit check failed: %s", e)
+            logger.warning(f"[OrchestratorService] Usage limit check failed: {e}")
 
     def _extract_assistant_response(self, execution_results: Dict[str, Any]) -> str:
         """Extraer la respuesta del asistente de los resultados de ejecución"""

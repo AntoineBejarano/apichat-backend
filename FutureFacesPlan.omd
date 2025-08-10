@@ -1,0 +1,224 @@
+
+# FutureFacesPlan.omd
+> Plan por fases, granular y accionable, para evolucionar la UX conversacional y la lógica del Orchestrator/GraphRunner sin colapsar Cursor.  
+> Formato: cada fase cabe en un solo prompt de Cursor. Incluye objetivos, cambios, archivos, prompts sugeridos y criterios de aceptación.
+
+## Convenciones
+- **Ruta proyecto**: `app/` (ajusta si difiere).
+- **Estilo**: Python 3.11+, async-first, tipado estricto, Pydantic v2.
+- **Patrones**: ServiceFactory, Strategy, Guardrails, Graphs.
+- **Eventos WebSocket** clave: `status.typing`, `status.progress`, `decision.request`, `result.partial`, `result.final`, `notice.info`, `error.user_facing`, `telemetry.snapshot`.
+- **Modo Guided**: selecciona **máx. 1 DB + 1 App** (si App aporta valor).
+- **Fast Schema Path**: respuesta sin LLM si `conf >= 0.7`.
+- **Confirmaciones**: obligatorias para riesgo `medium|high`.
+
+---
+
+## Fase 0 — Preparación (scaffolding y flags)
+**Objetivo**: Habilitar banderas, contratos y lugares donde enchufar mejoras, sin lógica pesada.
+**Cambios**:
+- Añade `app/common/enums.py`: enums de `WsEventType`, `RiskLevel`, `Mode`.
+- Crea `app/common/events.py`: dataclasses/Pydantic models de eventos WS.
+- Feature flags en `.env`: `UX_FAST_PATH=1`, `UX_DECISION_REQUEST=1`.
+**Archivos**: nuevos anteriores + wiring en `orchestrator_service.py` para `emit_*` (stubs).
+**Prompt Cursor**:
+- “Crea enums y modelos de eventos WS y conecta stubs `emit_status/progress/decision/partial/final/notice/error/telemetry` en Orchestrator.”
+**Hecho cuando**: se pueden emitir eventos stub sin romper nada.
+
+---
+
+## Fase 1 — Emisión básica de progreso (sin lógica nueva)
+**Objetivo**: Feedback inmediato.
+**Cambios**:
+- En `handle_websocket_message`: emite `status.typing` instantáneo y `status.progress` (step 1/1 “Recibiendo mensaje”).
+- Hook inicial en `GraphRunner.execute_graph` para `status.progress` (“Seleccionando grafo…”).
+**Archivos**: `orchestrator_service.py`, `orchestrator/graph_runner.py`.
+**Prompt Cursor**: “Inserta emisiones WS de progreso antes y después de seleccionar grafo.”
+**Hecho cuando**: UI recibe dos eventos de progreso por mensaje.
+
+---
+
+## Fase 2 — ResourceSelectorService (Guided: elegir 1 DB + 1 App)
+**Objetivo**: Selección auto con heurística y explicación.
+**Cambios**:
+- Nuevo `app/execution/resource_selector_service.py` con `select_for_guided(prompt, candidate_dbs, candidate_apps) -> {db, app, why, scores}`.
+- Heurística de scoring: intención, cobertura funcional, frescura, coste/latencia, riesgo/permiso, confianza de esquema.
+- Umbrales: `APP_MIN_THRESHOLD`.
+**Archivos**: nuevo servicio + wiring en Orchestrator (Guided).
+**Prompt Cursor**: “Implementa ResourceSelectorService con scoring y úsalo en Guided antes del plan.”
+**Hecho cuando**: se loguea selección y razones.
+
+---
+
+## Fase 3 — Confirmación amable en Guided (decision.request)
+**Objetivo**: Confirmar recursos/plan breves antes de ejecutar.
+**Cambios**:
+- Tras Fase 2, emite `decision.request` con {DB, App, razones, plan-resumen vacío}.
+- Orchestrator espera `decision.response` (confirm/edit/cancel). Añade timeout y default seguro.
+**Archivos**: `orchestrator_service.py` (manejo de espera), `common/events.py` (response).
+**Prompt Cursor**: “Añade emisión decision.request y espera una respuesta WS con timeout y default ‘cancel’.”
+**Hecho cuando**: Confirmar → continúa; Cancelar → aborta con `notice.info`.
+
+---
+
+## Fase 4 — Plantilla de Plan (Guided) mínima
+**Objetivo**: LLM genera plan de 1–2 pasos con contexto mínimo (DB+App elegidos).
+**Cambios**:
+- Nuevo `ai/prompts/plan_guided.md` (plantilla compacta).
+- Implementa `PlanBuilderService` con `build_guided_plan(ctx, db, app, prompt)` → JSON estructurado.
+- Integra guardrails livianos: max 2 pasos, lectura por defecto.
+**Archivos**: `app/ai/plan_builder_service.py`, `app/ai/prompts/plan_guided.md`.
+**Prompt Cursor**: “Crea PlanBuilderService que llama a OpenAI y retorna plan con validación Pydantic.”
+**Hecho cuando**: devuelve plan válido con coste estimado.
+
+---
+
+## Fase 5 — Guardrails SQL y funciones (mínimos)
+**Objetivo**: Seguridad básica.
+**Cambios**:
+- `SQLGuardrailsService`: bloquea `DELETE/UPDATE` sin `WHERE` y limita rows.
+- `FunctionGuardrails`: añade `risk` por función (low/med/high).
+- Orchestrator: si `risk>=med` → `decision.request` antes de ejecutar.
+**Archivos**: `execution/sql_guardrails_service.py`, `execution/function_guardrails.py`.
+**Prompt Cursor**: “Implementa guardrails y conéctalos antes de cada paso del plan.”
+**Hecho cuando**: pasos de riesgo medio piden confirmación.
+
+---
+
+## Fase 6 — Ejecución de pasos con streaming
+**Objetivo**: Mostrar progreso real y resultados parciales.
+**Cambios**:
+- `GraphRunner`: por cada paso: `status.progress` y `result.partial` (preview tabla/JSON).
+- `result.final` con resumen y `next_actions`.
+**Archivos**: `orchestrator/graph_runner.py`, `response_processor.py` (stream).
+**Prompt Cursor**: “Emite partial por paso y final con resumen/acciones.”
+**Hecho cuando**: UI ve avances y preview por step.
+
+---
+
+## Fase 7 — Fast Schema Path (sin LLM)
+**Objetivo**: Responder preguntas de esquema en <150 ms.
+**Cambios**:
+- `context/schema_explorer_service.py`: `fast_lookup(query)` con índice léxico (trigram) sobre tablas/columnas/comentarios/tags.
+- Umbral `CONF_FAST=0.7`. Si 0.4–0.7 → pregunta de desambiguación; si <0.4 → fallback LLM con subset.
+**Archivos**: `context/schema_explorer_service.py`, `data/cache_service.py` (índices).
+**Prompt Cursor**: “Implementa fast_lookup con índice léxico y thresholds.”
+**Hecho cuando**: consultas de “¿dónde está X?” no usan LLM si hay match alto.
+
+---
+
+## Fase 8 — Explorer: propuesta de combinaciones y salto a Guided
+**Objetivo**: Explorar → proponer recursos → confirmar → Guided.
+**Cambios**:
+- `ResourceSelectorService.propose_for_explorer(prompt, all_dbs, all_apps)` → top-2 opciones.
+- Emitir mensaje de propuesta con botones (Opción1/Opción2/Ver otras/Solo leer).
+- Tras confirmación del usuario, reusar Fase 2–6 en Guided.
+**Archivos**: `resource_selector_service.py` (método extra), wiring en Orchestrator (Explorer).
+**Prompt Cursor**: “Añade método de propuestas y flujo de confirmación en Explorer.”
+**Hecho cuando**: confirmación del usuario lanza Guided con selección.
+
+---
+
+## Fase 9 — ResponseProcessor: plantillas UX
+**Objetivo**: Salidas limpias y consistentes por modo.
+**Cambios**:
+- `format_explorer_report(findings, citations, usage, next_actions)`.
+- `format_guided_execution(plan, outcomes, audit_id, usage, next_actions)`.
+- Micro-copy estándar (cabecera, 3 bullets, acciones).
+**Archivos**: `services/response_processor.py`, `ai/prompts/copy_micro.md`.
+**Prompt Cursor**: “Añade dos formateadores y usa micro-copy.”
+**Hecho cuando**: respuestas son homogéneas y legibles.
+
+---
+
+## Fase 10 — TokenBudget UX (avisos y modos)
+**Objetivo**: Transparencia y control.
+**Cambios**:
+- `TokenBudgetManager.budget_hint()` → “rápido/preciso” + tokens estimados.
+- `notice.info` cuando se recorta historial/esquema/app descriptors.
+**Archivos**: `services/token_budget_manager.py`, hooks en Orchestrator.
+**Prompt Cursor**: “Expón budget_hint y emite avisos de trimming.”
+**Hecho cuando**: el usuario ve opciones de modo y avisos de recorte.
+
+---
+
+## Fase 11 — Errores con remediación
+**Objetivo**: Siempre ofrecer siguiente acción.
+**Cambios**:
+- `error.user_facing` con `code`, `human_message`, `suggested_actions`.
+- Casos: timeout LLM, cache inconsistente, permisos insuficientes.
+**Archivos**: `common/errors.py`, manejo en Orchestrator.
+**Prompt Cursor**: “Implementa error.user_facing con acciones sugeridas.”
+**Hecho cuando**: cada error llega con 1–3 acciones.
+
+---
+
+## Fase 12 — Preferencias de usuario (persistentes)
+**Objetivo**: Personalizar formato y confirmaciones.
+**Cambios**:
+- `UserService`: `response_format`, `detail_level`, `risk_tolerance`, `confirmations`, `language`, `timezone`.
+- Orchestrator aplica preferencias al formatear y decidir confirmaciones.
+**Archivos**: `management/user_service.py` (extensión) + wiring.
+**Prompt Cursor**: “Añade preferencias y aplícalas en flujo.”
+**Hecho cuando**: cambios en chat afectan la siguiente respuesta.
+
+---
+
+## Fase 13 — Telemetría y KPIs mínimos
+**Objetivo**: Medir impacto UX.
+**Cambios**:
+- Exponer `telemetry.snapshot` al final de cada turno: tokens_in/out, latencia total, cache_hit_ratio, steps, confirms.
+- (Opcional) Métricas Prometheus si ya está habilitado.
+**Archivos**: `management/telemetry_service.py`, hooks.
+**Prompt Cursor**: “Emite snapshot de telemetría al finalizar.”
+**Hecho cuando**: logs/Prometheus reflejan KPIs.
+
+---
+
+## Fase 14 — Tests mínimos (unit + e2e ligeros)
+**Objetivo**: No romper UX.
+**Cambios**:
+- Unit: ResourceSelector, fast_lookup, guardrails, formatters.
+- E2E simulado: Guided con confirmación; Explorer → propuesta → Guided.
+**Archivos**: `tests/test_resource_selector.py`, `tests/test_schema_fastpath.py`, `tests/test_guardrails.py`, `tests/test_flow_e2e.py`.
+**Prompt Cursor**: “Crea tests mínimos de las piezas nuevas.”
+**Hecho cuando**: pasan los tests y se cubren rutas felices y errores.
+
+---
+
+## Fase 15 — Hardening (timeouts, reintentos, undo)
+**Objetivo**: Robustez.
+**Cambios**:
+- Timeouts configurables para LLM y DB; reintentos con backoff.
+- Si función soporta rollback, añade `next_actions: [undo]`.
+**Archivos**: `services/execution_engine_service.py`, `function_executor_service.py`.
+**Prompt Cursor**: “Añade timeouts, reintentos y undo cuando esté disponible.”
+**Hecho cuando**: fallos transitorios se recuperan y aparece opción undo.
+
+---
+
+## Fase 16 — Opcionales de stack (activar cuando toque)
+**Objetivo**: Escalar sin reescribir.
+**Cambios**:
+- Redis para cache distribuido (si no está activo).
+- Prometheus + Sentry (observabilidad).
+- Celery para tareas largas (exports/indexaciones).
+**Archivos**: `requirements.txt`, `config/*`, wiring mínimo.
+**Prompt Cursor**: “Activa Redis/Prometheus/Sentry/Celery según checklist.”
+**Hecho cuando**: dashboards/alertas básicos corren.
+
+---
+
+## Apéndice A — Prompts cortos para Cursor (plantilla)
+- “Implementa `select_for_guided` con heurística y tests unitarios básicos.”
+- “Añade `decision.request` y espera `decision.response` con timeout + default seguro.”
+- “Crea `PlanBuilderService` con plantilla LLM, max 2 pasos, validación Pydantic.”
+- “Implementa `fast_lookup` con índice trigram en esquema cacheado y thresholds.”
+- “Conecta partial/final streaming en GraphRunner, con micro-copy.”
+- “Guarda preferencias de usuario y aplícalas en formateo y confirmaciones.”
+
+## Apéndice B — Criterios generales de aceptación por fase
+- Build pasa, tests relevantes pasan, y **WS emite** al menos: `progress` → `partial` → `final` en rutas felices.
+- Latencia: se mantiene o mejora vs baseline.
+- Tokens: no excede límites configurados salvo aceptación explícita.
+- Seguridad: confirmaciones aparecen en riesgo medio/alto.

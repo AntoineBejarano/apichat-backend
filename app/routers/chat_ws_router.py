@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any, List, Optional
 from uuid import UUID
 from datetime import datetime
+import re
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -16,6 +17,62 @@ router = APIRouter(
         500: {"description": "❌ Internal server error"},
     },
 )
+
+
+def resolve_step_templates(steps: List[Dict[str, Any]], variables: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Resuelve los templates en los steps usando las variables disponibles.
+    Reemplaza {variable} y {{variable}} con los valores reales de forma segura.
+    """
+    if not steps or not variables:
+        return steps
+    
+    resolved_steps = []
+    
+    for step in steps:
+        resolved_step = step.copy()
+        
+        # Resolver template en message si existe
+        if "template" in step and step["template"]:
+            template = step["template"]
+            resolved_message = resolve_template_string(template, variables)
+            resolved_step["message"] = resolved_message
+            logger.info(f"[ChatWS] ✅ Template resuelto: '{template}' -> '{resolved_message}'")
+        
+        # También resolver message directo si no hay template
+        elif "message" in step and step["message"]:
+            message = step["message"]
+            resolved_message = resolve_template_string(message, variables)
+            resolved_step["message"] = resolved_message
+            logger.info(f"[ChatWS] ✅ Message resuelto: '{message}' -> '{resolved_message}'")
+        
+        resolved_steps.append(resolved_step)
+    
+    return resolved_steps
+
+
+def resolve_template_string(template: str, variables: Dict[str, Any]) -> str:
+    """
+    Resuelve templates en un string usando las variables disponibles.
+    Reemplaza {variable} y {{variable}} con los valores reales de forma segura.
+    IMPORTANTE: Reemplaza primero {{variable}} para evitar conflictos.
+    """
+    if not template or not variables:
+        return template
+    
+    resolved = template
+    
+    # Primero reemplazar {{variable}} para evitar conflictos
+    for var_name, var_value in variables.items():
+        placeholder_double = "{{" + var_name + "}}"
+        resolved = resolved.replace(placeholder_double, str(var_value))
+    
+    # Luego reemplazar {variable}
+    for var_name, var_value in variables.items():
+        placeholder_single = "{" + var_name + "}"
+        resolved = resolved.replace(placeholder_single, str(var_value))
+    
+    return resolved
 
 
 @router.websocket("/ws/{agent_id}")
@@ -78,15 +135,38 @@ async def websocket_chat(
                     explorer=explorer,
                 )
 
-                # Si hay pasos intermedios
-                if steps := response.get("steps"):
+                # 🔧 FIX: Resolver templates en los steps antes de enviarlos
+                steps = response.get("steps", [])
+                if steps:
+                    # Obtener variables del execution_results para resolver templates
+                    execution_results = response.get("execution_results", {})
+                    variables = execution_results.get("variables", {})
+                    
+                    # Resolver templates en los steps
+                    resolved_steps = resolve_step_templates(steps, variables)
+                    
+                    # Enviar steps con templates resueltos
                     await websocket.send_json({
                         "type": "steps",
-                        "steps": steps,
+                        "steps": resolved_steps,
                     })
+                    
+                    logger.info(f"[ChatWS] ✅ Steps enviados con templates resueltos usando {len(variables)} variables")
 
-                # Mensaje final de la IA - formateado para mejor legibilidad
+                # 🔧 FIX: Obtener la respuesta del asistente y resolver cualquier template restante
                 assistant_response = response.get("assistant_response", "🤖 No response generated")
+                
+                # Si la respuesta contiene templates, resolverlos también
+                if assistant_response and ("{" in assistant_response or "{{" in assistant_response):
+                    execution_results = response.get("execution_results", {})
+                    variables = execution_results.get("variables", {})
+                    
+                    # Resolver templates en la respuesta del asistente usando el método auxiliar
+                    resolved_response = resolve_template_string(assistant_response, variables)
+                    
+                    if resolved_response != assistant_response:
+                        logger.info(f"[ChatWS] ✅ Template en assistant_response resuelto: '{assistant_response}' -> '{resolved_response}'")
+                        assistant_response = resolved_response
                 
                 # Verificar si hay errores en la respuesta
                 if "error" in assistant_response.lower() or "error" in response:
