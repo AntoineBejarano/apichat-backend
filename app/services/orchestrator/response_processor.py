@@ -122,6 +122,158 @@ class ResponseProcessor:
             return f"Error formateando resultados: {str(e)}"
     
     @staticmethod
+    def format_explorer_report(
+        findings: List[Dict[str, Any]], 
+        citations: List[str], 
+        usage: Dict[str, Any], 
+        next_actions: List[str]
+    ) -> str:
+        """
+        Formatea el reporte de exploración con micro-copy estándar.
+        
+        Args:
+            findings: Hallazgos de la exploración
+            citations: Fuentes/citas
+            usage: Estadísticas de uso
+            next_actions: Acciones sugeridas
+            
+        Returns:
+            Reporte formateado como string
+        """
+        try:
+            # Cabecera estándar
+            report = "🔍 **Reporte de Exploración**\n\n"
+            
+            # Hallazgos principales (máximo 3 bullets)
+            if findings:
+                report += "**Hallazgos principales:**\n"
+                for i, finding in enumerate(findings[:3]):
+                    if isinstance(finding, dict):
+                        content = finding.get('content', finding.get('description', str(finding)))
+                    else:
+                        content = str(finding)
+                    report += f"• {content}\n"
+                report += "\n"
+            
+            # Fuentes (si hay)
+            if citations:
+                report += "**Fuentes:**\n"
+                for citation in citations[:2]:  # Máximo 2 fuentes
+                    report += f"• {citation}\n"
+                report += "\n"
+            
+            # Estadísticas de uso (si hay)
+            if usage:
+                report += "**Uso:**\n"
+                if 'tokens_used' in usage:
+                    report += f"• Tokens: {usage['tokens_used']}\n"
+                if 'execution_time' in usage:
+                    report += f"• Tiempo: {usage['execution_time']:.2f}s\n"
+                report += "\n"
+            
+            # Acciones sugeridas
+            if next_actions:
+                report += "**Siguientes acciones:**\n"
+                for action in next_actions[:3]:  # Máximo 3 acciones
+                    report += f"• {action}\n"
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"[ResponseProcessor] Error formateando reporte de exploración: {e}")
+            return "Error formateando reporte de exploración"
+    
+    @staticmethod
+    def format_guided_execution(
+        plan: Dict[str, Any], 
+        outcomes: List[Dict[str, Any]], 
+        audit_id: str, 
+        usage: Dict[str, Any], 
+        next_actions: List[str]
+    ) -> str:
+        """
+        Formatea la ejecución guiada con micro-copy estándar.
+        
+        Args:
+            plan: Plan de ejecución
+            outcomes: Resultados de cada paso
+            audit_id: ID de auditoría
+            usage: Estadísticas de uso
+            next_actions: Acciones sugeridas
+            
+        Returns:
+            Ejecución formateada como string
+        """
+        try:
+            # Cabecera estándar
+            report = "🎯 **Ejecución Guiada Completada**\n\n"
+            
+            # Información del plan
+            if plan and plan.get('title'):
+                report += f"**Plan:** {plan['title']}\n"
+                if plan.get('description'):
+                    report += f"{plan['description']}\n"
+                report += "\n"
+            elif plan:
+                report += "**Plan:** Sin título\n\n"
+            else:
+                report += "**Plan:** Sin título\n\n"
+            
+            # Resultados de pasos (máximo 3 bullets)
+            if outcomes:
+                report += "**Resultados:**\n"
+                completed = [o for o in outcomes if o.get('status') == 'completed']
+                failed = [o for o in outcomes if o.get('status') == 'failed']
+                
+                if completed:
+                    count = len(completed)
+                    if count == 1:
+                        report += f"• ✅ {count} paso completado exitosamente\n"
+                    else:
+                        report += f"• ✅ {count} pasos completados exitosamente\n"
+                else:
+                    report += "• ✅ 0 pasos completados exitosamente\n"
+                if failed:
+                    count = len(failed)
+                    if count == 1:
+                        report += f"• ❌ {count} paso falló\n"
+                    else:
+                        report += f"• ❌ {count} pasos fallaron\n"
+                
+                # Mostrar detalles de algunos pasos
+                for outcome in outcomes[:2]:  # Máximo 2 detalles
+                    if outcome.get('status') == 'completed':
+                        report += f"• {outcome.get('description', 'Paso completado')}\n"
+                report += "\n"
+            
+            # ID de auditoría
+            if audit_id:
+                report += f"**ID de Auditoría:** {audit_id}\n\n"
+            
+            # Estadísticas de uso
+            if usage:
+                report += "**Uso:**\n"
+                if 'tokens_used' in usage:
+                    report += f"• Tokens: {usage['tokens_used']}\n"
+                if 'execution_time' in usage:
+                    report += f"• Tiempo total: {usage['execution_time']:.2f}s\n"
+                if 'estimated_cost' in usage:
+                    report += f"• Costo estimado: {usage['estimated_cost']}\n"
+                report += "\n"
+            
+            # Acciones sugeridas
+            if next_actions:
+                report += "**Siguientes acciones:**\n"
+                for action in next_actions[:3]:  # Máximo 3 acciones
+                    report += f"• {action}\n"
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"[ResponseProcessor] Error formateando ejecución guiada: {e}")
+            return "Error formateando ejecución guiada"
+    
+    @staticmethod
     def safe_sqlalchemy_to_dict(obj: Any) -> Dict[str, Any]:
         """
         Convierte objetos SQLAlchemy a diccionarios de forma segura.

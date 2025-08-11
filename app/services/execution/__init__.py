@@ -4,7 +4,7 @@ Maneja la ejecución de planes, estrategias y funciones.
 """
 
 from .execution_engine_service import ExecutionEngineService
-from .function_executor_service import FunctionExecutorService
+from .function_executor_service import FunctionExecutor
 from .sql_executor_service import SQLExecutorService
 from .strategy_service import StrategyService
 from .function_service import FunctionService
@@ -15,10 +15,11 @@ from .event_trigger_service import EventTriggerService
 from .event_definition_service import EventDefinitionService
 from .sql_guardrails_service import SQLGuardrailsService
 from .query_validation_service import QueryValidationService
+from .resource_selector_service import ResourceSelectorService
 
 __all__ = [
     "ExecutionEngineService",
-    "FunctionExecutorService",
+    "FunctionExecutor",
     "SQLExecutorService", 
     "StrategyService",
     "FunctionService",
@@ -28,5 +29,6 @@ __all__ = [
     "EventTriggerService",
     "EventDefinitionService",
     "SQLGuardrailsService",
-    "QueryValidationService"
+    "QueryValidationService",
+    "ResourceSelectorService"
 ]

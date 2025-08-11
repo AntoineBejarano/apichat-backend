@@ -12,6 +12,7 @@ from app.models.function_model import Function
 from langchain_community.utilities.sql_database import SQLDatabase
 
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -251,10 +252,112 @@ class ExplorationGraph:
             try:
                 logger.info("[ExplorationGraph] 🧠 Calling OpenAI with cache validation...")
 
-
                 # 🔧 NUEVO FLUJO: Usar compact_schemas del contexto (ya warm)
                 compact_schemas = state.get("compact_schemas", {})
                 cache_status = state.get("cache_status", {})
+                
+                # 🎯 FASE 8: Emitir propuesta de recursos si tenemos candidatos buenos
+                user_message = state["message"].content
+                db_ids = state.get("db_ids", [])
+                apps = state.get("apps", [])
+                
+                # Solo emitir propuesta si tenemos recursos y el mensaje sugiere una tarea específica
+                if db_ids and apps and self._should_propose_resources(user_message):
+                    try:
+                        # Obtener ResourceSelectorService
+                        resource_selector = self.factory.get_resource_selector_service()
+                        
+                        # Preparar datos para el selector
+                        all_dbs = []
+                        for db_id in db_ids:
+                            db_info = {
+                                'id': str(db_id),
+                                'name': f"Database {db_id[:8]}",
+                                'description': f"Database connection {db_id[:8]}",
+                                'table_count': 0,  # Se puede mejorar obteniendo metadata real
+                                'size_mb': 0,
+                                'last_updated': None,
+                                'is_readonly': True,
+                                'has_comments': False,
+                                'has_constraints': False,
+                                'has_indexes': False
+                            }
+                            all_dbs.append(db_info)
+                        
+                        all_apps = []
+                        for app in apps:
+                            app_info = {
+                                'id': str(app.id),
+                                'name': app.name,
+                                'description': app.description or f"Application {app.name}",
+                                'api_count': len(app.functions) if hasattr(app, 'functions') else 0,
+                                'last_updated': app.updated_at.isoformat() if hasattr(app, 'updated_at') else None,
+                                'requires_auth': True,
+                                'has_rate_limiting': True,
+                                'has_openapi_spec': True,
+                                'has_examples': False,
+                                'has_descriptions': True
+                            }
+                            all_apps.append(app_info)
+                        
+                        # Generar propuestas
+                        proposals = await resource_selector.propose_for_explorer(user_message, all_dbs, all_apps)
+                        
+                        if proposals:
+                            # Emitir propuesta de recursos
+                            proposal_id = f"proposal_{state['chat_id']}_{int(time.time())}"
+                            
+                            # Formatear opciones para la UI
+                            formatted_options = []
+                            for i, proposal in enumerate(proposals, 1):
+                                option = {
+                                    "id": f"guided_option_{i}",
+                                    "label": f"Opción {i}: {proposal['database']['name']} + {proposal['application']['name']}",
+                                    "description": f"Score: {proposal['combined_score']:.2f} - {', '.join(proposal['selection_reasons'][:3])}",
+                                    "action": f"guided_option_{i}",
+                                    "data": {
+                                        "database_id": proposal['database']['id'],
+                                        "application_id": proposal['application']['id'],
+                                        "combined_score": proposal['combined_score'],
+                                        "reasons": proposal['selection_reasons']
+                                    }
+                                }
+                                formatted_options.append(option)
+                            
+                            # Añadir opciones adicionales
+                            formatted_options.extend([
+                                {
+                                    "id": "see_more",
+                                    "label": "Ver más opciones",
+                                    "description": "Explorar más combinaciones de recursos",
+                                    "action": "see_more"
+                                },
+                                {
+                                    "id": "explore_only",
+                                    "label": "Solo explorar",
+                                    "description": "Continuar en modo Explorer sin cambiar a Guided",
+                                    "action": "explore_only"
+                                }
+                            ])
+                            
+                            # Emitir evento de propuesta
+                            await self.factory.get_orchestrator_service().emit_resource_proposal(
+                                proposal_id=proposal_id,
+                                title="¿Te gustaría usar el modo Guided?",
+                                description=f"He encontrado algunas combinaciones de recursos que podrían ser útiles para: '{user_message[:100]}...'",
+                                options=formatted_options,
+                                user_message=user_message,
+                                timeout_seconds=60,
+                                default_action="explore_only"
+                            )
+                            
+                            logger.info(f"[ExplorationGraph] 🎯 Propuesta de recursos emitida: {len(proposals)} opciones")
+                            
+                            # Continuar con la ejecución normal (el usuario puede responder después)
+                    
+                    except Exception as e:
+                        logger.warning(f"[ExplorationGraph] ⚠️ Error generando propuesta de recursos: {e}")
+                        # Continuar sin propuesta
                 
                 # Construir schema compacto combinado para el LLM
                 db_schema = None
@@ -349,73 +452,101 @@ class ExplorationGraph:
             if not sql_instance:
                 return None
             
-            # Query básica para obtener tablas y columnas
-            tables_query = """
-                SELECT 
-                    table_name,
-                    column_name,
-                    data_type,
-                    is_nullable,
-                    column_default
-                FROM information_schema.columns 
-                WHERE table_schema = 'public'
-                ORDER BY table_name, ordinal_position
-            """
+            # Obtener información básica del schema
+            inspector = sql_instance.inspect()
+            tables = inspector.get_table_names()
             
-            # 🔧 Usar engine con text().mappings() para obtener dicts estables
-            from sqlalchemy import text
-            tables = {}
-            
-            # Obtener engine del sql_instance de forma pública
-            # Usamos get_sql_instance que devuelve SQLDatabase, y accedemos al engine
-            if hasattr(sql_instance, '_engine'):
-                engine = sql_instance._engine
-                
-                with engine.connect() as conn:
-                    result = conn.execute(text(tables_query))
-                    rows = [dict(row._mapping) for row in result]
-                    
-                    # Procesar filas como diccionarios
-                    for row in rows:
-                        table_name = row['table_name']
-                        column_name = row['column_name']
-                        data_type = row['data_type']
-                        is_nullable = row['is_nullable']
-                        column_default = row['column_default']
-                        
-                        if table_name not in tables:
-                            tables[table_name] = {
-                                'columns': {},
-                                'primary_keys': [],
-                                'foreign_keys': [],
-                                'indexes': []
-                            }
-                        
-                        tables[table_name]['columns'][column_name] = {
-                            'type': data_type,
-                            'nullable': is_nullable == 'YES',
-                            'default': column_default,
-                            'primary_key': False
-                        }
-            else:
-                logger.warning(f"[ExplorationGraph] ⚠️ No se pudo acceder al engine para DB {db_id}")
-                return None
-            
-            # Inferir dialecto usando API pública
-            dialect = 'postgresql'  # Default assumption
-            try:
-                dialect = database_service.get_dialect_name(db_id) or 'postgresql'
-            except Exception as e:
-                logger.debug(f"[ExplorationGraph] No se pudo inferir dialecto: {e}")
-                dialect = 'postgresql'
-            
-            logger.info(f"[ExplorationGraph] 🔍 Introspección directa: {len(tables)} tablas, dialecto: {dialect}")
-            
-            return {
-                'tables': tables,
-                'dialect': dialect
+            schema_info = {
+                "tables": tables,
+                "table_count": len(tables),
+                "dialect": sql_instance.dialect.name,
+                "has_metadata": True
             }
             
+            # Intentar obtener más metadatos si están disponibles
+            try:
+                # Obtener comentarios de tablas si están disponibles
+                table_comments = {}
+                for table in tables[:10]:  # Limitar a 10 tablas para evitar latencia
+                    try:
+                        comment = inspector.get_table_comment(table)
+                        if comment and comment.get('text'):
+                            table_comments[table] = comment['text']
+                    except:
+                        pass
+                
+                if table_comments:
+                    schema_info["table_comments"] = table_comments
+                    schema_info["has_comments"] = True
+                
+                # Obtener información de columnas para las primeras tablas
+                columns_info = {}
+                for table in tables[:5]:  # Limitar a 5 tablas
+                    try:
+                        columns = inspector.get_columns(table)
+                        columns_info[table] = [
+                            {
+                                "name": col["name"],
+                                "type": str(col["type"]),
+                                "nullable": col.get("nullable", True),
+                                "default": col.get("default"),
+                                "comment": col.get("comment")
+                            }
+                            for col in columns[:20]  # Limitar a 20 columnas por tabla
+                        ]
+                    except:
+                        pass
+                
+                if columns_info:
+                    schema_info["columns_info"] = columns_info
+                
+            except Exception as e:
+                logger.debug(f"[ExplorationGraph] ⚠️ No se pudieron obtener metadatos adicionales: {e}")
+            
+            return schema_info
+            
         except Exception as e:
-            logger.exception(f"[ExplorationGraph] ❌ Error introspección directa DB {db_id}: {e}")
+            logger.error(f"[ExplorationGraph] ❌ Error introspeccionando schema de DB {db_id}: {e}")
             return None
+    
+    def _should_propose_resources(self, user_message: str) -> bool:
+        """
+        Determina si se debe proponer recursos basándose en el mensaje del usuario.
+        
+        Args:
+            user_message: Mensaje del usuario
+            
+        Returns:
+            True si se debe proponer recursos, False en caso contrario
+        """
+        message_lower = user_message.lower()
+        
+        # Palabras clave que sugieren una tarea específica
+        task_keywords = [
+            "buscar", "encontrar", "obtener", "extraer", "consultar", "analizar",
+            "crear", "insertar", "actualizar", "modificar", "eliminar", "borrar",
+            "generar", "calcular", "resumir", "comparar", "filtrar", "ordenar",
+            "agrupar", "contar", "sumar", "promedio", "máximo", "mínimo",
+            "reporte", "dashboard", "exportar", "importar", "sincronizar"
+        ]
+        
+        # Palabras clave que sugieren exploración general
+        exploration_keywords = [
+            "qué hay", "qué contiene", "muéstrame", "explora", "investiga",
+            "descubre", "revisa", "examina", "explora", "navega"
+        ]
+        
+        # Si el mensaje contiene palabras de tarea específica, proponer recursos
+        if any(keyword in message_lower for keyword in task_keywords):
+            return True
+        
+        # Si el mensaje es muy general o solo exploratorio, no proponer
+        if any(keyword in message_lower for keyword in exploration_keywords):
+            return False
+        
+        # Si el mensaje es corto o muy general, no proponer
+        if len(user_message.split()) <= 3:
+            return False
+        
+        # Por defecto, proponer si el mensaje parece ser una pregunta o solicitud
+        return "?" in user_message or any(word in message_lower for word in ["puedes", "ayúdame", "necesito", "quiero"])

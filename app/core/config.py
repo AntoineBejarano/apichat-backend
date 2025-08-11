@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     # Stripe
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
 
+    # Feature Flags para UX mejorada
+    UX_FAST_PATH: bool = os.getenv("UX_FAST_PATH", "True") == "True"
+    UX_DECISION_REQUEST: bool = os.getenv("UX_DECISION_REQUEST", "True") == "True"
+    UX_PROGRESS_STREAMING: bool = os.getenv("UX_PROGRESS_STREAMING", "True") == "True"
+    UX_CONFIRMATION_TIMEOUT: int = int(os.getenv("UX_CONFIRMATION_TIMEOUT", 30))  # segundos
+    
+    # Fast Schema Path (Fase 7) - Umbrales de confianza
+    CONF_FAST: float = float(os.getenv("CONF_FAST", "0.7"))  # Umbral alto para respuesta sin LLM
+    CONF_AMBIGUOUS: float = float(os.getenv("CONF_AMBIGUOUS", "0.4"))  # Umbral bajo para desambiguación
+    FAST_PATH_RESPONSE_TIME_MS: int = int(os.getenv("FAST_PATH_RESPONSE_TIME_MS", "150"))  # Objetivo de respuesta
+
     class Config:
         case_sensitive = True
 

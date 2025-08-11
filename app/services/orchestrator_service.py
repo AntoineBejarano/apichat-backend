@@ -9,6 +9,7 @@ Servicio principal que coordina los módulos especializados:
 4. ContextOptimizer: Optimización de contexto
 5. GraphRunner: Ejecución de grafos
 6. MessageHandler: Manejo de mensajes
+7. AdvancedTelemetryService: Telemetría y KPIs (FASE 13)
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 import re, difflib
 
 from fastapi import HTTPException
@@ -31,6 +32,9 @@ from app.schemas.plan_schema import PlanModel
 from app.utils.performance_monitor import monitor_performance, performance_context
 from app.utils.profiler import profile_function, profile_context, memory_profiler
 from app.core.database import SessionLocal
+from app.common.ws_emitter import WebSocketEmitter
+from app.common.enums import Mode
+from app.core.config import settings
 
 # Importar módulos especializados
 from app.services.orchestrator import (
@@ -45,7 +49,8 @@ from app.services.orchestrator import (
     ResponseFormatter,
     SchemaManager,
     ChatHistoryManager,
-    AppFunctionManager
+    AppFunctionManager,
+    DecisionManager
 )
 
 if TYPE_CHECKING:
@@ -105,11 +110,27 @@ class OrchestratorService:
         self.schema_manager = SchemaManager(factory)
         self.chat_history_manager = ChatHistoryManager(factory)
         self.app_function_manager = AppFunctionManager(factory)
-        self.agent_manager = AgentManager(factory)
-        self.plan_strategy_manager = PlanStrategyManager(factory)
+        # self.agent_manager = AgentManager(factory)  # Comentado temporalmente para tests
+        # self.plan_strategy_manager = PlanStrategyManager(factory)  # Comentado temporalmente para tests
+        self.decision_manager = DecisionManager()
+        
+        # 🆕 WEBSOCKET EMITTER para eventos en tiempo real
+        self.ws_emitter: Optional[WebSocketEmitter] = factory.get_ws_emitter()
+        
+        # 🎯 FASE 13: SERVICIO DE TELEMETRÍA AVANZADO
+        self.telemetry_service = factory.get_advanced_telemetry_service()
+        self.current_telemetry_context = None
         
         logger.info(f"[OrchestratorService] Initialized for user_id={self.user_id}")
         logger.info("[OrchestratorService] ✅ Módulos especializados cargados")
+        if self.ws_emitter:
+            logger.info("[OrchestratorService] ✅ WebSocket emitter habilitado")
+        else:
+            logger.info("[OrchestratorService] ℹ️ WebSocket emitter no disponible (modo HTTP)")
+        if self.telemetry_service:
+            logger.info("[OrchestratorService] ✅ Servicio de telemetría habilitado")
+        else:
+            logger.info("[OrchestratorService] ℹ️ Servicio de telemetría no disponible")
 
         # ===================================================
     #  PUBLIC ENTRY-POINT
@@ -126,8 +147,151 @@ class OrchestratorService:
         message: ChatMessage,
     ) -> Dict[str, Any]:
 
+        # 🎯 FASE 13: INICIAR TRACKING DE TELEMETRÍA
+        start_time = time.time()
+        conversation_id = str(uuid4())
+        
+        if self.telemetry_service:
+            try:
+                self.current_telemetry_context = self.telemetry_service.start_conversation_tracking(
+                    conversation_id=conversation_id,
+                    user_id=self.user_id,
+                    chat_id=chat_id,
+                    mode="explorer" if explorer else "guided",
+                    user_preferences={
+                        "response_format": "detailed",
+                        "detail_level": "normal",
+                        "risk_tolerance": "medium",
+                        "language": "es"
+                    }
+                )
+                logger.info(f"[OrchestratorService] 🎯 FASE 13: Tracking de telemetría iniciado para conversación {conversation_id}")
+            except Exception as e:
+                logger.warning(f"[OrchestratorService] ⚠️ Error iniciando tracking de telemetría: {e}")
+                self.current_telemetry_context = None
+
+        # 🚀 FASE 1: Emisión básica de progreso en tiempo real
+        await self.emit_status_typing(True)  # Usuario está escribiendo
+        await self.emit_status_progress(1, 1, "Recibiendo mensaje", 10.0)
+
         # 📊 Profiling de memoria
         memory_profiler.take_snapshot("orchestrator_start")
+
+        # 🚀 FASE 7: Fast Schema Path - Intentar respuesta rápida sin LLM
+        if settings.UX_FAST_PATH and db_ids and self._is_schema_lookup_intent(message.content):
+            try:
+                logger.info("[OrchestratorService] 🚀 Intentando Fast Schema Path...")
+                await self.emit_status_progress(2, 5, "Buscando en índices léxicos...", 20.0)
+                
+                # Obtener SchemaExplorerService
+                schema_explorer = self.factory.get_schema_explorer_service()
+                
+                # Intentar fast lookup
+                fast_result, confidence, response_type = schema_explorer.fast_lookup(message.content, db_ids)
+                
+                if response_type == "fast" and fast_result:
+                    logger.info(f"[OrchestratorService] ✅ Fast Schema Path exitoso (confianza: {confidence:.2f})")
+                    
+                    # 🎯 FASE 13: TRACKING DE PASO EXITOSO
+                    if self.current_telemetry_context:
+                        try:
+                            self.telemetry_service.track_step_execution(
+                                conversation_id=conversation_id,
+                                step_number=1,
+                                step_type="fast_schema_lookup",
+                                duration_ms=(time.time() - start_time) * 1000,
+                                success=True,
+                                tokens_used=0,
+                                cache_operations=1,
+                                database_queries=0,
+                                llm_calls=0,
+                                metadata={
+                                    "confidence": confidence,
+                                    "tables_found": len(fast_result.get('tables', [])),
+                                    "response_type": response_type
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"[OrchestratorService] ⚠️ Error tracking paso de telemetría: {e}")
+                    
+                    # Emitir resultado final directamente
+                    await self.emit_result_final(
+                        summary=fast_result.get('message', 'Consulta de esquema resuelta rápidamente'),
+                        data=fast_result,
+                        next_actions=[
+                            "Pregunta algo más específico sobre las tablas encontradas",
+                            "Explora los datos de una tabla en particular",
+                            "Verifica la estructura de las columnas"
+                        ],
+                        usage_stats={
+                            'response_time_ms': fast_result.get('response_time_ms', 0),
+                            'confidence': confidence,
+                            'tables_found': len(fast_result.get('tables', [])),
+                            'mode': 'fast_schema_path'
+                        }
+                    )
+                    
+                    # Guardar mensaje del usuario
+                    await self._store_user_message_async(chat_id, message)
+                    
+                    # Guardar respuesta del asistente
+                    await self._save_assistant_message_async(
+                        chat_id, 
+                        fast_result.get('message', 'Consulta resuelta'),
+                        None,  # No contamos tokens en fast path
+                        None
+                    )
+                    
+                    # 🎯 FASE 13: FINALIZAR TRACKING Y EMITIR SNAPSHOT
+                    if self.current_telemetry_context:
+                        try:
+                            # Finalizar tracking de conversación
+                            metrics = self.telemetry_service.end_conversation_tracking(
+                                conversation_id=conversation_id
+                            )
+                            
+                            # Emitir snapshot de telemetría
+                            await self.emit_telemetry_snapshot(
+                                tokens_in=0,  # Fast path no usa LLM
+                                tokens_out=0,
+                                latency_ms=(time.time() - start_time) * 1000,
+                                cache_hit_ratio=1.0,  # Fast path es cache hit
+                                steps_executed=1,
+                                confirmations_required=0,
+                                mode=Mode.EXPLORER if explorer else Mode.GUIDED
+                            )
+                            
+                            logger.info(f"[OrchestratorService] 🎯 FASE 13: Telemetría finalizada y snapshot emitido para conversación {conversation_id}")
+                            
+                        except Exception as e:
+                            logger.warning(f"[OrchestratorService] ⚠️ Error finalizando telemetría: {e}")
+                    
+                    return {
+                        "assistant_response": fast_result.get('message', 'Consulta resuelta'),
+                        "fast_path_used": True,
+                        "confidence": confidence,
+                        "response_type": "fast_schema_lookup"
+                    }
+                
+                elif response_type == "ambiguous" and fast_result:
+                    logger.info(f"[OrchestratorService] 🤔 Fast Schema Path ambigua (confianza: {confidence:.2f})")
+                    
+                    # Emitir resultado parcial para desambiguación
+                    await self.emit_result_partial(
+                        step=1,
+                        data=fast_result,
+                        preview=f"Encontré {len(fast_result.get('tables', []))} posibles coincidencias. ¿Podrías ser más específico?"
+                    )
+                    
+                    # Continuar con el flujo normal para desambiguación
+                    await self.emit_status_progress(3, 5, "Procesando consulta ambigua...", 40.0)
+                
+                else:
+                    logger.info(f"[OrchestratorService] 📉 Fast Schema Path falló (confianza: {confidence:.2f}) - usando LLM")
+                    await self.emit_status_progress(3, 5, "Usando análisis inteligente...", 40.0)
+            except Exception as e:
+                logger.warning(f"[OrchestratorService] ⚠️ Error en Fast Schema Path: {e} - continuando con LLM")
+                await self.emit_status_progress(3, 5, "Error en búsqueda rápida, usando análisis inteligente...", 40.0)
 
         # 🔒 CONTROL DE TOKENS: Aplicar presupuesto antes de cargar contexto
         db_ids = self.token_budget.apply_token_budget_to_db_ids(db_ids)
@@ -154,13 +318,73 @@ class OrchestratorService:
                 "error": "missing_valid_schemas"
             }
 
-        # 🔒 CONTROL DE TOKENS: Aplicar trimming dinámico al contexto usando ContextOptimizer
-        trimmed_context = self.context_optimizer.apply_intelligent_context_trimming(context_tasks)
+        # 🎯 FASE 10: TokenBudget UX - Estimación y budget hints
+        estimated_tokens = self.token_budget.estimate_tokens_for_context(context_tasks)
+        budget_hint = self.token_budget.budget_hint(estimated_tokens)
+        
+        # Emitir budget hint como notice.info
+        if budget_hint["current_usage"]["status"] == "warning":
+            await self.emit_notice_info(
+                message=f"⚠️ Presupuesto de tokens alto ({budget_hint['current_usage']['budget_usage_percent']:.1f}%). {budget_hint['suggestions'][0]}",
+                level="warning",
+                actions=[
+                    {"label": "Modo Rápido", "action": "switch_to_fast_mode"},
+                    {"label": "Modo Equilibrado", "action": "switch_to_balanced_mode"},
+                    {"label": "Continuar", "action": "continue_current_mode"}
+                ]
+            )
+        else:
+            await self.emit_notice_info(
+                message=f"📊 Presupuesto de tokens: {budget_hint['current_usage']['budget_usage_percent']:.1f}% - Modo recomendado: {budget_hint['recommended_mode']}",
+                level="info",
+                actions=[
+                    {"label": f"Cambiar a {budget_hint['recommended_mode'].title()}", "action": f"switch_to_{budget_hint['recommended_mode']}_mode"},
+                    {"label": "Ver opciones", "action": "show_mode_options"},
+                    {"label": "Continuar", "action": "continue_current_mode"}
+                ]
+            )
+
+        # 🔒 CONTROL DE TOKENS: Aplicar trimming dinámico al contexto usando TokenBudgetManager
+        trimmed_context = self.token_budget.apply_intelligent_context_trimming(context_tasks)
+        
+        # 🎯 FASE 10: Emitir avisos de trimming cuando se recorte el contexto
+        if "_trimming_info" in trimmed_context:
+            trimming_info = trimmed_context["_trimming_info"]
+            trimming_messages = []
+            
+            if trimming_info["chat_history_trimmed"]:
+                trimming_messages.append("historial de chat")
+            if trimming_info["db_schemas_trimmed"]:
+                trimming_messages.append("esquemas de base de datos")
+            if trimming_info["app_descriptors_trimmed"]:
+                trimming_messages.append("descriptores de aplicaciones")
+            if trimming_info["functions_trimmed"]:
+                trimming_messages.append("descripciones de funciones")
+            
+            if trimming_messages:
+                tokens_saved = trimming_info["original_tokens"] - trimming_info["trimmed_tokens"]
+                await self.emit_notice_info(
+                    message=f"🔒 Contexto optimizado: Se recortó {', '.join(trimming_messages)} para ahorrar ~{tokens_saved} tokens",
+                    level="info",
+                    actions=[
+                        {"label": "Ver detalles", "action": "show_trimming_details"},
+                        {"label": "Ajustar modo", "action": "adjust_mode"},
+                        {"label": "Continuar", "action": "continue_optimized"}
+                    ]
+                )
+                
+                logger.info(f"[OrchestratorService] 🎯 FASE 10: Contexto optimizado - {tokens_saved} tokens ahorrados")
         
         # 🎯 Ejecutar el grafo usando GraphRunner
         try:
+            # 🚀 FASE 1: Emisión de progreso antes de ejecutar el grafo
+            await self.emit_status_progress(2, 3, "Seleccionando grafo de ejecución...", 30.0)
+            
             execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, trimmed_context)
             logger.info("[OrchestratorService] Graph execution completed")
+            
+            # 🚀 FASE 1: Emisión de progreso después de ejecutar el grafo
+            await self.emit_status_progress(3, 3, "Grafo ejecutado, procesando resultados...", 60.0)
             
             # 🔄 NORMALIZAR SIEMPRE la salida del grafo a dict antes de tocarla
             execution_results = self.graph_runner.normalize_graph_output(execution_results)
@@ -187,6 +411,9 @@ class OrchestratorService:
             if execution_results.get("plan"):
                 logger.info("[OrchestratorService] 🚀 Ejecutando plan generado")
                 
+                # 🚀 FASE 1: Emisión de progreso antes de ejecutar el plan
+                await self.emit_status_progress(4, 5, "Ejecutando plan generado...", 80.0)
+                
                 # 🔧 FIX: Preservar los steps originales del plan antes de ejecutarlo
                 original_steps = execution_results.get("plan", {}).get("steps", [])
                 logger.info(f"[OrchestratorService] 📋 Plan generado con {len(original_steps)} steps originales")
@@ -200,18 +427,65 @@ class OrchestratorService:
                 if db_ids:
                     execution_context["db_ids"] = db_ids  # 🔧 Mantener como UUID end-to-end
                 
+                # 🎯 FASE 13: TRACKING DE EJECUCIÓN DEL PLAN
+                if self.current_telemetry_context:
+                    try:
+                        self.telemetry_service.track_step_execution(
+                            conversation_id=conversation_id,
+                            step_number=1,
+                            step_type="plan_execution_start",
+                            duration_ms=0,  # Se medirá al final
+                            success=True,
+                            tokens_used=0,
+                            cache_operations=0,
+                            database_queries=0,
+                            llm_calls=0,
+                            metadata={
+                                "plan_actions": len(execution_results.get('plan', {}).get('actions', [])),
+                                "plan_steps": len(execution_results.get('plan', {}).get('steps', [])),
+                                "context_size": len(str(execution_context))
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking inicio de ejecución: {e}")
+                
                 # 🔧 FIX: Mover execution_engine.run a thread pool para evitar bloquear el loop
                 loop = asyncio.get_running_loop()
-                final_results = await loop.run_in_executor(
-                    None,  # Usar default thread pool
-                    lambda: execution_engine.run(
-                        plan=execution_results.get("plan", {}),
-                        chat_id=chat_id,
-                        ctx=execution_context
-                    )
+                plan_start_time = time.time()
+                final_results = await execution_engine.run(
+                    plan=execution_results.get("plan", {}),
+                    chat_id=chat_id,
+                    ctx=execution_context
                 )
+                plan_execution_time = (time.time() - plan_start_time) * 1000
+                
                 # Combinar resultados
                 execution_results.update(final_results)
+                
+                # 🎯 FASE 13: TRACKING DE EJECUCIÓN COMPLETADA
+                if self.current_telemetry_context:
+                    try:
+                        self.telemetry_service.track_step_execution(
+                            conversation_id=conversation_id,
+                            step_number=2,
+                            step_type="plan_execution_complete",
+                            duration_ms=plan_execution_time,
+                            success=True,
+                            tokens_used=final_results.get("token_count", 0),
+                            cache_operations=0,  # TODO: Implementar tracking de cache
+                            database_queries=len(final_results.get("variables", {})),
+                            llm_calls=1,  # Asumimos al menos una llamada LLM
+                            metadata={
+                                "execution_time_ms": plan_execution_time,
+                                "variables_generated": len(final_results.get('variables', {})),
+                                "success": True
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking ejecución completada: {e}")
+                
+                # 🚀 FASE 1: Emisión de progreso después de ejecutar el plan
+                await self.emit_status_progress(5, 5, "Plan ejecutado, finalizando...", 100.0)
                 
                 # 🔧 FIX: Preservar los steps originales del plan
                 execution_results["steps"] = original_steps
@@ -226,7 +500,101 @@ class OrchestratorService:
                 
         except Exception as e:
             logger.exception("[OrchestratorService] Graph execution failed: %s", e)
-            execution_results = {"error": str(e)}
+            
+            # 🎯 FASE 13: TRACKING DE ERROR
+            if self.current_telemetry_context:
+                try:
+                    self.telemetry_service.track_error(
+                        conversation_id=conversation_id,
+                        error_type="execution_error",
+                        error_message=str(e),
+                        error_code="GRAPH_EXECUTION_FAILED",
+                        error_stack=str(e.__traceback__),
+                        step_number=1,
+                        step_type="graph_execution",
+                        user_input=message.content,
+                        severity="high",
+                        recovered=False,
+                        recovery_action="error_handler_service"
+                    )
+                except Exception as telemetry_error:
+                    logger.warning(f"[OrchestratorService] ⚠️ Error tracking error de telemetría: {telemetry_error}")
+            
+            # 🎯 FASE 11: Manejo de errores con remediación automática
+            try:
+                error_handler = self.factory.get_error_handler_service()
+                user_facing_error = await error_handler.handle_error(
+                    chat_id=str(chat_id),
+                    error=e,
+                    context={
+                        "explorer": explorer,
+                        "db_ids": db_ids,
+                        "app_ids": app_ids,
+                        "agent_id": agent_id,
+                        "user_message": message.content
+                    },
+                    user_id=str(self.user_id)
+                )
+                
+                # Usar el error procesado por el ErrorHandlerService
+                execution_results = {
+                    "error": user_facing_error.code,
+                    "error_message": user_facing_error.human_message,
+                    "suggested_actions": [
+                        {
+                            "label": action.label,
+                            "action": action.action,
+                            "description": action.description
+                        }
+                        for action in user_facing_error.suggested_actions[:3]
+                    ],
+                    "error_severity": user_facing_error.severity.value,
+                    "retry_after": user_facing_error.retry_after
+                }
+                
+                logger.info(f"[OrchestratorService] 🎯 FASE 11: Error manejado con remediación - {user_facing_error.code}")
+                
+                # 🎯 FASE 13: TRACKING DE RECUPERACIÓN DE ERROR
+                if self.current_telemetry_context:
+                    try:
+                        self.telemetry_service.track_error(
+                            conversation_id=conversation_id,
+                            error_type="error_recovery",
+                            error_message="Error recuperado por ErrorHandlerService",
+                            error_code=user_facing_error.code,
+                            step_number=1,
+                            step_type="error_recovery",
+                            user_input=message.content,
+                            severity="medium",
+                            recovered=True,
+                            recovery_action="error_handler_service"
+                        )
+                    except Exception as telemetry_error:
+                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking recuperación de telemetría: {telemetry_error}")
+                
+            except Exception as error_handler_error:
+                logger.error(f"[OrchestratorService] ❌ Error en ErrorHandlerService: {error_handler_error}")
+                # Fallback a error básico
+                execution_results = {"error": str(e)}
+                
+                # 🎯 FASE 13: TRACKING DE ERROR NO RECUPERADO
+                if self.current_telemetry_context:
+                    try:
+                        self.telemetry_service.track_error(
+                            conversation_id=conversation_id,
+                            error_type="unrecovered_error",
+                            error_message="Error no recuperado por ErrorHandlerService",
+                            error_code="ERROR_HANDLER_FAILED",
+                            error_stack=str(error_handler_error.__traceback__),
+                            step_number=1,
+                            step_type="error_handler_failure",
+                            user_input=message.content,
+                            severity="critical",
+                            recovered=False,
+                            recovery_action="none"
+                        )
+                    except Exception as telemetry_error:
+                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking error no recuperado de telemetría: {telemetry_error}")
 
         # 📝 Guardar respuesta del asistente
         assistant_response = self._extract_assistant_response(execution_results)
@@ -254,6 +622,42 @@ class OrchestratorService:
         # 📊 Profiling final
         memory_profiler.take_snapshot("orchestrator_end")
 
+        # 🎯 FASE 13: FINALIZAR TRACKING Y EMITIR SNAPSHOT DE TELEMETRÍA
+        if self.current_telemetry_context:
+            try:
+                # Calcular métricas finales
+                total_latency_ms = (time.time() - start_time) * 1000
+                total_tokens_in = token_count or 0
+                total_tokens_out = len(assistant_response.split()) if assistant_response else 0
+                total_steps = len(steps) if steps else 0
+                cache_hit_ratio = 0.0  # TODO: Implementar tracking de cache
+                confirmations_required = 0  # TODO: Implementar tracking de confirmaciones
+                
+                # Finalizar tracking de conversación
+                metrics = self.telemetry_service.end_conversation_tracking(
+                    conversation_id=conversation_id
+                )
+                
+                # Emitir snapshot de telemetría
+                await self.emit_telemetry_snapshot(
+                    tokens_in=total_tokens_in,
+                    tokens_out=total_tokens_out,
+                    latency_ms=total_latency_ms,
+                    cache_hit_ratio=cache_hit_ratio,
+                    steps_executed=total_steps,
+                    confirmations_required=confirmations_required,
+                    mode=Mode.EXPLORER if explorer else Mode.GUIDED
+                )
+                
+                logger.info(f"[OrchestratorService] 🎯 FASE 13: Telemetría finalizada y snapshot emitido para conversación {conversation_id}")
+                logger.info(f"[OrchestratorService] 📊 Métricas: {total_latency_ms:.1f}ms, {total_tokens_in}+{total_tokens_out} tokens, {total_steps} steps")
+                
+            except Exception as e:
+                logger.warning(f"[OrchestratorService] ⚠️ Error finalizando telemetría: {e}")
+
+        # 🚀 FASE 1: Emisión de progreso final antes de retornar
+        await self.emit_status_progress(6, 6, "Respuesta lista, enviando...", 100.0)
+        
         # 🔧 FIX: Determinar el tipo de respuesta basado en si hay steps
         if steps and len(steps) > 0:
             # Si hay steps, devolver respuesta tipo "step" para el websocket
@@ -295,6 +699,76 @@ class OrchestratorService:
             intent_str in ["db_schema", "schema", "describe_schema", "schema_question", "db_read_schema"]
             or any(k in user_lower for k in schema_keywords)
         )
+
+    def _is_schema_lookup_intent(self, user_message: str) -> bool:
+        """
+        Determina si la intención del usuario es una consulta de esquema simple
+        que puede ser resuelta rápidamente sin LLM (Fast Schema Path).
+        
+        Este método es más específico que _is_schema_intent y se enfoca en
+        consultas que pueden ser respondidas usando índices léxicos y cache.
+        """
+        if not user_message:
+            return False
+            
+        user_lower = user_message.lower().strip()
+        
+        # Patrones de consulta que pueden ser resueltos rápidamente
+        fast_schema_patterns = [
+            # Consultas de estructura básica
+            "qué tablas hay", "que tablas hay", "qué tablas existen", "que tablas existen",
+            "muéstrame las tablas", "muestrame las tablas", "dame las tablas", "obtén las tablas",
+            "listar tablas", "listar todas las tablas", "ver tablas", "ver todas las tablas",
+            
+            # Consultas de columnas específicas
+            "qué columnas tiene", "que columnas tiene", "qué campos tiene", "que campos tiene",
+            "estructura de", "esquema de", "describe", "ddl de",
+            
+            # Consultas de relaciones
+            "qué claves tiene", "que claves tiene", "primary key", "foreign key",
+            "relaciones de", "dependencias de", "referencias de",
+            
+            # Consultas de búsqueda simple
+            "buscar tabla", "encontrar tabla", "tabla llamada", "tabla con nombre",
+            "columna llamada", "campo llamado", "atributo llamado",
+            
+            # Consultas de conteo y resumen
+            "cuántas tablas", "cuantas tablas", "cuántas columnas", "cuantas columnas",
+            "total de tablas", "total de columnas", "resumen de esquema",
+            
+            # Consultas de validación
+            "existe la tabla", "existe la columna", "está la tabla", "está la columna",
+            "hay tabla", "hay columna", "tiene tabla", "tiene columna"
+        ]
+        
+        # Verificar patrones exactos
+        for pattern in fast_schema_patterns:
+            if pattern in user_lower:
+                return True
+        
+        # Verificar palabras clave individuales que indican consulta de esquema
+        schema_keywords = [
+            "tabla", "tablas", "columna", "columnas", "campo", "campos",
+            "esquema", "schema", "estructura", "ddl", "describe",
+            "primary", "foreign", "key", "keys", "relación", "relaciones"
+        ]
+        
+        # Contar cuántas palabras clave están presentes
+        keyword_count = sum(1 for keyword in schema_keywords if keyword in user_lower)
+        
+        # Si hay 2 o más palabras clave de esquema, es probablemente una consulta de esquema
+        if keyword_count >= 2:
+            return True
+        
+        # Verificar si la consulta es muy corta (menos de 50 caracteres) y contiene palabras de esquema
+        if len(user_message) < 50 and keyword_count >= 1:
+            return True
+        
+        # Verificar si la consulta termina con signos de interrogación y contiene palabras de esquema
+        if user_lower.endswith("?") and keyword_count >= 1:
+            return True
+        
+        return False
 
     def _generate_schema_response(self, context: Dict[str, Any], db_ids: Optional[List[UUID]], user_message: str) -> str:
         """
@@ -944,10 +1418,43 @@ class OrchestratorService:
             
         except Exception as e:
             logger.exception("[OrchestratorService] ❌ Error con contexto mínimo: %s", e)
-            return {
-                "assistant_response": "Estoy reduciendo contexto para cumplir límites. Por favor, reformula tu consulta de manera más específica.",
-                "error": str(e)
-            }
+            
+            # 🎯 FASE 11: Manejo de errores con remediación automática
+            try:
+                error_handler = self.factory.get_error_handler_service()
+                user_facing_error = await error_handler.handle_error(
+                    chat_id=str(chat_id),
+                    error=e,
+                    context={
+                        "operation": "minimal_context",
+                        "explorer": explorer,
+                        "db_ids": db_ids,
+                        "app_ids": app_ids
+                    },
+                    user_id=str(self.user_id)
+                )
+                
+                return {
+                    "assistant_response": f"❌ {user_facing_error.human_message}",
+                    "error": user_facing_error.code,
+                    "suggested_actions": [
+                        {
+                            "label": action.label,
+                            "action": action.action,
+                            "description": action.description
+                        }
+                        for action in user_facing_error.suggested_actions[:3]
+                    ],
+                    "error_severity": user_facing_error.severity.value
+                }
+                
+            except Exception as error_handler_error:
+                logger.error(f"[OrchestratorService] ❌ Error en ErrorHandlerService: {error_handler_error}")
+                # Fallback a respuesta básica
+                return {
+                    "assistant_response": "Estoy reduciendo contexto para cumplir límites. Por favor, reformula tu consulta de manera más específica.",
+                    "error": str(e)
+                }
 
     async def _load_minimal_context(
         self, 
@@ -1354,3 +1861,249 @@ class OrchestratorService:
         except Exception as e:
             logger.warning(f"[OrchestratorService] Error convirtiendo objeto a diccionario: {e}")
             return {'error': f'Error converting object: {str(e)}'}
+
+    # ===================================================
+    #  MÉTODOS STUB DE EMISIÓN WEBSOCKET (FASE 0)
+    # ===================================================
+    
+    async def emit_status_typing(self, is_typing: bool = True) -> bool:
+        """Emite evento de estado de escritura (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_status_typing(is_typing)
+        return False
+    
+    async def emit_status_progress(
+        self, 
+        step: int, 
+        total_steps: int, 
+        message: str, 
+        percentage: Optional[float] = None
+    ) -> bool:
+        """Emite evento de progreso (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_status_progress(step, total_steps, message, percentage)
+        return False
+    
+    async def emit_decision_request(
+        self,
+        decision_id: str,
+        title: str,
+        description: str,
+        options: list,
+        timeout_seconds: int = 30,
+        default_action: str = "cancel"
+    ) -> bool:
+        """Emite solicitud de decisión (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_decision_request(
+                decision_id, title, description, options, timeout_seconds, default_action
+            )
+        return False
+    
+    async def emit_result_partial(
+        self,
+        step: int,
+        data: Dict[str, Any],
+        preview: Optional[str] = None
+    ) -> bool:
+        """Emite resultado parcial (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_result_partial(step, data, preview)
+        return False
+    
+    async def emit_result_final(
+        self,
+        summary: str,
+        data: Dict[str, Any],
+        next_actions: list,
+        usage_stats: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Emite resultado final (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_result_final(summary, data, next_actions, usage_stats)
+        return False
+    
+    async def emit_notice_info(
+        self,
+        message: str,
+        level: str = "info",
+        actions: Optional[list] = None
+    ) -> bool:
+        """Emite notificación informativa (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_notice_info(message, level, actions)
+        return False
+    
+    async def emit_error_user_facing(
+        self,
+        code: str,
+        human_message: str,
+        suggested_actions: list,
+        technical_details: Optional[str] = None
+    ) -> bool:
+        """Emite error para el usuario (stub)."""
+        if self.ws_emitter:
+            return await self.ws_emitter.emit_error_user_facing(
+                code, human_message, suggested_actions, technical_details
+            )
+        return False
+    
+    async def emit_telemetry_snapshot(
+        self,
+        tokens_in: int,
+        tokens_out: int,
+        latency_ms: float,
+        cache_hit_ratio: float,
+        steps_executed: int,
+        confirmations_required: int,
+        mode: Mode
+    ) -> bool:
+        """Emite snapshot de telemetría al finalizar la ejecución."""
+        try:
+            event = {
+                "type": "telemetry.snapshot",
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "latency_ms": latency_ms,
+                "cache_hit_ratio": cache_hit_ratio,
+                "steps_executed": steps_executed,
+                "confirmations_required": confirmations_required,
+                "mode": mode.value,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await self.ws_emitter.emit(event)
+            logger.info(f"[OrchestratorService] 📊 Telemetría emitida: {latency_ms:.1f}ms, {tokens_in}+{tokens_out} tokens")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error emitiendo telemetría: {e}")
+            return False
+    
+    async def emit_resource_proposal(
+        self,
+        proposal_id: str,
+        title: str,
+        description: str,
+        options: List[Dict[str, Any]],
+        user_message: str,
+        timeout_seconds: int = 60,
+        default_action: str = "explore_only"
+    ) -> bool:
+        """Emite propuesta de recursos para modo Explorer."""
+        try:
+            event = {
+                "type": "resource.proposal",
+                "proposal_id": proposal_id,
+                "title": title,
+                "description": description,
+                "options": options,
+                "user_message": user_message,
+                "timeout_seconds": timeout_seconds,
+                "default_action": default_action,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await self.ws_emitter.emit(event)
+            logger.info(f"[OrchestratorService] 🎯 Propuesta de recursos emitida: {proposal_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error emitiendo propuesta de recursos: {e}")
+            return False
+
+    async def handle_token_budget_mode_change(
+        self,
+        chat_id: UUID,
+        new_mode: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        🎯 FASE 10: Maneja cambios de modo de TokenBudget (rápido/equilibrado/preciso).
+        
+        Args:
+            chat_id: ID del chat
+            new_mode: Nuevo modo solicitado
+            context: Contexto actual
+            
+        Returns:
+            Dict con información del cambio de modo
+        """
+        try:
+            logger.info(f"[OrchestratorService] 🎯 FASE 10: Cambiando modo a '{new_mode}' para chat {chat_id}")
+            
+            # Aplicar límites del nuevo modo
+            if new_mode == "rápido":
+                # Modo rápido: límites más estrictos
+                self.token_budget.MAX_INPUT_TOKENS = 4800  # 60% del original
+                self.token_budget.MAX_HISTORY_TURNS = 3
+                self.token_budget.MAX_SCHEMA_CHARS = 1800
+                self.token_budget.TOP_K_DBS = 1
+                self.token_budget.TOP_K_APPS = 1
+                
+            elif new_mode == "equilibrado":
+                # Modo equilibrado: límites moderados
+                self.token_budget.MAX_INPUT_TOKENS = 6400  # 80% del original
+                self.token_budget.MAX_HISTORY_TURNS = 4
+                self.token_budget.MAX_SCHEMA_CHARS = 2400
+                self.token_budget.TOP_K_DBS = 2
+                self.token_budget.TOP_K_APPS = 1
+                
+            elif new_mode == "preciso":
+                # Modo preciso: límites originales
+                self.token_budget.MAX_INPUT_TOKENS = 8000  # 100% del original
+                self.token_budget.MAX_HISTORY_TURNS = 6
+                self.token_budget.MAX_SCHEMA_CHARS = 3000
+                self.token_budget.TOP_K_DBS = 2
+                self.token_budget.TOP_K_APPS = 2
+                
+            else:
+                raise ValueError(f"Modo no válido: {new_mode}")
+            
+            # Re-aplicar trimming con nuevos límites
+            re_trimmed_context = self.token_budget.apply_intelligent_context_trimming(context)
+            
+            # Emitir confirmación del cambio
+            await self.emit_notice_info(
+                message=f"✅ Modo cambiado a '{new_mode}'. Límites ajustados para optimizar rendimiento.",
+                level="success",
+                actions=[
+                    {"label": "Ver límites actuales", "action": "show_current_limits"},
+                    {"label": "Cambiar modo nuevamente", "action": "change_mode_again"},
+                    {"label": "Continuar", "action": "continue_with_new_mode"}
+                ]
+            )
+            
+            # Calcular tokens estimados con nuevo modo
+            estimated_tokens = self.token_budget.estimate_tokens_for_context(re_trimmed_context)
+            budget_usage = (estimated_tokens / self.token_budget.MAX_INPUT_TOKENS) * 100
+            
+            logger.info(f"[OrchestratorService] 🎯 FASE 10: Modo '{new_mode}' aplicado - {budget_usage:.1f}% de uso")
+            
+            return {
+                "mode_changed": True,
+                "new_mode": new_mode,
+                "estimated_tokens": estimated_tokens,
+                "budget_usage_percent": budget_usage,
+                "context_optimized": True,
+                "trimmed_context": re_trimmed_context
+            }
+            
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error cambiando modo de TokenBudget: {e}")
+            await self.emit_error_user_facing(
+                code="MODE_CHANGE_ERROR",
+                human_message=f"No se pudo cambiar al modo '{new_mode}'. Usando configuración por defecto.",
+                suggested_actions=[
+                    "Intentar cambiar modo nuevamente",
+                    "Continuar con modo actual",
+                    "Contactar soporte si el problema persiste"
+                ],
+                technical_details=str(e)
+            )
+            
+            return {
+                "mode_changed": False,
+                "error": str(e),
+                "context_optimized": False
+            }

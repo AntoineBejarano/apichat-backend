@@ -1,341 +1,360 @@
 """
-Servicio de guardrails SQL para prevenir queries problemáticas.
-
-Implementa:
-- Validación de tablas existentes
-- Prohibición de SELECT *
-- Forzado de LIMIT en queries grandes
-- Detección de queries peligrosas
+Servicio de guardrails para operaciones SQL.
+Bloquea operaciones destructivas y limita el impacto.
 """
 
 import re
-from typing import List, Dict, Any, Optional, Tuple
+import logging
+from typing import Dict, List, Optional, Tuple, Any
+from enum import Enum
+from pydantic import BaseModel, Field
 from uuid import UUID
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 
-from app.utils.logger import logger
+logger = logging.getLogger(__name__)
+
+
+class RiskLevel(str, Enum):
+    """Niveles de riesgo para operaciones SQL."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class SQLOperation(str, Enum):
+    """Tipos de operaciones SQL."""
+    SELECT = "SELECT"
+    INSERT = "INSERT"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
+    DROP = "DROP"
+    TRUNCATE = "TRUNCATE"
+    ALTER = "ALTER"
+    CREATE = "CREATE"
+
+
+class GuardrailViolation(BaseModel):
+    """Violación de guardrail detectada."""
+    operation: SQLOperation
+    risk_level: RiskLevel
+    message: str
+    blocked: bool = True
+    requires_confirmation: bool = False
 
 
 class SQLGuardrailsService:
-    """
-    Servicio de guardrails para queries SQL.
+    """Servicio para aplicar guardrails de seguridad en operaciones SQL."""
     
-    Previene:
-    - Queries a tablas inexistentes
-    - SELECT * sin LIMIT
-    - Queries potencialmente peligrosas
-    - Queries sin contexto de schema
-    """
+    def __init__(self):
+        # Operaciones de alto riesgo que siempre requieren confirmación
+        self.high_risk_operations = {
+            SQLOperation.DELETE,
+            SQLOperation.UPDATE,
+            SQLOperation.DROP,
+            SQLOperation.TRUNCATE,
+            SQLOperation.ALTER
+        }
+        
+        # Límites por defecto
+        self.default_limits = {
+            SQLOperation.DELETE: 100,  # Máximo 100 filas eliminadas
+            SQLOperation.UPDATE: 1000,  # Máximo 1000 filas actualizadas
+            SQLOperation.SELECT: 10000,  # Máximo 10k filas retornadas
+        }
+        
+        # Patrones peligrosos
+        self.dangerous_patterns = [
+            r"DELETE\s+FROM\s+\w+\s*(?!WHERE)",  # DELETE sin WHERE
+            r"UPDATE\s+\w+\s+SET\s+(?!WHERE)",   # UPDATE sin WHERE
+            r"DROP\s+(TABLE|DATABASE|SCHEMA)",    # DROP de estructuras
+            r"TRUNCATE\s+TABLE",                  # TRUNCATE
+            r"ALTER\s+TABLE\s+\w+\s+DROP",       # ALTER DROP
+        ]
     
-    def __init__(self, factory):
-        self.factory = factory
-        self.max_limit = 100  # Límite máximo por defecto
-        self.default_limit = 10  # Límite por defecto si no se especifica
+    def analyze_sql_query(self, sql_query: str) -> GuardrailViolation:
+        """
+        Analiza una consulta SQL y retorna información sobre su nivel de riesgo.
+        
+        Args:
+            sql_query: Consulta SQL a analizar
+            
+        Returns:
+            GuardrailViolation con el análisis de riesgo
+        """
+        if not sql_query:
+            return GuardrailViolation(
+                operation=SQLOperation.SELECT,
+                risk_level=RiskLevel.LOW,
+                message="Consulta vacía",
+                blocked=False
+            )
+        
+        # Normalizar la consulta
+        normalized_query = sql_query.strip().upper()
+        
+        # Detectar operación principal
+        operation = self._detect_operation(normalized_query)
+        
+        # Verificar patrones peligrosos
+        dangerous_violation = self._check_dangerous_patterns(normalized_query)
+        if dangerous_violation:
+            return dangerous_violation
+        
+        # Verificar límites de filas
+        limit_violation = self._check_row_limits(normalized_query, operation)
+        if limit_violation:
+            return limit_violation
+        
+        # Determinar nivel de riesgo
+        risk_level = self._determine_risk_level(operation, normalized_query)
+        
+        # Verificar si requiere confirmación
+        requires_confirmation = risk_level in [RiskLevel.MEDIUM, RiskLevel.HIGH]
+        
+        return GuardrailViolation(
+            operation=operation,
+            risk_level=risk_level,
+            message=f"Operación {operation.value} analizada",
+            blocked=False,
+            requires_confirmation=requires_confirmation
+        )
     
-    # =====================================================
-    # VALIDACIÓN PRINCIPAL
-    # =====================================================
+    def _detect_operation(self, normalized_query: str) -> SQLOperation:
+        """Detecta el tipo de operación SQL."""
+        if normalized_query.startswith("SELECT"):
+            return SQLOperation.SELECT
+        elif normalized_query.startswith("INSERT"):
+            return SQLOperation.INSERT
+        elif normalized_query.startswith("UPDATE"):
+            return SQLOperation.UPDATE
+        elif normalized_query.startswith("DELETE"):
+            return SQLOperation.DELETE
+        elif normalized_query.startswith("DROP"):
+            return SQLOperation.DROP
+        elif normalized_query.startswith("TRUNCATE"):
+            return SQLOperation.TRUNCATE
+        elif normalized_query.startswith("ALTER"):
+            return SQLOperation.ALTER
+        elif normalized_query.startswith("CREATE"):
+            return SQLOperation.CREATE
+        else:
+            return SQLOperation.SELECT  # Por defecto
     
-    def validate_and_fix_query(
+    def _check_dangerous_patterns(self, normalized_query: str) -> Optional[GuardrailViolation]:
+        """Verifica patrones peligrosos en la consulta."""
+        for pattern in self.dangerous_patterns:
+            if re.search(pattern, normalized_query, re.IGNORECASE):
+                operation = self._detect_operation(normalized_query)
+                return GuardrailViolation(
+                    operation=operation,
+                    risk_level=RiskLevel.HIGH,
+                    message=f"Patrón peligroso detectado: {pattern}",
+                    blocked=True,
+                    requires_confirmation=True
+                )
+        return None
+    
+    def _check_row_limits(self, normalized_query: str, operation: SQLOperation) -> Optional[GuardrailViolation]:
+        """Verifica límites de filas para operaciones destructivas."""
+        if operation not in self.default_limits:
+            return None
+        
+        limit = self.default_limits[operation]
+        
+        # Buscar LIMIT en la consulta
+        limit_match = re.search(r"LIMIT\s+(\d+)", normalized_query, re.IGNORECASE)
+        if limit_match:
+            requested_limit = int(limit_match.group(1))
+            if requested_limit > limit:
+                return GuardrailViolation(
+                    operation=operation,
+                    risk_level=RiskLevel.MEDIUM,
+                    message=f"Límite de {requested_limit} filas excede el máximo permitido de {limit}",
+                    blocked=False,
+                    requires_confirmation=True
+                )
+        
+        # Para operaciones sin LIMIT explícito, verificar si podrían afectar muchas filas
+        if operation in [SQLOperation.DELETE, SQLOperation.UPDATE]:
+            # Si no hay WHERE específico, podría afectar toda la tabla
+            if "WHERE" not in normalized_query:
+                return GuardrailViolation(
+                    operation=operation,
+                    risk_level=RiskLevel.HIGH,
+                    message=f"Operación {operation.value} sin cláusula WHERE específica",
+                    blocked=True,
+                    requires_confirmation=True
+                )
+        
+        return None
+    
+    def _determine_risk_level(self, operation: SQLOperation, normalized_query: str) -> RiskLevel:
+        """Determina el nivel de riesgo de la operación."""
+        if operation in self.high_risk_operations:
+            return RiskLevel.HIGH
+        elif operation == SQLOperation.INSERT:
+            return RiskLevel.MEDIUM
+        else:
+            return RiskLevel.LOW
+    
+    def get_safe_alternatives(self, violation: GuardrailViolation) -> List[str]:
+        """Retorna alternativas seguras para operaciones bloqueadas."""
+        alternatives = []
+        
+        if violation.operation == SQLOperation.DELETE:
+            alternatives.extend([
+                "Usar SELECT para verificar qué se eliminaría",
+                "Añadir cláusula WHERE específica",
+                "Usar LIMIT para limitar el número de filas",
+                "Considerar soft delete (marcar como inactivo)"
+            ])
+        
+        elif violation.operation == SQLOperation.UPDATE:
+            alternatives.extend([
+                "Usar SELECT para verificar qué se actualizaría",
+                "Añadir cláusula WHERE específica",
+                "Usar LIMIT para limitar el número de filas",
+                "Verificar con SELECT antes de actualizar"
+            ])
+        
+        elif violation.operation == SQLOperation.DROP:
+            alternatives.extend([
+                "Usar DROP CASCADE solo si es necesario",
+                "Verificar dependencias antes de eliminar",
+                "Considerar renombrar en lugar de eliminar",
+                "Hacer backup antes de proceder"
+            ])
+        
+        return alternatives
+    
+    def validate_and_apply_guardrails(
         self, 
-        query: str, 
-        user_id: UUID, 
+        sql_query: str, 
+        user_risk_tolerance: RiskLevel = RiskLevel.MEDIUM
+    ) -> Tuple[bool, GuardrailViolation, List[str]]:
+        """
+        Valida y aplica guardrails a una consulta SQL.
+        
+        Args:
+            sql_query: Consulta SQL a validar
+            user_risk_tolerance: Tolerancia al riesgo del usuario
+            
+        Returns:
+            Tuple con (permitido, violación, alternativas)
+        """
+        violation = self.analyze_sql_query(sql_query)
+        
+        # Si está bloqueado, no permitir
+        if violation.blocked:
+            alternatives = self.get_safe_alternatives(violation)
+            return False, violation, alternatives
+        
+        # Si requiere confirmación y el usuario tiene baja tolerancia, bloquear
+        if (violation.requires_confirmation and 
+            user_risk_tolerance == RiskLevel.LOW and 
+            violation.risk_level in [RiskLevel.MEDIUM, RiskLevel.HIGH]):
+            
+            violation.blocked = True
+            alternatives = self.get_safe_alternatives(violation)
+            return False, violation, alternatives
+        
+        # Permitir la operación
+        alternatives = []
+        return True, violation, alternatives
+
+    def validate_and_fix_query(
+        self,
+        query: str,
+        user_id: UUID,
         db_id: UUID,
         context: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, List[str], bool]:
         """
-        Valida y corrige una query SQL.
+        Valida y corrige una consulta SQL aplicando guardrails.
         
         Args:
-            query: Query SQL original
-            user_id: ID del usuario
+            query: Consulta SQL a validar
+            user_id: ID del usuario que ejecuta la consulta
             db_id: ID de la base de datos
             context: Contexto adicional
             
         Returns:
-            Tuple de (query_corregida, warnings, es_segura)
+            Tuple con (query_corregida, warnings, es_segura)
         """
-        logger.info(f"[SQLGuardrails] 🛡️ Validando query para db={db_id}")
-        
-        warnings = []
-        is_safe = True
-        fixed_query = query.strip()
-        
         try:
-            # 1. Obtener schema cache para validación
-            schema_cache = self._get_schema_cache(user_id, db_id)
-            if not schema_cache:
-                warnings.append("⚠️ No hay cache de schema disponible - validación limitada")
-                logger.warning("[SQLGuardrails] No se pudo obtener cache de schema")
+            # Analizar la consulta
+            violation = self.analyze_sql_query(query)
             
-            # 2. Validar tablas existentes
-            if schema_cache:
-                table_warnings = self._validate_tables_exist(fixed_query, schema_cache)
-                warnings.extend(table_warnings)
-                
-                # Si hay tablas inexistentes, marcar como no segura
-                if any("no existe" in w for w in table_warnings):
-                    is_safe = False
+            warnings = []
+            is_safe = True
             
-            # 3. Detectar y corregir SELECT *
-            fixed_query, select_warnings = self._fix_select_star(fixed_query, schema_cache)
-            warnings.extend(select_warnings)
-            
-            # 4. Agregar LIMIT si es necesario
-            fixed_query, limit_warnings = self._enforce_limit(fixed_query)
-            warnings.extend(limit_warnings)
-            
-            # 5. Detectar queries peligrosas
-            danger_warnings = self._detect_dangerous_patterns(fixed_query)
-            warnings.extend(danger_warnings)
-            if danger_warnings:
+            # Si está bloqueada, marcar como no segura
+            if violation.blocked:
                 is_safe = False
+                warnings.append(f"🚫 Operación bloqueada: {violation.message}")
+                return query, warnings, is_safe
             
-            # 6. Validar sintaxis básica
-            syntax_warnings = self._validate_syntax(fixed_query)
-            warnings.extend(syntax_warnings)
-            if syntax_warnings:
+            # Si requiere confirmación, marcar como no segura
+            if violation.requires_confirmation:
                 is_safe = False
+                warnings.append(f"⏸️ Requiere confirmación: {violation.message}")
+                return query, warnings, is_safe
             
-            logger.info(f"[SQLGuardrails] ✅ Validación completada - Segura: {is_safe}, Warnings: {len(warnings)}")
+            # Aplicar correcciones automáticas si es posible
+            fixed_query = self._apply_automatic_fixes(query, violation)
+            
+            # Si se aplicaron correcciones, añadir warning
+            if fixed_query != query:
+                warnings.append("🔧 Consulta corregida automáticamente por guardrails")
+                warnings.append(f"Original: {query}")
+                warnings.append(f"Corregida: {fixed_query}")
+            
+            # Verificar límites de filas
+            row_limit_warning = self._check_row_limits_warning(fixed_query, violation.operation)
+            if row_limit_warning:
+                warnings.append(row_limit_warning)
             
             return fixed_query, warnings, is_safe
             
         except Exception as e:
-            logger.exception(f"[SQLGuardrails] ❌ Error validando query: {e}")
-            return query, [f"❌ Error de validación: {str(e)}"], False
+            logger.exception(f"❌ Error validando consulta SQL: {e}")
+            warnings = [f"❌ Error en validación: {str(e)}"]
+            return query, warnings, False
     
-    # =====================================================
-    # VALIDACIONES ESPECÍFICAS
-    # =====================================================
-    
-    def _get_schema_cache(self, user_id: UUID, db_id: UUID) -> Optional[Dict[str, Any]]:
-        """Obtiene cache de schema para validación"""
-        try:
-            cache_service = self.factory.get_detailed_schema_cache_service()
-            cache = cache_service.get_schema_cache(user_id, db_id)
+    def _apply_automatic_fixes(self, query: str, violation: GuardrailViolation) -> str:
+        """Aplica correcciones automáticas a la consulta."""
+        fixed_query = query
+        
+        # Añadir LIMIT si no existe y es una operación de alto riesgo
+        if (violation.operation in [SQLOperation.SELECT, SQLOperation.DELETE, SQLOperation.UPDATE] and
+            "LIMIT" not in query.upper()):
             
-            if cache and cache.snapshot:
-                return {
-                    'tables': list(cache.snapshot.tables.keys()),
-                    'table_details': cache.snapshot.tables,
-                    'compact': cache.compact
-                }
-        except Exception as e:
-            logger.warning(f"[SQLGuardrails] No se pudo obtener cache: {e}")
+            # Determinar límite apropiado
+            if violation.operation == SQLOperation.SELECT:
+                limit = self.default_limits.get(SQLOperation.SELECT, 10000)
+            elif violation.operation == SQLOperation.DELETE:
+                limit = self.default_limits.get(SQLOperation.DELETE, 100)
+            elif violation.operation == SQLOperation.UPDATE:
+                limit = self.default_limits.get(SQLOperation.UPDATE, 1000)
+            else:
+                limit = 1000
+            
+            # Añadir LIMIT al final
+            if query.strip().endswith(';'):
+                fixed_query = query[:-1] + f" LIMIT {limit};"
+            else:
+                fixed_query = query + f" LIMIT {limit}"
+        
+        return fixed_query
+    
+    def _check_row_limits_warning(self, query: str, operation: SQLOperation) -> Optional[str]:
+        """Verifica límites de filas y retorna warning si es necesario."""
+        if operation in [SQLOperation.DELETE, SQLOperation.UPDATE]:
+            # Verificar si hay WHERE específico
+            if "WHERE" not in query.upper():
+                return "⚠️ Operación sin cláusula WHERE específica - podría afectar muchas filas"
+            
+            # Verificar si hay LIMIT
+            if "LIMIT" not in query.upper():
+                return "⚠️ Operación sin LIMIT - considera añadir límite de filas"
         
         return None
-    
-    def _validate_tables_exist(self, query: str, schema_cache: Dict[str, Any]) -> List[str]:
-        """Valida que las tablas referenciadas existan"""
-        warnings = []
-        available_tables = set(schema_cache.get('tables', []))
-        
-        # Extraer nombres de tablas de la query
-        referenced_tables = self._extract_table_names(query)
-        
-        for table in referenced_tables:
-            if table.lower() not in [t.lower() for t in available_tables]:
-                warnings.append(f"🚫 Tabla '{table}' no existe en la base de datos")
-                logger.warning(f"[SQLGuardrails] Tabla inexistente: {table}")
-        
-        return warnings
-    
-    def _extract_table_names(self, query: str) -> List[str]:
-        """Extrae nombres de tablas de una query SQL"""
-        # Patrones para diferentes tipos de referencias a tablas
-        patterns = [
-            r'\bFROM\s+(\w+)',
-            r'\bJOIN\s+(\w+)',
-            r'\bINTO\s+(\w+)',
-            r'\bUPDATE\s+(\w+)',
-            r'\bDELETE\s+FROM\s+(\w+)',
-        ]
-        
-        tables = set()
-        query_upper = query.upper()
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, query_upper, re.IGNORECASE)
-            tables.update(matches)
-        
-        return list(tables)
-    
-    def _fix_select_star(self, query: str, schema_cache: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
-        """Detecta y corrige SELECT *"""
-        warnings = []
-        
-        # Detectar SELECT *
-        if re.search(r'\bSELECT\s+\*', query, re.IGNORECASE):
-            warnings.append("⚠️ SELECT * detectado - considera especificar columnas")
-            
-            # Si tenemos schema cache, intentar sugerir columnas
-            if schema_cache:
-                table_names = self._extract_table_names(query)
-                if len(table_names) == 1:
-                    table_name = table_names[0].lower()
-                    table_details = schema_cache.get('table_details', {})
-                    
-                    # Buscar tabla (case insensitive)
-                    matching_table = None
-                    for t_name, t_details in table_details.items():
-                        if t_name.lower() == table_name:
-                            matching_table = t_details
-                            break
-                    
-                    if matching_table:
-                        columns = list(matching_table.get('columns', {}).keys())
-                        if columns:
-                            # Limitar a primeras 10 columnas para evitar queries muy largas
-                            selected_columns = columns[:10]
-                            column_list = ', '.join(selected_columns)
-                            
-                            # Reemplazar SELECT *
-                            fixed_query = re.sub(
-                                r'\bSELECT\s+\*', 
-                                f'SELECT {column_list}',
-                                query,
-                                flags=re.IGNORECASE
-                            )
-                            
-                            if len(columns) > 10:
-                                warnings.append(f"ℹ️ Mostrando solo {len(selected_columns)} de {len(columns)} columnas disponibles")
-                            
-                            return fixed_query, warnings
-        
-        return query, warnings
-    
-    def _enforce_limit(self, query: str) -> Tuple[str, List[str]]:
-        """Agrega LIMIT si no existe en queries SELECT"""
-        warnings = []
-        
-        # Solo aplicar a queries SELECT
-        if not re.search(r'\bSELECT\b', query, re.IGNORECASE):
-            return query, warnings
-        
-        # Verificar si ya tiene LIMIT
-        if re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE):
-            # Verificar que el LIMIT no sea excesivo
-            limit_match = re.search(r'\bLIMIT\s+(\d+)', query, re.IGNORECASE)
-            if limit_match:
-                limit_value = int(limit_match.group(1))
-                if limit_value > self.max_limit:
-                    # Reemplazar con límite máximo
-                    fixed_query = re.sub(
-                        r'\bLIMIT\s+\d+',
-                        f'LIMIT {self.max_limit}',
-                        query,
-                        flags=re.IGNORECASE
-                    )
-                    warnings.append(f"⚠️ LIMIT reducido de {limit_value} a {self.max_limit}")
-                    return fixed_query, warnings
-            return query, warnings
-        
-        # Agregar LIMIT por defecto
-        fixed_query = f"{query.rstrip(';')} LIMIT {self.default_limit}"
-        warnings.append(f"ℹ️ LIMIT {self.default_limit} agregado automáticamente")
-        
-        return fixed_query, warnings
-    
-    def _detect_dangerous_patterns(self, query: str) -> List[str]:
-        """Detecta patrones peligrosos en la query"""
-        warnings = []
-        query_upper = query.upper()
-        
-        dangerous_patterns = [
-            (r'\bDROP\s+TABLE\b', "🚫 DROP TABLE no permitido"),
-            (r'\bTRUNCATE\b', "🚫 TRUNCATE no permitido"),
-            (r'\bDELETE\s+FROM\s+\w+\s*(?!WHERE)', "🚫 DELETE sin WHERE no permitido"),
-            (r'\bUPDATE\s+\w+\s+SET\s+.*(?!WHERE)', "🚫 UPDATE sin WHERE no permitido"),
-            (r'\bALTER\s+TABLE\b', "🚫 ALTER TABLE no permitido"),
-            (r'\bCREATE\s+TABLE\b', "🚫 CREATE TABLE no permitido"),
-            (r';.*SELECT', "🚫 Múltiples statements no permitidos"),
-        ]
-        
-        for pattern, message in dangerous_patterns:
-            if re.search(pattern, query_upper, re.IGNORECASE):
-                warnings.append(message)
-        
-        return warnings
-    
-    def _validate_syntax(self, query: str) -> List[str]:
-        """Validación básica de sintaxis SQL"""
-        warnings = []
-        
-        # Verificar balance de paréntesis
-        if query.count('(') != query.count(')'):
-            warnings.append("🚫 Paréntesis desbalanceados")
-        
-        # Verificar que no esté vacía
-        if not query.strip():
-            warnings.append("🚫 Query vacía")
-        
-        # Verificar palabras clave básicas
-        if not re.search(r'\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b', query, re.IGNORECASE):
-            warnings.append("🚫 No se detectó comando SQL válido")
-        
-        return warnings
-    
-    # =====================================================
-    # UTILIDADES
-    # =====================================================
-    
-    def get_query_info(self, query: str) -> Dict[str, Any]:
-        """Obtiene información sobre una query"""
-        return {
-            'type': self._get_query_type(query),
-            'tables': self._extract_table_names(query),
-            'has_limit': bool(re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE)),
-            'has_where': bool(re.search(r'\bWHERE\b', query, re.IGNORECASE)),
-            'has_select_star': bool(re.search(r'\bSELECT\s+\*', query, re.IGNORECASE)),
-            'estimated_safety': self._estimate_safety(query)
-        }
-    
-    def _get_query_type(self, query: str) -> str:
-        """Determina el tipo de query"""
-        query_upper = query.upper().strip()
-        
-        if query_upper.startswith('SELECT'):
-            return 'SELECT'
-        elif query_upper.startswith('INSERT'):
-            return 'INSERT'
-        elif query_upper.startswith('UPDATE'):
-            return 'UPDATE'
-        elif query_upper.startswith('DELETE'):
-            return 'DELETE'
-        elif query_upper.startswith('CREATE'):
-            return 'CREATE'
-        elif query_upper.startswith('DROP'):
-            return 'DROP'
-        elif query_upper.startswith('ALTER'):
-            return 'ALTER'
-        else:
-            return 'UNKNOWN'
-    
-    def _estimate_safety(self, query: str) -> float:
-        """Estima la seguridad de una query (0.0 = peligrosa, 1.0 = segura)"""
-        score = 1.0
-        
-        # Penalizar patrones peligrosos
-        dangerous_patterns = [
-            r'\bDROP\b', r'\bTRUNCATE\b', r'\bDELETE\s+FROM\s+\w+\s*(?!WHERE)',
-            r'\bUPDATE\s+\w+\s+SET\s+.*(?!WHERE)', r'\bALTER\b'
-        ]
-        
-        for pattern in dangerous_patterns:
-            if re.search(pattern, query, re.IGNORECASE):
-                score -= 0.3
-        
-        # Penalizar SELECT * sin LIMIT
-        if re.search(r'\bSELECT\s+\*', query, re.IGNORECASE) and not re.search(r'\bLIMIT\b', query, re.IGNORECASE):
-            score -= 0.2
-        
-        # Bonificar buenas prácticas
-        if re.search(r'\bLIMIT\s+\d+', query, re.IGNORECASE):
-            score += 0.1
-        
-        if re.search(r'\bWHERE\b', query, re.IGNORECASE):
-            score += 0.1
-        
-        return max(0.0, min(1.0, score))

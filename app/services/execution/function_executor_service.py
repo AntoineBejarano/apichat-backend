@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from app.models.function_model import Function
-from app.services.proxy_service import ProxyService
+from app.services.integration.proxy_service import ProxyService
 from app.models.strategy_model import Strategy
-from app.services.usage_service import UsageService
+from app.services.data.usage_service import UsageService
 from app.models.function_call_log_model import FunctionCallLog
 from app.utils.token_counter import count_tokens  # ✅ define o importa esta función
 

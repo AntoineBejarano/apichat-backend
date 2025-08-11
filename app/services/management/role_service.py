@@ -3,7 +3,8 @@ from typing import List, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.role_model import Role, Permission
+from app.models.role_model import Role
+from app.models.permission_model import Permission
 from app.schemas.role_schema import RoleCreate, RoleUpdate
 
 from typing import TYPE_CHECKING

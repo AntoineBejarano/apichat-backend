@@ -7,16 +7,18 @@ Integra con DetailedSchemaCache para mantener esquemas detallados actualizados.
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+import re
+from typing import Dict, List, Optional, Any, Tuple
 from uuid import UUID
 from sqlalchemy import inspect, text, MetaData
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime
 from dataclasses import asdict
 
-from app.services.cache_service import CacheService
-from app.services.database_service import DatabaseService
-from app.services.detailed_schema_cache import DetailedSchemaCache, DatabaseSchema, TableInfo, ColumnInfo, ColumnType
+from app.services.data.cache_service import CacheService
+from app.services.data.database_service import DatabaseService
+from app.core.config import settings
+from .detailed_schema_cache import DetailedSchemaCache, DatabaseSchema, TableInfo, ColumnInfo, ColumnType
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,312 @@ class SchemaExplorerService:
         self.cache_service = cache_service
         self.database_service = database_service
         self.detailed_cache = DetailedSchemaCache()
-        logger.info("[SchemaExplorerService] 🦄 Inicializado con cache detallado")
+        
+        # Umbrales para Fast Schema Path (Fase 7) desde configuración
+        self.CONF_FAST = settings.CONF_FAST
+        self.CONF_AMBIGUOUS = settings.CONF_AMBIGUOUS
+        self.FAST_PATH_RESPONSE_TIME_MS = settings.FAST_PATH_RESPONSE_TIME_MS
+        
+        # Índices léxicos para búsqueda rápida
+        self._lexical_indexes = {}  # {db_id: {term: [(table, column, score)]}}
+        
+        logger.info(f"[SchemaExplorerService] 🦄 Inicializado con Fast Schema Path (CONF_FAST={self.CONF_FAST})")
+    
+    def fast_lookup(
+        self, 
+        query: str, 
+        db_ids: List[UUID]
+    ) -> Tuple[Optional[Dict[str, Any]], float, str]:
+        """
+        Fast Schema Path: búsqueda rápida sin LLM usando índices léxicos.
+        
+        Args:
+            query: Consulta del usuario (ej: "¿dónde está el campo email?")
+            db_ids: Lista de IDs de bases de datos a buscar
+            
+        Returns:
+            Tuple: (resultado, confianza, tipo_respuesta)
+            - resultado: Dict con matches encontrados o None
+            - confianza: Score de confianza (0.0 - 1.0)
+            - tipo_respuesta: "fast", "ambiguous", "fallback"
+        """
+        try:
+            logger.info(f"[SchemaExplorerService] 🚀 Fast lookup para: '{query}' en {len(db_ids)} DBs")
+            
+            # 1. Normalizar y tokenizar la query
+            normalized_query = self._normalize_query(query)
+            query_terms = self._extract_search_terms(normalized_query)
+            
+            if not query_terms:
+                logger.info("[SchemaExplorerService] ⚠️ No se pudieron extraer términos de búsqueda")
+                return None, 0.0, "fallback"
+            
+            # 2. Buscar en índices léxicos
+            all_matches = []
+            total_score = 0.0
+            
+            for db_id in db_ids:
+                # Asegurar que el índice léxico esté construido
+                if db_id not in self._lexical_indexes:
+                    self._build_lexical_index(db_id)
+                
+                # Buscar matches en este DB
+                db_matches = self._search_lexical_index(db_id, query_terms)
+                if db_matches:
+                    all_matches.extend(db_matches)
+                    total_score += sum(match['score'] for match in db_matches)
+            
+            if not all_matches:
+                logger.info("[SchemaExplorerService] ⚠️ No se encontraron matches en índices léxicos")
+                return None, 0.0, "fallback"
+            
+            # 3. Calcular confianza y determinar tipo de respuesta
+            avg_confidence = total_score / len(all_matches)
+            confidence = min(avg_confidence, 1.0)  # Cap en 1.0
+            
+            # 4. Determinar tipo de respuesta según umbrales
+            if confidence >= self.CONF_FAST:
+                response_type = "fast"
+                result = self._format_fast_response(all_matches, confidence)
+                logger.info(f"[SchemaExplorerService] ✅ Fast response con confianza {confidence:.2f}")
+                
+            elif confidence >= self.CONF_AMBIGUOUS:
+                response_type = "ambiguous"
+                result = self._format_ambiguous_response(all_matches, confidence)
+                logger.info(f"[SchemaExplorerService] 🤔 Respuesta ambigua con confianza {confidence:.2f}")
+                
+            else:
+                response_type = "fallback"
+                result = None
+                logger.info(f"[SchemaExplorerService] 📉 Fallback LLM con confianza {confidence:.2f}")
+            
+            return result, confidence, response_type
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error en fast_lookup: {e}")
+            return None, 0.0, "fallback"
+    
+    def _normalize_query(self, query: str) -> str:
+        """Normalizar query para búsqueda léxica"""
+        # Convertir a minúsculas y remover caracteres especiales
+        normalized = query.lower()
+        normalized = re.sub(r'[^\w\s]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+    
+    def _extract_search_terms(self, normalized_query: str) -> List[str]:
+        """Extraer términos de búsqueda relevantes"""
+        # Palabras clave comunes en consultas de esquema
+        schema_keywords = {
+            'tabla', 'table', 'columna', 'column', 'campo', 'field',
+            'donde', 'where', 'esta', 'is', 'find', 'buscar', 'search',
+            'email', 'user', 'usuario', 'id', 'name', 'nombre', 'date', 'fecha'
+        }
+        
+        # Filtrar palabras comunes y muy cortas
+        words = normalized_query.split()
+        terms = [word for word in words if len(word) >= 3 and word not in schema_keywords]
+        
+        # Si no hay términos específicos, usar palabras más largas
+        if not terms:
+            terms = [word for word in words if len(word) >= 4]
+        
+        return terms[:5]  # Máximo 5 términos
+    
+    def _build_lexical_index(self, db_id: UUID) -> None:
+        """Construir índice léxico para una base de datos"""
+        try:
+            logger.info(f"[SchemaExplorerService] 🔨 Construyendo índice léxico para DB {db_id}")
+            
+            # Obtener esquema detallado
+            schema = self.detailed_cache.get_detailed_schema(db_id)
+            if not schema:
+                logger.warning(f"[SchemaExplorerService] ⚠️ No se pudo obtener esquema para DB {db_id}")
+                return
+            
+            # Inicializar índice para este DB
+            self._lexical_indexes[db_id] = {}
+            
+            # Indexar tablas y columnas
+            for table_name, table_info in schema.tables.items():
+                # Indexar nombre de tabla
+                self._index_term(db_id, table_name, table_name, "table", 1.0)
+                
+                # Indexar columnas
+                for col_name, col_info in table_info.columns.items():
+                    # Indexar nombre de columna
+                    self._index_term(db_id, col_name, table_name, "column", 0.9)
+                    
+                    # Indexar tipo de columna
+                    if col_info.semantic_type:
+                        self._index_term(db_id, col_info.semantic_type, table_name, "semantic_type", 0.7)
+                    
+                    # Indexar comentarios/descripciones si existen
+                    if col_info.description:
+                        self._index_term(db_id, col_info.description, table_name, "description", 0.6)
+            
+            logger.info(f"[SchemaExplorerService] ✅ Índice léxico construido para DB {db_id}: {len(self._lexical_indexes[db_id])} términos")
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error construyendo índice léxico para DB {db_id}: {e}")
+    
+    def _index_term(self, db_id: UUID, term: str, table_name: str, term_type: str, base_score: float) -> None:
+        """Indexar un término en el índice léxico"""
+        if not term:
+            return
+        
+        # Normalizar término
+        normalized_term = self._normalize_query(term)
+        if not normalized_term:
+            return
+        
+        # Generar trigrams para búsqueda fuzzy
+        trigrams = self._generate_trigrams(normalized_term)
+        
+        for trigram in trigrams:
+            if trigram not in self._lexical_indexes[db_id]:
+                self._lexical_indexes[db_id][trigram] = []
+            
+            # Añadir entrada al índice
+            entry = {
+                'table': table_name,
+                'column': table_name if term_type == "table" else None,
+                'term_type': term_type,
+                'original_term': term,
+                'score': base_score,
+                'trigram': trigram
+            }
+            
+            self._lexical_indexes[db_id][trigram].append(entry)
+    
+    def _generate_trigrams(self, text: str) -> List[str]:
+        """Generar trigrams para búsqueda fuzzy"""
+        if len(text) < 3:
+            return [text]
+        
+        trigrams = []
+        for i in range(len(text) - 2):
+            trigrams.append(text[i:i+3])
+        
+        return trigrams
+    
+    def _search_lexical_index(self, db_id: UUID, query_terms: List[str]) -> List[Dict[str, Any]]:
+        """Buscar términos en el índice léxico"""
+        if db_id not in self._lexical_indexes:
+            return []
+        
+        matches = []
+        
+        for term in query_terms:
+            # Generar trigrams del término de búsqueda
+            term_trigrams = self._generate_trigrams(term)
+            
+            for trigram in term_trigrams:
+                if trigram in self._lexical_indexes[db_id]:
+                    # Añadir todos los matches para este trigram
+                    for entry in self._lexical_indexes[db_id][trigram]:
+                        # Calcular score de match
+                        match_score = self._calculate_match_score(term, entry)
+                        if match_score > 0:
+                            match_entry = entry.copy()
+                            match_entry['score'] = match_score
+                            match_entry['db_id'] = db_id
+                            matches.append(match_entry)
+        
+        # Remover duplicados y ordenar por score
+        unique_matches = {}
+        for match in matches:
+            key = (match['table'], match.get('column'), match['db_id'])
+            if key not in unique_matches or match['score'] > unique_matches[key]['score']:
+                unique_matches[key] = match
+        
+        # Ordenar por score descendente
+        sorted_matches = sorted(unique_matches.values(), key=lambda x: x['score'], reverse=True)
+        
+        return sorted_matches[:10]  # Top 10 matches
+    
+    def _calculate_match_score(self, query_term: str, index_entry: Dict[str, Any]) -> float:
+        """Calcular score de match entre término de búsqueda y entrada del índice"""
+        original_term = index_entry['original_term'].lower()
+        base_score = index_entry['score']
+        
+        # Score por tipo de término
+        type_bonus = {
+            "table": 1.0,
+            "column": 0.9,
+            "semantic_type": 0.7,
+            "description": 0.6
+        }
+        
+        type_score = type_bonus.get(index_entry['term_type'], 0.5)
+        
+        # Score por exactitud del match
+        if query_term == original_term:
+            exact_match = 1.0
+        elif query_term in original_term:
+            exact_match = 0.8
+        elif original_term in query_term:
+            exact_match = 0.7
+        else:
+            # Búsqueda fuzzy con trigrams
+            query_trigrams = set(self._generate_trigrams(query_term))
+            entry_trigrams = set(self._generate_trigrams(original_term))
+            
+            if query_trigrams and entry_trigrams:
+                intersection = len(query_trigrams & entry_trigrams)
+                union = len(query_trigrams | entry_trigrams)
+                exact_match = intersection / union if union > 0 else 0.0
+            else:
+                exact_match = 0.0
+        
+        # Score final combinado
+        final_score = base_score * type_score * exact_match
+        return min(final_score, 1.0)
+    
+    def _format_fast_response(self, matches: List[Dict[str, Any]], confidence: float) -> Dict[str, Any]:
+        """Formatear respuesta rápida para alta confianza"""
+        # Agrupar por tabla
+        tables = {}
+        for match in matches:
+            table_name = match['table']
+            if table_name not in tables:
+                tables[table_name] = {
+                    'name': table_name,
+                    'db_id': match['db_id'],
+                    'columns': [],
+                    'score': 0.0
+                }
+            
+            if match.get('column') and match['column'] != table_name:
+                tables[table_name]['columns'].append({
+                    'name': match['column'],
+                    'type': match['term_type'],
+                    'score': match['score']
+                })
+            
+            tables[table_name]['score'] = max(tables[table_name]['score'], match['score'])
+        
+        # Ordenar tablas por score
+        sorted_tables = sorted(tables.values(), key=lambda x: x['score'], reverse=True)
+        
+        return {
+            'type': 'fast_schema_lookup',
+            'confidence': confidence,
+            'response_time_ms': self.FAST_PATH_RESPONSE_TIME_MS,  # Usar configuración
+            'tables': sorted_tables[:5],  # Top 5 tablas
+            'total_matches': len(matches),
+            'message': f"Encontré {len(sorted_tables)} tablas relevantes con confianza {confidence:.1%}"
+        }
+    
+    def _format_ambiguous_response(self, matches: List[Dict[str, Any]], confidence: float) -> Dict[str, Any]:
+        """Formatear respuesta para confianza ambigua (requiere desambiguación)"""
+        # Similar a fast_response pero con mensaje de desambiguación
+        fast_response = self._format_fast_response(matches, confidence)
+        fast_response['type'] = 'ambiguous_schema_lookup'
+        fast_response['message'] = f"Encontré {len(fast_response['tables'])} posibles coincidencias. ¿Podrías ser más específico?"
+        fast_response['requires_disambiguation'] = True
+        
+        return fast_response
     
     def get_schema_for_user_dbs(
         self, 

@@ -127,12 +127,21 @@ class TokenBudgetManager:
     def apply_intelligent_context_trimming(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Aplica trimming inteligente al contexto para optimizar tokens."""
         trimmed_context = context.copy()
+        trimming_info = {
+            "chat_history_trimmed": False,
+            "db_schemas_trimmed": False,
+            "app_descriptors_trimmed": False,
+            "functions_trimmed": False,
+            "original_tokens": self.estimate_tokens_for_context(context),
+            "trimmed_tokens": 0
+        }
         
         # Trimming de historial de chat
         if "chat_history" in trimmed_context:
             chat_history = trimmed_context["chat_history"]
             if len(chat_history) > self.MAX_HISTORY_TURNS:
                 trimmed_context["chat_history"] = chat_history[-self.MAX_HISTORY_TURNS:]
+                trimming_info["chat_history_trimmed"] = True
                 logger.info(f"[TokenBudgetManager] Trimmed chat history to {self.MAX_HISTORY_TURNS} turns")
         
         # Trimming de esquemas de base de datos
@@ -141,6 +150,7 @@ class TokenBudgetManager:
                 if isinstance(schema, list) and len(schema) > 10:
                     # Mantener solo las primeras 10 tablas más relevantes
                     trimmed_context["database_schemas"][db_id] = schema[:10]
+                    trimming_info["db_schemas_trimmed"] = True
                     logger.info(f"[TokenBudgetManager] Trimmed DB schema to 10 tables for {db_id}")
         
         # Trimming de descriptores de apps
@@ -150,6 +160,7 @@ class TokenBudgetManager:
                     desc = app["description"]
                     if len(desc) > self.MAX_APP_DESCRIPTOR_CHARS:
                         app["description"] = desc[:self.MAX_APP_DESCRIPTOR_CHARS] + "..."
+                        trimming_info["app_descriptors_trimmed"] = True
                         logger.debug(f"[TokenBudgetManager] Trimmed app description for {app.get('name', 'unknown')}")
         
         # Trimming de funciones
@@ -159,6 +170,86 @@ class TokenBudgetManager:
                     desc = func["description"]
                     if len(desc) > self.MAX_FUNCTION_DESCRIPTION_CHARS:
                         func["description"] = desc[:self.MAX_FUNCTION_DESCRIPTION_CHARS] + "..."
+                        trimming_info["functions_trimmed"] = True
                         logger.debug(f"[TokenBudgetManager] Trimmed function description for {func.get('name', 'unknown')}")
         
+        # Calcular tokens después del trimming
+        trimming_info["trimmed_tokens"] = self.estimate_tokens_for_context(trimmed_context)
+        
+        # Añadir información de trimming al contexto
+        trimmed_context["_trimming_info"] = trimming_info
+        
         return trimmed_context
+
+    def budget_hint(self, estimated_tokens: int) -> Dict[str, Any]:
+        """
+        Retorna sugerencias de presupuesto con opciones de modo "rápido/preciso".
+        
+        Args:
+            estimated_tokens: Tokens estimados para el contexto actual
+            
+        Returns:
+            Dict con opciones de modo y tokens estimados
+        """
+        # Calcular porcentaje de uso del presupuesto
+        budget_usage = (estimated_tokens / self.MAX_INPUT_TOKENS) * 100
+        
+        # Determinar modo recomendado
+        if budget_usage <= 60:
+            recommended_mode = "preciso"
+            mode_description = "Modo completo con máximo detalle"
+        elif budget_usage <= 85:
+            recommended_mode = "equilibrado"
+            mode_description = "Modo balanceado entre detalle y velocidad"
+        else:
+            recommended_mode = "rápido"
+            mode_description = "Modo optimizado para velocidad"
+        
+        # Opciones de modo disponibles
+        available_modes = {
+            "preciso": {
+                "description": "Máximo detalle y precisión",
+                "estimated_tokens": estimated_tokens,
+                "max_tokens": self.MAX_INPUT_TOKENS,
+                "features": ["Historial completo", "Esquemas detallados", "Descriptores completos"],
+                "recommended": recommended_mode == "preciso"
+            },
+            "equilibrado": {
+                "description": "Balance entre detalle y velocidad",
+                "estimated_tokens": int(estimated_tokens * 0.8),
+                "max_tokens": int(self.MAX_INPUT_TOKENS * 0.8),
+                "features": ["Historial moderado", "Esquemas resumidos", "Descriptores optimizados"],
+                "recommended": recommended_mode == "equilibrado"
+            },
+            "rápido": {
+                "description": "Respuesta rápida con información esencial",
+                "estimated_tokens": int(estimated_tokens * 0.6),
+                "max_tokens": int(self.MAX_INPUT_TOKENS * 0.6),
+                "features": ["Historial mínimo", "Esquemas básicos", "Descriptores resumidos"],
+                "recommended": recommended_mode == "rápido"
+            }
+        }
+        
+        budget_hint = {
+            "current_usage": {
+                "estimated_tokens": estimated_tokens,
+                "max_tokens": self.MAX_INPUT_TOKENS,
+                "budget_usage_percent": round(budget_usage, 1),
+                "status": "warning" if budget_usage >= 85 else "ok"
+            },
+            "recommended_mode": recommended_mode,
+            "mode_description": mode_description,
+            "available_modes": available_modes,
+            "suggestions": []
+        }
+        
+        # Añadir sugerencias basadas en el uso
+        if budget_usage > 85:
+            budget_hint["suggestions"].append("Considera usar modo 'rápido' para respuestas más veloces")
+        elif budget_usage > 60:
+            budget_hint["suggestions"].append("Modo 'equilibrado' puede optimizar el rendimiento")
+        else:
+            budget_hint["suggestions"].append("Puedes usar modo 'preciso' para máximo detalle")
+        
+        logger.info(f"[TokenBudgetManager] Budget hint generated: {recommended_mode} mode, {budget_usage:.1f}% usage")
+        return budget_hint

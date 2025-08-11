@@ -7,6 +7,7 @@ from fastapi import WebSocket
 
 from app.models.user_model import User
 from app.models.session_model import Session as SessionModel
+from app.common.ws_emitter import WebSocketEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class ServiceFactory:
         self._detailed_schema_cache = None
         self._detailed_schema_cache_service = None
         self._sql_guardrails_service = None
+        self._function_guardrails_service = None
         self._description_selector_service = None
         self._intent_classifier_service = None
         self._app_descriptor_cache_service = None
@@ -63,6 +65,10 @@ class ServiceFactory:
         self._trigger_service = None
         self._executed_strategy_service = None
         self._execution_engine_service = None
+        self._resource_selector_service = None
+        self._plan_builder_service = None
+        self._error_handler_service = None
+        self._ws_emitter = None
 
 
     @property
@@ -374,6 +380,37 @@ class ServiceFactory:
             self._execution_engine_service = ExecutionEngineService(self)
         return self._execution_engine_service
 
+    def get_resource_selector_service(self) -> "ResourceSelectorService":
+        """Obtiene el servicio de selección de recursos."""
+        if not self._resource_selector_service:
+            from app.services.execution.resource_selector_service import ResourceSelectorService
+            logger.debug("⚙️ Inicializando ResourceSelectorService")
+            self._resource_selector_service = ResourceSelectorService()
+        return self._resource_selector_service
+
+    def get_plan_builder_service(self) -> "PlanBuilderService":
+        """Obtiene el servicio de construcción de planes."""
+        if not self._plan_builder_service:
+            from app.services.ai.plan_builder_service import PlanBuilderService
+            logger.debug("⚙️ Inicializando PlanBuilderService")
+            self._plan_builder_service = PlanBuilderService()
+        return self._plan_builder_service
+
+    def get_error_handler_service(self) -> "ErrorHandlerService":
+        """Obtiene el servicio de manejo de errores."""
+        if not self._error_handler_service:
+            from app.services.execution.error_handler_service import ErrorHandlerService
+            logger.debug("⚙️ Inicializando ErrorHandlerService")
+            ws_emitter = self.get_ws_emitter()
+            self._error_handler_service = ErrorHandlerService(ws_emitter)
+        return self._error_handler_service
+
+    def get_ws_emitter(self) -> Optional[WebSocketEmitter]:
+        """Obtiene el emisor de eventos WebSocket si está disponible."""
+        if self._ws_emitter is None and isinstance(self.request, WebSocket):
+            self._ws_emitter = WebSocketEmitter(self.request)
+        return self._ws_emitter
+
     def get_app_service(self) -> "AppService":
         if not self._app_service:
             from app.services.app_service import AppService
@@ -391,10 +428,17 @@ class ServiceFactory:
 
     def get_sql_guardrails_service(self) -> "SQLGuardrailsService":
         if not self._sql_guardrails_service:
-            from app.services.sql_guardrails_service import SQLGuardrailsService
+            from app.services.execution.sql_guardrails_service import SQLGuardrailsService
             logger.debug("⚙️ Inicializando SQLGuardrailsService")
-            self._sql_guardrails_service = SQLGuardrailsService(self)
+            self._sql_guardrails_service = SQLGuardrailsService()
         return self._sql_guardrails_service
+
+    def get_function_guardrails_service(self) -> "FunctionGuardrailsService":
+        if not self._function_guardrails_service:
+            from app.services.execution.function_guardrails import FunctionGuardrailsService
+            logger.debug("⚙️ Inicializando FunctionGuardrailsService")
+            self._function_guardrails_service = FunctionGuardrailsService()
+        return self._function_guardrails_service
 
     def get_description_selector_service(self):
         """Obtener servicio de selección por descripción"""
@@ -421,11 +465,15 @@ class ServiceFactory:
         return self._app_descriptor_cache_service
 
     def get_telemetry_service(self):
-        """Obtener servicio de telemetría"""
+        """Obtener servicio de telemetría (alias para compatibilidad)"""
+        return self.get_advanced_telemetry_service()
+
+    def get_advanced_telemetry_service(self):
+        """Obtener servicio de telemetría avanzado (FASE 13)"""
         if self._telemetry_service is None:
-            from app.services.telemetry_service import TelemetryService
-            logger.debug("⚙️ Inicializando TelemetryService")
-            self._telemetry_service = TelemetryService(self)
+            from app.services.management.advanced_telemetry_service import AdvancedTelemetryService
+            logger.debug("⚙️ Inicializando AdvancedTelemetryService (FASE 13)")
+            self._telemetry_service = AdvancedTelemetryService(self)
         return self._telemetry_service
 
 

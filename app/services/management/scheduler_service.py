@@ -5,7 +5,7 @@ from croniter import croniter
 from fastapi import HTTPException
 
 from app.models.strategy_model import Strategy
-from app.services.function_executor_service import FunctionExecutor
+from app.services.execution.function_executor_service import FunctionExecutor
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:

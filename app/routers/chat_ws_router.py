@@ -111,6 +111,161 @@ async def websocket_chat(
         while True:
             data: Dict[str, Any] = await websocket.receive_json()
 
+            # 🚀 FASE 3: Manejar respuestas de decisión
+            if data.get("type") == "decision.response":
+                try:
+                    decision_id = data.get("decision_id")
+                    action = data.get("action")
+                    user_message = data.get("user_message")
+                    selected_options = data.get("selected_options")
+                    
+                    if decision_id and action:
+                        # Procesar la respuesta de decisión
+                        success = orchestrator.decision_manager.submit_decision_response(
+                            decision_id=decision_id,
+                            action=action,
+                            user_message=user_message,
+                            selected_options=selected_options
+                        )
+                        
+                        if success:
+                            await websocket.send_json({
+                                "type": "decision.confirmed",
+                                "message": f"✅ Decisión confirmada: {action}",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            logger.info(f"[ChatWS] ✅ Respuesta de decisión procesada: {action}")
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "❌ Decisión no encontrada o ya expirada",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            logger.warning(f"[ChatWS] ⚠️ Decisión {decision_id} no encontrada")
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "❌ Formato de decisión inválido",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        logger.warning(f"[ChatWS] ⚠️ Formato de decisión inválido: {data}")
+                    
+                    continue  # Continuar con el siguiente mensaje
+                    
+                except Exception as e:
+                    logger.error(f"[ChatWS] ❌ Error procesando decisión: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"❌ Error procesando decisión: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+            
+            # 🎯 FASE 8: Manejar respuestas a propuestas de recursos
+            if data.get("type") == "resource.proposal.response":
+                try:
+                    proposal_id = data.get("proposal_id")
+                    action = data.get("action")
+                    selected_option = data.get("selected_option")
+                    user_message = data.get("user_message")
+                    
+                    if proposal_id and action:
+                        logger.info(f"[ChatWS] 🎯 Respuesta a propuesta de recursos: {action}")
+                        
+                        # Si el usuario eligió una opción Guided, cambiar a modo Guided
+                        if action.startswith("guided_option_"):
+                            try:
+                                # Extraer IDs de la opción seleccionada
+                                if selected_option and "database_id" in selected_option and "application_id" in selected_option:
+                                    db_id = selected_option["database_id"]
+                                    app_id = selected_option["application_id"]
+                                    
+                                    # Crear nuevo mensaje para modo Guided
+                                    guided_message = ChatMessage(
+                                        role="user",
+                                        content=f"Cambiar a modo Guided con DB {db_id} y App {app_id}. {user_message or ''}"
+                                    )
+                                    
+                                    # Ejecutar en modo Guided
+                                    guided_response = await orchestrator.handle_user_message(
+                                        chat_id=chat_id,
+                                        agent_id=agent_id,
+                                        message=guided_message,
+                                        db_ids=[UUID(db_id)],
+                                        app_ids=[UUID(app_id)],
+                                        explorer=False,  # Cambiar a Guided
+                                    )
+                                    
+                                    # Enviar respuesta del modo Guided
+                                    await websocket.send_json({
+                                        "type": "guided_response",
+                                        "message": "🔄 Cambiando a modo Guided...",
+                                        "data": guided_response,
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                    
+                                    logger.info(f"[ChatWS] ✅ Cambio a modo Guided completado: DB {db_id}, App {app_id}")
+                                    
+                                else:
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": "❌ Opción de recursos inválida",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                    
+                            except Exception as e:
+                                logger.error(f"[ChatWS] ❌ Error cambiando a modo Guided: {str(e)}")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": f"❌ Error cambiando a modo Guided: {str(e)}",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                        
+                        elif action == "see_more":
+                            # El usuario quiere ver más opciones
+                            await websocket.send_json({
+                                "type": "notice",
+                                "message": "🔍 Buscando más opciones de recursos...",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            logger.info(f"[ChatWS] 🔍 Usuario solicitó más opciones de recursos")
+                        
+                        elif action == "explore_only":
+                            # El usuario quiere continuar en modo Explorer
+                            await websocket.send_json({
+                                "type": "notice",
+                                "message": "✅ Continuando en modo Explorer",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            logger.info(f"[ChatWS] ✅ Usuario eligió continuar en modo Explorer")
+                        
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "❌ Acción de propuesta inválida",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            logger.warning(f"[ChatWS] ⚠️ Acción de propuesta inválida: {action}")
+                    
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "❌ Formato de propuesta inválido",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        logger.warning(f"[ChatWS] ⚠️ Formato de propuesta inválido: {data}")
+                    
+                    continue  # Continuar con el siguiente mensaje
+                    
+                except Exception as e:
+                    logger.error(f"[ChatWS] ❌ Error procesando propuesta de recursos: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"❌ Error procesando propuesta: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+
             try:
                 msg = ChatMessage(**data)
             except Exception as e:

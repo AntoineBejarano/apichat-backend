@@ -34,6 +34,7 @@ from .message_handler import MessageHandler
 from .iterative_rag_handler import IterativeRAGHandler
 from .schema_validator import SchemaValidator
 from .response_formatter import ResponseFormatter
+from .decision_manager import DecisionManager
 
 # Módulos de gestión
 from .schema_manager import SchemaManager
@@ -55,6 +56,7 @@ __all__ = [
     "IterativeRAGHandler",
     "SchemaValidator",
     "ResponseFormatter",
+    "DecisionManager",
     
     # Módulos de gestión
     "SchemaManager",

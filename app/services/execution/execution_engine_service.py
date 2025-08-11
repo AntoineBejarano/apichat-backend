@@ -4,7 +4,7 @@ from __future__ import annotations
 import json, re, logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langgraph.graph import StateGraph, START, END
 
@@ -25,7 +25,7 @@ class ExecutionEngineService:
     # ────────────────────────────────────────────────────────────────
     #   PÚBLICO · Entry-point
     # ────────────────────────────────────────────────────────────────
-    def run(
+    async def run(
         self,
         plan: Dict[str, Any],
         chat_id: UUID,
@@ -54,6 +54,10 @@ class ExecutionEngineService:
             if action['type'] == 'db_query':
                 action = self._apply_sql_guardrails(action, variables)
             
+            # 🛡️ NUEVO: Aplicar guardrails de función si es api_function
+            if action['type'] == 'api_function':
+                action = self._apply_function_guardrails(action, variables)
+            
             # 🛡️ NUEVO: Aplicar guardrails de formato para chat
             if action['type'] == 'db_query':
                 action = self._apply_chat_format_guardrails(action, variables)
@@ -69,7 +73,19 @@ class ExecutionEngineService:
                     else:
                         result = self._run_db_query(action, variables)
                 elif action["type"] == "api_function":
-                    result = self._run_api_function(action, variables, chat_id)
+                    # Verificar si guardrails bloquearon la función
+                    if action.get('_guardrails_error'):
+                        warnings = action.get('_guardrails_warnings', [])
+                        error_msg = "Función bloqueada por guardrails de seguridad:\n" + "\n".join(warnings)
+                        logger.error(f"[ExecutionEngine] 🚫 {error_msg}")
+                        result = {"error": error_msg, "blocked_by_guardrails": True}
+                    elif action.get('_requires_confirmation'):
+                        logger.info(f"[ExecutionEngine] ⏸️ Función {action.get('_function_name', 'unknown')} requiere confirmación del usuario")
+                        # Emitir evento decision.request
+                        await self._emit_decision_request(action, variables)
+                        result = {"status": "pending_confirmation", "requires_confirmation": True}
+                    else:
+                        result = self._run_api_function(action, variables, chat_id)
                 elif action["type"] == "mcp_tool":
                     result = self._run_mcp_tool(action, variables)
                 else:
@@ -115,6 +131,12 @@ class ExecutionEngineService:
     # … dentro de class ExecutionEngineService …
 
     def _run_db_query(self, action: Dict[str, Any], ctx: Dict[str, Any]):
+        # Verificar si fue bloqueada por guardrails
+        if action.get('_guardrails_error'):
+            logger.error(f"[ExecutionEngine] 🚫 Consulta SQL bloqueada por guardrails")
+            warnings = action.get('_guardrails_warnings', [])
+            raise ValueError(f"Consulta SQL bloqueada por guardrails: {'; '.join(warnings)}")
+        
         # 1) Resolver database_id (igual que ya lo tienes)
         db_id = action.get("database_id")
         if not db_id:
@@ -283,6 +305,17 @@ class ExecutionEngineService:
 
 
     def _run_api_function(self, action: Dict[str, Any], ctx: Dict[str, Any], chat_id: UUID):
+        # Verificar si requiere confirmación por guardrails
+        if action.get('_requires_confirmation'):
+            logger.info(f"[ExecutionEngine] ⏸️ Función {action.get('_function_name')} requiere confirmación - saltando ejecución")
+            raise ValueError(f"Función {action.get('_function_name')} requiere confirmación del usuario antes de ejecutar")
+        
+        # Verificar si fue bloqueada por guardrails
+        if action.get('_guardrails_error'):
+            logger.error(f"[ExecutionEngine] 🚫 Función bloqueada por guardrails")
+            warnings = action.get('_guardrails_warnings', [])
+            raise ValueError(f"Función bloqueada por guardrails: {'; '.join(warnings)}")
+        
         self.factory.get_usage_service().check_limit()
         params = self._render_params(action.get("params", {}), ctx)
 
@@ -495,9 +528,9 @@ class ExecutionEngineService:
             Acción modificada con query validada/corregida
         """
         try:
-            from app.services.sql_guardrails_service import SQLGuardrailsService
+            from app.services.execution.sql_guardrails_service import SQLGuardrailsService
             
-            guardrails = SQLGuardrailsService(self.factory)
+            guardrails = SQLGuardrailsService()
             
             original_query = action.get('sql', '')
             db_id = action.get('database_id')
@@ -553,6 +586,137 @@ class ExecutionEngineService:
             action_copy['_guardrails_error'] = True
             action_copy['_guardrails_warnings'] = [f"❌ Error en guardrails: {str(e)}"]
             return action_copy
+
+    def _apply_function_guardrails(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Aplica guardrails de función a una acción de api_function.
+        
+        Args:
+            action: Acción de tipo api_function
+            variables: Variables del contexto
+            
+        Returns:
+            Acción modificada con validación de guardrails aplicada
+        """
+        try:
+            function_id = action.get('function_id')
+            if not function_id:
+                logger.warning("[ExecutionEngine] 🛡️ Acción sin function_id - saltando guardrails")
+                return action
+            
+            # Obtener información de la función
+            function = self.factory.db.query(self.factory.get_function_model()).filter(
+                self.factory.get_function_model().id == function_id,
+                self.factory.get_function_model().active == True
+            ).first()
+            
+            if not function:
+                logger.warning(f"[ExecutionEngine] 🛡️ Función {function_id} no encontrada - saltando guardrails")
+                return action
+            
+            # Obtener roles y permisos del usuario (simplificado por ahora)
+            user_roles = ["user"]  # TODO: Obtener roles reales del usuario
+            user_permissions = ["read"]  # TODO: Obtener permisos reales del usuario
+            
+            # Validar ejecución de función
+            function_guardrails = self.factory.get_function_guardrails_service()
+            is_allowed, error_message, guardrail = function_guardrails.validate_function_execution(
+                function_name=function.name,
+                user_roles=user_roles,
+                user_permissions=user_permissions
+            )
+            
+            if not is_allowed:
+                logger.error(f"[ExecutionEngine] 🚫 Función {function.name} bloqueada por guardrails: {error_message}")
+                action_copy = action.copy()
+                action_copy['_guardrails_error'] = True
+                action_copy['_guardrails_warnings'] = [error_message]
+                return action_copy
+            
+            # Verificar si requiere confirmación
+            if guardrail.requires_confirmation:
+                logger.info(f"[ExecutionEngine] ⏸️ Función {function.name} requiere confirmación del usuario")
+                action_copy = action.copy()
+                action_copy['_requires_confirmation'] = True
+                action_copy['_function_name'] = function.name
+                action_copy['_risk_level'] = guardrail.risk_level.value
+                action_copy['_guardrails_info'] = {
+                    "function_name": function.name,
+                    "risk_level": guardrail.risk_level.value,
+                    "category": guardrail.category.value,
+                    "requires_confirmation": True,
+                    "message": f"Función {function.name} requiere confirmación (riesgo: {guardrail.risk_level.value})"
+                }
+                return action_copy
+            
+            # Función permitida sin confirmación
+            logger.info(f"[ExecutionEngine] ✅ Función {function.name} validada por guardrails")
+            action_copy = action.copy()
+            action_copy['_guardrails_applied'] = True
+            action_copy['_function_name'] = function.name
+            action_copy['_risk_level'] = guardrail.risk_level.value
+            return action_copy
+            
+        except Exception as e:
+            logger.exception(f"[ExecutionEngine] ❌ Error aplicando guardrails de función: {e}")
+            # En caso de error, devolver acción original pero con advertencia
+            action_copy = action.copy()
+            action_copy['_guardrails_error'] = True
+            action_copy['_guardrails_warnings'] = [f"❌ Error en guardrails de función: {str(e)}"]
+            return action_copy
+
+    async def _emit_decision_request(self, action: Dict[str, Any], variables: Dict[str, Any]) -> None:
+        """
+        Emite un evento decision.request cuando una acción requiere confirmación del usuario.
+        
+        Args:
+            action: Acción que requiere confirmación
+            variables: Variables del contexto
+        """
+        try:
+            # Crear payload del evento decision.request
+            decision_payload = {
+                "type": "decision.request",
+                "action": {
+                    "id": action.get('id'),
+                    "type": action.get('type'),
+                    "function_name": action.get('_function_name'),
+                    "risk_level": action.get('_risk_level'),
+                    "requires_confirmation": True,
+                    "guardrails_info": action.get('_guardrails_info', {}),
+                    "parameters": action.get('parameters', {}),
+                    "context": {
+                        "chat_id": str(variables.get('chat_id', '')),
+                        "user_id": str(self.user_id),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                },
+                "message": f"Función {action.get('_function_name', 'unknown')} requiere confirmación del usuario antes de ejecutar (riesgo: {action.get('_risk_level', 'unknown')})",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Emitir evento a través de WebSocket usando el factory
+            ws_emitter = self.factory.get_ws_emitter()
+            if ws_emitter:
+                await ws_emitter.emit_decision_request(
+                    decision_id=str(uuid4()),
+                    title=f"Confirmar función {action.get('_function_name', 'unknown')}",
+                    description=f"La función {action.get('_function_name', 'unknown')} requiere confirmación del usuario antes de ejecutar (riesgo: {action.get('_risk_level', 'unknown')})",
+                    options=[
+                        {"id": "confirm", "label": "✅ Confirmar", "description": "Ejecutar la función"},
+                        {"id": "cancel", "label": "❌ Cancelar", "description": "Cancelar la ejecución"}
+                    ],
+                    timeout_seconds=30,
+                    default_action="cancel"
+                )
+            else:
+                logger.warning("[ExecutionEngine] ⚠️ WebSocket emitter no disponible - no se puede solicitar confirmación")
+            
+            logger.info(f"[ExecutionEngine] 📡 Evento decision.request emitido para función {action.get('_function_name')}")
+            
+        except Exception as e:
+            logger.exception(f"[ExecutionEngine] ❌ Error emitiendo evento decision.request: {e}")
+            # No fallar la ejecución si no se puede emitir el evento
     
     # ────────────────────────────────────────────────────────────────
     #   RECUPERACIÓN DE ERRORES CON CACHE REFRESH

@@ -4,7 +4,7 @@ from typing import List, Optional, TYPE_CHECKING, Dict, Any
 from sqlalchemy.engine import Engine, create_engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.services.proxy_service import ProxyService
+from app.services.integration.proxy_service import ProxyService
 from app.utils.text import truncate_words
 
 if TYPE_CHECKING:
