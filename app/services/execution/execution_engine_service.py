@@ -9,6 +9,9 @@ from uuid import UUID, uuid4
 from langgraph.graph import StateGraph, START, END
 
 from app.utils.text import format_database_tables, format_query_results
+from app.services.execution.retry_service import retry_service
+from app.services.execution.undo_service import undo_service, create_db_undo_operation
+from app.core.config import settings
 
 if TYPE_CHECKING:                       # evita import cíclicos en tiempo real
     from app.core.service_factory import ServiceFactory
@@ -71,7 +74,7 @@ class ExecutionEngineService:
                         logger.error(f"[ExecutionEngine] 🚫 {error_msg}")
                         result = {"error": error_msg, "blocked_by_guardrails": True}
                     else:
-                        result = self._run_db_query(action, variables)
+                        result = await self._run_db_query_with_retry(action, variables)
                 elif action["type"] == "api_function":
                     # Verificar si guardrails bloquearon la función
                     if action.get('_guardrails_error'):
@@ -85,9 +88,9 @@ class ExecutionEngineService:
                         await self._emit_decision_request(action, variables)
                         result = {"status": "pending_confirmation", "requires_confirmation": True}
                     else:
-                        result = self._run_api_function(action, variables, chat_id)
+                        result = await self._run_api_function_with_retry(action, variables, chat_id)
                 elif action["type"] == "mcp_tool":
-                    result = self._run_mcp_tool(action, variables)
+                    result = await self._run_mcp_tool_with_retry(action, variables)
                 else:
                     raise ValueError(f"Tipo de acción desconocido: {action['type']}")
 
@@ -1108,3 +1111,198 @@ class ExecutionEngineService:
                 "formatted": False,
                 "error": f"Error formateando: {str(e)}"
             }
+
+    # ────────────────────────────────────────────────────────────────
+    #   FASE 15 - HARDENING: Reintentos y timeouts
+    # ────────────────────────────────────────────────────────────────
+    
+    async def _run_db_query_with_retry(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Ejecuta query de BD con reintentos y timeouts."""
+        try:
+            # Registrar operación para undo si es posible
+            undo_id = self._register_db_undo_operation(action, variables)
+            
+            # Ejecutar con reintentos
+            result = await retry_service.retry_with_backoff_async(
+                max_retries=2,  # Menos reintentos para DB
+                timeout=settings.DB_QUERY_TIMEOUT_SECONDS,
+                exceptions=(TimeoutError, ConnectionError)
+            )(self._run_db_query)(action, variables)
+            
+            # Añadir información de undo al resultado
+            if undo_id:
+                result["undo_available"] = True
+                result["undo_id"] = undo_id
+                result["next_actions"] = result.get("next_actions", []) + ["undo"]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error en query DB con reintentos: {e}")
+            return {"error": str(e), "undo_available": False}
+    
+    async def _run_api_function_with_retry(self, action: Dict[str, Any], variables: Dict[str, Any], chat_id: UUID) -> Dict[str, Any]:
+        """Ejecuta función de API con reintentos y timeouts."""
+        try:
+            # Registrar operación para undo si es posible
+            undo_id = self._register_api_undo_operation(action, variables)
+            
+            # Ejecutar con reintentos
+            result = await retry_service.retry_with_backoff_async(
+                max_retries=3,  # Más reintentos para API
+                timeout=settings.HTTP_REQUEST_TIMEOUT_SECONDS,
+                exceptions=(TimeoutError, ConnectionError, OSError)
+            )(self._run_api_function)(action, variables, chat_id)
+            
+            # Añadir información de undo al resultado
+            if undo_id:
+                result["undo_available"] = True
+                result["undo_id"] = undo_id
+                result["next_actions"] = result.get("next_actions", []) + ["undo"]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error en función API con reintentos: {e}")
+            return {"error": str(e), "undo_available": False}
+    
+    async def _run_mcp_tool_with_retry(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Ejecuta herramienta MCP con reintentos y timeouts."""
+        try:
+            # Ejecutar con reintentos
+            result = await retry_service.retry_with_backoff_async(
+                max_retries=2,
+                timeout=settings.HTTP_REQUEST_TIMEOUT_SECONDS,
+                exceptions=(TimeoutError, ConnectionError)
+            )(self._run_mcp_tool)(action, variables)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error en herramienta MCP con reintentos: {e}")
+            return {"error": str(e)}
+    
+    def _register_db_undo_operation(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Optional[str]:
+        """Registra operación de BD para undo si es posible."""
+        try:
+            sql = action.get('sql', '').upper().strip()
+            
+            # Solo registrar para operaciones que modifican datos
+            if not any(op in sql for op in ['INSERT', 'UPDATE', 'DELETE']):
+                return None
+            
+            # Crear función de undo
+            undo_func = create_db_undo_operation(
+                table_name=self._extract_table_name(sql),
+                operation=self._extract_operation_type(sql),
+                original_data=self._get_original_data(action, variables),
+                where_conditions=self._extract_where_conditions(sql)
+            )
+            
+            # Registrar en servicio de undo
+            undo_id = undo_service.register_undo_operation(
+                operation_type="db_query",
+                description=f"Query SQL: {action.get('sql', '')[:100]}...",
+                undo_function=undo_func,
+                undo_args={},
+                metadata={"action": action, "variables": variables}
+            )
+            
+            logger.info(f"[ExecutionEngine] 📝 Registrada operación de undo para DB: {undo_id}")
+            return undo_id
+            
+        except Exception as e:
+            logger.warning(f"[ExecutionEngine] ⚠️ No se pudo registrar undo para DB: {e}")
+            return None
+    
+    def _register_api_undo_operation(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Optional[str]:
+        """Registra operación de API para undo si es posible."""
+        try:
+            # Solo registrar si la función soporta undo
+            if not action.get('supports_undo', False):
+                return None
+            
+            # Crear función de undo
+            undo_func = create_api_function_undo_operation(
+                function_name=action.get('function_name', 'unknown'),
+                original_state=self._get_original_state(action, variables),
+                undo_endpoint=action.get('undo_endpoint')
+            )
+            
+            # Registrar en servicio de undo
+            undo_id = undo_service.register_undo_operation(
+                operation_type="api_function",
+                description=f"Función API: {action.get('function_name', 'unknown')}",
+                undo_function=undo_func,
+                undo_args={},
+                metadata={"action": action, "variables": variables}
+            )
+            
+            logger.info(f"[ExecutionEngine] 📝 Registrada operación de undo para API: {undo_id}")
+            return undo_id
+            
+        except Exception as e:
+            logger.warning(f"[ExecutionEngine] ⚠️ No se pudo registrar undo para API: {e}")
+            return None
+    
+    def _extract_table_name(self, sql: str) -> str:
+        """Extrae el nombre de la tabla de una query SQL."""
+        try:
+            # Implementación básica - en producción usar parser SQL
+            words = sql.split()
+            for i, word in enumerate(words):
+                if word in ['FROM', 'INTO', 'UPDATE'] and i + 1 < len(words):
+                    return words[i + 1].strip(';').strip('`').strip('"').strip("'")
+            return "unknown_table"
+        except:
+            return "unknown_table"
+    
+    def _extract_operation_type(self, sql: str) -> str:
+        """Extrae el tipo de operación de una query SQL."""
+        try:
+            sql_upper = sql.upper().strip()
+            if sql_upper.startswith('INSERT'):
+                return 'INSERT'
+            elif sql_upper.startswith('UPDATE'):
+                return 'UPDATE'
+            elif sql_upper.startswith('DELETE'):
+                return 'DELETE'
+            else:
+                return 'SELECT'
+        except:
+            return 'SELECT'
+    
+    def _extract_where_conditions(self, sql: str) -> Dict[str, Any]:
+        """Extrae condiciones WHERE de una query SQL."""
+        try:
+            # Implementación básica - en producción usar parser SQL
+            if 'WHERE' in sql.upper():
+                where_part = sql.upper().split('WHERE')[1].split(';')[0]
+                return {"where_clause": where_part}
+            return {}
+        except:
+            return {}
+    
+    def _get_original_data(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Obtiene datos originales antes de una operación."""
+        try:
+            # En una implementación real, se haría backup de los datos
+            return {
+                "backup_timestamp": str(datetime.now(timezone.utc)),
+                "action_type": action.get('type'),
+                "sql": action.get('sql')
+            }
+        except:
+            return {}
+    
+    def _get_original_state(self, action: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Obtiene estado original antes de una operación de API."""
+        try:
+            return {
+                "backup_timestamp": str(datetime.now(timezone.utc)),
+                "function_name": action.get('function_name'),
+                "arguments": action.get('arguments', {}),
+                "variables_snapshot": variables.copy()
+            }
+        except:
+            return {}

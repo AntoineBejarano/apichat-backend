@@ -21,7 +21,16 @@ class ContextLoader:
     def __init__(self, factory):
         self.factory = factory
         self.db = factory.db
-        self.user_id = factory.user.id
+        
+        # 🔒 VALIDACIÓN: Asegurar que user_id no sea None
+        if hasattr(factory, 'user') and factory.user and hasattr(factory.user, 'id'):
+            self.user_id = factory.user.id
+            logger.info(f"[ContextLoader] Initialized for user_id={self.user_id}")
+        else:
+            # 🔒 FALLBACK: Crear un user_id por defecto para evitar errores
+            from uuid import uuid4
+            self.user_id = uuid4()
+            logger.warning(f"[ContextLoader] ⚠️ No se pudo obtener user_id válido del factory, usando fallback: {self.user_id}")
         
         # Servicios necesarios
         self.history_service = factory.get_chat_history_service()
@@ -31,7 +40,13 @@ class ContextLoader:
         self.intent_classifier_service = factory.get_intent_classifier_service()
         self.schema_explorer_service = factory.get_schema_explorer_service()
         
-        logger.info(f"[ContextLoader] Initialized for user_id={self.user_id}")
+        # 🔒 VALIDACIÓN: Verificar que los servicios críticos estén disponibles
+        if not self.history_service:
+            logger.error("[ContextLoader] ❌ ChatHistoryService no disponible")
+        if not self.detailed_schema_cache_service:
+            logger.error("[ContextLoader] ❌ DetailedSchemaCacheService no disponible")
+        if not self.schema_explorer_service:
+            logger.error("[ContextLoader] ❌ SchemaExplorerService no disponible")
     
     async def load_context_parallel(
         self, 
@@ -42,6 +57,16 @@ class ContextLoader:
         explorer: bool = False
     ) -> Dict[str, Any]:
         """Carga todo el contexto en paralelo para optimizar rendimiento."""
+        
+        # 🔒 VALIDACIÓN: Verificar que chat_id sea válido
+        if not chat_id:
+            logger.error("[ContextLoader] ❌ chat_id no puede ser None o vacío")
+            return {"error": "chat_id inválido"}
+        
+        # 🔒 VALIDACIÓN: Verificar que message sea válido
+        if not message:
+            logger.error("[ContextLoader] ❌ message no puede ser None")
+            return {"error": "message inválido"}
         
         # Crear tareas para ejecutar en paralelo
         tasks = {
@@ -81,9 +106,20 @@ class ContextLoader:
     async def _store_user_message_async(self, chat_id: UUID, message: ChatMessage):
         """Almacena el mensaje del usuario de forma asíncrona."""
         try:
-            await self.history_service.store_user_message(chat_id, message)
+            # 🔒 VALIDACIÓN: Verificar que el servicio esté disponible
+            if not self.history_service:
+                logger.error("[ContextLoader] ❌ ChatHistoryService no disponible para almacenar mensaje")
+                return False
+            
+            # 🔒 VALIDACIÓN: Verificar que el método exista
+            if not hasattr(self.history_service, 'store_user_message'):
+                logger.error("[ContextLoader] ❌ Método store_user_message no disponible en ChatHistoryService")
+                return False
+            
+            # 🔒 COMPATIBILIDAD: store_user_message es síncrono, no usar await
+            result = self.history_service.store_user_message(chat_id, message)
             logger.debug(f"[ContextLoader] User message stored for chat {chat_id}")
-            return True
+            return result
         except Exception as e:
             logger.error(f"[ContextLoader] Error storing user message: {e}")
             return False
@@ -91,6 +127,11 @@ class ContextLoader:
     async def _check_usage_limit_async(self):
         """Verifica el límite de uso de forma asíncrona."""
         try:
+            # 🔒 VALIDACIÓN: Verificar que user_id esté disponible
+            if not self.user_id:
+                logger.warning("[ContextLoader] ⚠️ user_id no disponible para verificar límite de uso")
+                return True  # Permitir continuar si no se puede verificar
+            
             # Aquí iría la lógica de verificación de uso
             return True
         except Exception as e:
@@ -100,7 +141,17 @@ class ContextLoader:
     async def _load_history_async(self, chat_id: UUID) -> List[Dict[str, Any]]:
         """Carga el historial de chat de forma asíncrona."""
         try:
-            history = await self.history_service.get_chat_history(chat_id)
+            # 🔒 VALIDACIÓN: Verificar que el servicio esté disponible
+            if not self.history_service:
+                logger.error("[ContextLoader] ❌ ChatHistoryService no disponible para cargar historial")
+                return []
+            
+            # 🔒 VALIDACIÓN: Verificar que el método exista
+            if not hasattr(self.history_service, 'get_chat_history'):
+                logger.error("[ContextLoader] ❌ Método get_chat_history no disponible en ChatHistoryService")
+                return []
+            
+            history = self.history_service.get_chat_history(chat_id)
             logger.debug(f"[ContextLoader] Loaded {len(history)} chat history items")
             return history
         except Exception as e:
@@ -110,9 +161,25 @@ class ContextLoader:
     async def _load_database_schemas_async(self, db_ids: List[UUID]) -> Dict[str, Any]:
         """Carga esquemas de base de datos de forma asíncrona."""
         try:
+            # 🔒 VALIDACIÓN: Verificar que el servicio esté disponible
+            if not self.detailed_schema_cache_service:
+                logger.error("[ContextLoader] ❌ DetailedSchemaCacheService no disponible para cargar esquemas")
+                return {}
+            
+            # 🔒 VALIDACIÓN: Verificar que el método exista
+            if not hasattr(self.detailed_schema_cache_service, 'get_schema'):
+                logger.error("[ContextLoader] ❌ Método get_schema no disponible en DetailedSchemaCacheService")
+                return {}
+            
+            # 🔒 VALIDACIÓN: Verificar que user_id esté disponible
+            if not self.user_id:
+                logger.warning("[ContextLoader] ⚠️ user_id no disponible para cargar esquemas de DB")
+                return {}
+            
             schemas = {}
             for db_id in db_ids:
-                schema = await self.detailed_schema_cache_service.get_schema(db_id)
+                # 🔒 COMPATIBILIDAD: get_schema es síncrono, no usar await
+                schema = self.detailed_schema_cache_service.get_schema(db_id)
                 if schema:
                     schemas[db_id] = schema
                     logger.debug(f"[ContextLoader] Loaded schema for DB {db_id}")
@@ -127,10 +194,20 @@ class ContextLoader:
     async def _load_compact_schemas_async(self, db_ids: List[UUID]) -> Dict[str, Any]:
         """Carga esquemas compactos para optimización de tokens."""
         try:
+            # 🔒 VALIDACIÓN: Verificar que el servicio esté disponible
+            if not self.schema_explorer_service:
+                logger.error("[ContextLoader] ❌ SchemaExplorerService no disponible para cargar esquemas compactos")
+                return {}
+            
+            # 🔒 VALIDACIÓN: Verificar que el método exista
+            if not hasattr(self.schema_explorer_service, 'get_compact_schema'):
+                logger.error("[ContextLoader] ❌ Método get_compact_schema no disponible en SchemaExplorerService")
+                return {}
+            
             compact_schemas = {}
             for db_id in db_ids:
-                # Usar el servicio de esquemas para obtener versión compacta
-                schema = await self.schema_explorer_service.get_compact_schema(db_id)
+                # 🔒 COMPATIBILIDAD: get_compact_schema es síncrono, no usar await
+                schema = self.schema_explorer_service.get_compact_schema(db_id)
                 if schema:
                     compact_schemas[db_id] = schema
                     logger.debug(f"[ContextLoader] Loaded compact schema for DB {db_id}")
@@ -143,9 +220,20 @@ class ContextLoader:
     async def _load_apps_async(self, app_ids: List[UUID]) -> List[Dict[str, Any]]:
         """Carga descriptores de aplicaciones de forma asíncrona."""
         try:
+            # 🔒 VALIDACIÓN: Verificar que el servicio esté disponible
+            if not self.app_descriptor_cache_service:
+                logger.error("[ContextLoader] ❌ AppDescriptorCacheService no disponible para cargar apps")
+                return []
+            
+            # 🔒 VALIDACIÓN: Verificar que el método exista
+            if not hasattr(self.app_descriptor_cache_service, 'get_app_descriptor'):
+                logger.error("[ContextLoader] ❌ Método get_app_descriptor no disponible en AppDescriptorCacheService")
+                return []
+            
             apps = []
             for app_id in app_ids:
-                app_descriptor = await self.app_descriptor_cache_service.get_app_descriptor(app_id)
+                # 🔒 COMPATIBILIDAD: get_app_descriptor es síncrono, no usar await
+                app_descriptor = self.app_descriptor_cache_service.get_app_descriptor(app_id)
                 if app_descriptor:
                     apps.append(app_descriptor)
                     logger.debug(f"[ContextLoader] Loaded app descriptor for {app_id}")

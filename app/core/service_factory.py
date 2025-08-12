@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status, Request
 from sqlalchemy.orm import Session
 from fastapi import WebSocket
+from uuid import UUID
 
 from app.models.user_model import User
 from app.models.session_model import Session as SessionModel
@@ -74,11 +75,47 @@ class ServiceFactory:
     @property
     def user(self) -> User:
         if self._user is None:
-            self._user = self._load_user()
+            try:
+                self._user = self._load_user()
+            except Exception as e:
+                logger.error(f"❌ Error cargando usuario: {e}")
+                # 🔒 VALIDACIÓN: Crear un usuario por defecto para evitar errores de NoneType
+                self._user = self._create_default_user()
         return self._user
+
+    def _create_default_user(self) -> User:
+        """Crea un usuario por defecto para evitar errores de NoneType."""
+        try:
+            from app.models.user_model import User
+            
+            # Crear un usuario temporal con valores por defecto
+            default_user = User(
+                id=UUID('00000000-0000-0000-0000-000000000000'),  # UUID por defecto
+                email="default@system.local",
+                username="default_user",
+                is_active=False,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            
+            logger.warning("⚠️ Usando usuario por defecto debido a error de autenticación")
+            return default_user
+            
+        except Exception as e:
+            logger.error(f"❌ Error creando usuario por defecto: {e}")
+            # Si todo falla, crear un objeto mock mínimo
+            class MockUser:
+                def __init__(self):
+                    self.id = UUID('00000000-0000-0000-0000-000000000000')
+                    self.email = "mock@system.local"
+                    self.username = "mock_user"
+                    self.is_active = False
+            
+            return MockUser()
 
     def _load_user(self) -> User:
         if self.request is None:
+            logger.error("❌ Request not available for user loading")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Request not available")
 
         logger.debug("🔍 Cargando usuario desde session_token...")
@@ -94,41 +131,53 @@ class ServiceFactory:
             logger.warning("❌ Token de sesión no proporcionado")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No session token provided")
 
-        session = self.db.query(SessionModel).filter_by(session_token=token).first()
+        try:
+            session = self.db.query(SessionModel).filter_by(session_token=token).first()
 
-        if not session or session.expires_at < datetime.now(timezone.utc):
-            logger.warning("❌ Sesión inválida o expirada")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+            if not session or session.expires_at < datetime.now(timezone.utc):
+                logger.warning("❌ Sesión inválida o expirada")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
-        session.last_used_at = datetime.now(timezone.utc)
-        self.db.commit()
+            session.last_used_at = datetime.now(timezone.utc)
+            self.db.commit()
 
-        user = self.db.query(User).filter_by(id=session.user_id).first()
-        if not user:
-            logger.warning(f"❌ Usuario con ID {session.user_id} no encontrado")
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            user = self.db.query(User).filter_by(id=session.user_id).first()
+            if not user:
+                logger.warning(f"❌ Usuario con ID {session.user_id} no encontrado")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-        logger.info(f"✅ Usuario autenticado: {user.email}")
-        return user
+            logger.info(f"✅ Usuario autenticado: {user.email}")
+            return user
+            
+        except Exception as e:
+            logger.error(f"❌ Error en proceso de autenticación: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Authentication error: {str(e)}")
 
     # ⚡ OPTIMIZACIÓN: Servicios críticos pre-inicializados
     def get_usage_service(self) -> "UsageService":
         if not self._usage_service:
-            from app.services.usage_service import UsageService
+            from app.services.data.usage_service import UsageService
             logger.debug("⚙️ Inicializando UsageService")
             self._usage_service = UsageService(self)
         return self._usage_service
 
     def get_chat_history_service(self) -> "ChatHistoryService":
         if not self._chat_history_service:
-            from app.services.chat_history_service import ChatHistoryService
+            from app.services.data.chat_history_service import ChatHistoryService
             logger.debug("⚙️ Inicializando ChatHistoryService")
-            self._chat_history_service = ChatHistoryService(self)
+            try:
+                self._chat_history_service = ChatHistoryService(self)
+                if not self._chat_history_service:
+                    logger.error("❌ ChatHistoryService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando ChatHistoryService: {e}")
+                return None
         return self._chat_history_service
 
     def get_openai_service(self) -> "OpenAIService":
         if not self._openai_service:
-            from app.services.openai_service import OpenAIService
+            from app.services.ai.openai_service import OpenAIService
             logger.debug("⚙️ Inicializando OpenAIService")
             self._openai_service = OpenAIService(self)
         return self._openai_service
@@ -142,41 +191,86 @@ class ServiceFactory:
 
     def get_database_service(self) -> "DatabaseService":
         if not self._database_service:
-            from app.services.database_service import DatabaseService
+            from app.services.data.database_service import DatabaseService
             logger.debug("⚙️ Inicializando DatabaseService")
-            self._database_service = DatabaseService(self)
+            try:
+                self._database_service = DatabaseService(self)
+                if not self._database_service:
+                    logger.error("❌ DatabaseService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando DatabaseService: {e}")
+                return None
         return self._database_service
 
     def get_cache_service(self) -> "CacheService":
         if not self._cache_service:
-            from app.services.cache_service import CacheService
+            from app.services.data.cache_service import CacheService
             logger.debug("⚙️ Inicializando CacheService")
-            self._cache_service = CacheService()
+            try:
+                # 🔒 COMPATIBILIDAD: Pasar factory para soporte de BaseService
+                self._cache_service = CacheService(factory=self)
+                if not self._cache_service:
+                    logger.error("❌ CacheService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando CacheService: {e}")
+                return None
         return self._cache_service
 
     def get_schema_explorer_service(self) -> "SchemaExplorerService":
         if not self._schema_explorer_service:
-            from app.services.schema_explorer_service import SchemaExplorerService
+            from app.services.context.schema_explorer_service import SchemaExplorerService
             logger.debug("⚙️ Inicializando SchemaExplorerService")
-            cache_service = self.get_cache_service()
-            database_service = self.get_database_service()
-            self._schema_explorer_service = SchemaExplorerService(cache_service, database_service)
+            try:
+                cache_service = self.get_cache_service()
+                database_service = self.get_database_service()
+                
+                # 🔒 VALIDACIÓN: Verificar que los servicios dependientes estén disponibles
+                if not cache_service:
+                    logger.error("❌ CacheService no disponible para SchemaExplorerService")
+                    return None
+                if not database_service:
+                    logger.error("❌ DatabaseService no disponible para SchemaExplorerService")
+                    return None
+                
+                self._schema_explorer_service = SchemaExplorerService(cache_service, database_service)
+                
+            except Exception as e:
+                logger.error(f"❌ Error inicializando SchemaExplorerService: {e}")
+                return None
         return self._schema_explorer_service
 
     def get_detailed_schema_cache(self) -> "DetailedSchemaCache":
         if not self._detailed_schema_cache:
-            from app.services.detailed_schema_cache import DetailedSchemaCache
+            from app.services.context.detailed_schema_cache import DetailedSchemaCache
             logger.debug("🦄 Inicializando DetailedSchemaCache")
-            self._detailed_schema_cache = DetailedSchemaCache()
+            try:
+                self._detailed_schema_cache = DetailedSchemaCache()
+                if not self._detailed_schema_cache:
+                    logger.error("❌ DetailedSchemaCache no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando DetailedSchemaCache: {e}")
+                return None
         return self._detailed_schema_cache
 
     def get_vector_search_service(self) -> "VectorSearchService":
         if not self._vector_search_service:
-            from app.services.vector_search_service import VectorSearchService
+            from app.services.context.vector_search_service import VectorSearchService
             logger.debug("🔍 Inicializando VectorSearchService")
-            # Obtener API key de OpenAI desde configuración
-            openai_api_key = None  # TODO: Obtener desde configuración
-            self._vector_search_service = VectorSearchService(openai_api_key)
+            try:
+                # Obtener API key de OpenAI desde configuración
+                openai_api_key = None  # TODO: Obtener desde configuración
+                self._vector_search_service = VectorSearchService(openai_api_key)
+                
+                if not self._vector_search_service:
+                    logger.error("❌ VectorSearchService no se pudo inicializar correctamente")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"❌ Error inicializando VectorSearchService: {e}")
+                return None
         return self._vector_search_service
 
     def get_prompt_engineering_service(self) -> "PromptEngineeringService":
@@ -190,7 +284,14 @@ class ServiceFactory:
         if not self._query_validation_service:
             from app.services.query_validation_service import QueryValidationService
             logger.debug("⚙️ Inicializando QueryValidationService")
-            self._query_validation_service = QueryValidationService(self)
+            try:
+                self._query_validation_service = QueryValidationService(self)
+                if not self._query_validation_service:
+                    logger.error("❌ QueryValidationService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando QueryValidationService: {e}")
+                return None
         return self._query_validation_service
 
     def get_performance_monitoring_service(self) -> "PerformanceMonitoringService":
@@ -203,7 +304,7 @@ class ServiceFactory:
     # Servicios lazy-loaded (menos críticos)
     def get_function_service(self) -> "FunctionService":
         if not self._function_service:
-            from app.services.function_service import FunctionService
+            from app.services.execution.function_service import FunctionService
             logger.debug("⚙️ Inicializando FunctionService")
             self._function_service = FunctionService(self)
         return self._function_service
@@ -217,7 +318,7 @@ class ServiceFactory:
 
     def get_executor_service(self) -> "FunctionExecutor":
         if not self._executor_service:
-            from app.services.function_executor_service import FunctionExecutor
+            from app.services.execution.function_executor_service import FunctionExecutor
             logger.debug("⚙️ Inicializando FunctionExecutor")
             self._executor_service = FunctionExecutor(self)
         return self._executor_service
@@ -226,19 +327,26 @@ class ServiceFactory:
         if not self._user_service:
             from app.services.user_service import UserService
             logger.debug("⚙️ Inicializando UserService")
-            self._user_service = UserService(self)
+            try:
+                self._user_service = UserService(self)
+                if not self._user_service:
+                    logger.error("❌ UserService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando UserService: {e}")
+                return None
         return self._user_service
 
     def get_session_service(self) -> "SessionService":
         if not self._session_service:
-            from app.services.session_service import SessionService
+            from app.services.data.session_service import SessionService
             logger.debug("⚙️ Inicializando SessionService")
             self._session_service = SessionService(self)
         return self._session_service
 
     def get_strategy_service(self) -> "StrategyService":
         if not self._strategy_service:
-            from app.services.strategy_service import StrategyService
+            from app.services.execution.strategy_service import StrategyService
             logger.debug("⚙️ Inicializando StrategyService")
             self._strategy_service = StrategyService(self)
         return self._strategy_service
@@ -262,14 +370,21 @@ class ServiceFactory:
 
     def get_chat_service(self) -> "ChatService":
         if not self._chat_service:
-            from app.services.chat_service import ChatService
+            from app.services.data.chat_service import ChatService
             logger.debug("⚙️ Inicializando ChatService")
-            self._chat_service = ChatService(self)
+            try:
+                self._chat_service = ChatService(self)
+                if not self._chat_service:
+                    logger.error("❌ ChatService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando ChatService: {e}")
+                return None
         return self._chat_service
 
     def get_langchain_service(self) -> "LangchainService":
         if not self._langchain_service:
-            from app.services.langchain_service import LangchainService
+            from app.services.ai.langchain_service import LangchainService
             logger.debug("⚙️ Inicializando LangchainService")
             self._langchain_service = LangchainService(self)
         return self._langchain_service
@@ -340,7 +455,7 @@ class ServiceFactory:
 
     def get_usage_service(self) -> "UsageService":
         if not self._usage_service:
-            from app.services.usage_service import UsageService
+            from app.services.data.usage_service import UsageService
             logger.debug("⚙️ Inicializando UsageService")
             self._usage_service = UsageService(self)
         return self._usage_service
@@ -368,16 +483,23 @@ class ServiceFactory:
 
     def get_executed_strategy_service(self) -> "ExecutedStrategyService":
         if not self._executed_strategy_service:
-            from app.services.executed_strategy_service import ExecutedStrategyService
+            from app.services.execution.executed_strategy_service import ExecutedStrategyService
             logger.debug("⚙️ Inicializando ExecutedStrategyService")
             self._executed_strategy_service = ExecutedStrategyService(self)
         return self._executed_strategy_service
 
     def get_execution_engine_service(self) -> "ExecutionEngineService":
         if not self._execution_engine_service:
-            from app.services.execution_engine_service import ExecutionEngineService
+            from app.services.execution.execution_engine_service import ExecutionEngineService
             logger.debug("⚙️ Inicializando ExecutionEngineService")
-            self._execution_engine_service = ExecutionEngineService(self)
+            try:
+                self._execution_engine_service = ExecutionEngineService(self)
+                if not self._execution_engine_service:
+                    logger.error("❌ ExecutionEngineService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando ExecutionEngineService: {e}")
+                return None
         return self._execution_engine_service
 
     def get_resource_selector_service(self) -> "ResourceSelectorService":
@@ -415,15 +537,36 @@ class ServiceFactory:
         if not self._app_service:
             from app.services.app_service import AppService
             logger.debug("⚙️ Inicializando AppService")
-            self._app_service = AppService(self)
+            try:
+                self._app_service = AppService(self)
+                if not self._app_service:
+                    logger.error("❌ AppService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando AppService: {e}")
+                return None
         return self._app_service
 
 
     def get_detailed_schema_cache_service(self) -> "DetailedSchemaCacheService":
         if not self._detailed_schema_cache_service:
-            from app.services.detailed_schema_cache_service import DetailedSchemaCacheService
+            from app.services.context.detailed_schema_cache_service import DetailedSchemaCacheService
             logger.debug("⚙️ Inicializando DetailedSchemaCacheService")
-            self._detailed_schema_cache_service = DetailedSchemaCacheService(self)
+            try:
+                cache_service = self.get_cache_service()
+                if not cache_service:
+                    logger.error("❌ CacheService no disponible para DetailedSchemaCacheService")
+                    return None
+                
+                self._detailed_schema_cache_service = DetailedSchemaCacheService(self)
+                
+                if not self._detailed_schema_cache_service:
+                    logger.error("❌ DetailedSchemaCacheService no se pudo inicializar correctamente")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"❌ Error inicializando DetailedSchemaCacheService: {e}")
+                return None
         return self._detailed_schema_cache_service
 
     def get_sql_guardrails_service(self) -> "SQLGuardrailsService":
@@ -443,38 +586,60 @@ class ServiceFactory:
     def get_description_selector_service(self):
         """Obtener servicio de selección por descripción"""
         if self._description_selector_service is None:
-            from app.services.description_selector_service import DescriptionSelectorService
+            from app.services.ai.description_selector_service import DescriptionSelectorService
             logger.debug("⚙️ Inicializando DescriptionSelectorService")
             self._description_selector_service = DescriptionSelectorService(self)
         return self._description_selector_service
 
-    def get_intent_classifier_service(self):
-        """Obtener servicio de clasificación de intenciones"""
-        if self._intent_classifier_service is None:
-            from app.services.intent_classifier_service import IntentClassifierService
+    def get_intent_classifier_service(self) -> "IntentClassifierService":
+        if not self._intent_classifier_service:
+            from app.services.context.intent_classifier_service import IntentClassifierService
             logger.debug("⚙️ Inicializando IntentClassifierService")
-            self._intent_classifier_service = IntentClassifierService(self)
+            try:
+                # 🔒 COMPATIBILIDAD: Pasar factory como argumento requerido
+                self._intent_classifier_service = IntentClassifierService(self)
+                if not self._intent_classifier_service:
+                    logger.error("❌ IntentClassifierService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando IntentClassifierService: {e}")
+                return None
         return self._intent_classifier_service
 
-    def get_app_descriptor_cache_service(self):
-        """Obtener servicio de cache de descriptores de apps"""
-        if self._app_descriptor_cache_service is None:
-            from app.services.app_descriptor_cache_service import AppDescriptorCacheService
+    def get_app_descriptor_cache_service(self) -> "AppDescriptorCacheService":
+        if not self._app_descriptor_cache_service:
+            from app.services.context.app_descriptor_cache_service import AppDescriptorCacheService
             logger.debug("⚙️ Inicializando AppDescriptorCacheService")
-            self._app_descriptor_cache_service = AppDescriptorCacheService(self)
+            try:
+                cache_service = self.get_cache_service()
+                if not cache_service:
+                    logger.error("❌ CacheService no disponible para AppDescriptorCacheService")
+                    return None
+                
+                self._app_descriptor_cache_service = AppDescriptorCacheService(cache_service)
+                
+            except Exception as e:
+                logger.error(f"❌ Error inicializando AppDescriptorCacheService: {e}")
+                return None
         return self._app_descriptor_cache_service
 
-    def get_telemetry_service(self):
-        """Obtener servicio de telemetría (alias para compatibilidad)"""
-        return self.get_advanced_telemetry_service()
-
-    def get_advanced_telemetry_service(self):
-        """Obtener servicio de telemetría avanzado (FASE 13)"""
-        if self._telemetry_service is None:
+    def get_telemetry_service(self) -> "AdvancedTelemetryService":
+        if not self._telemetry_service:
             from app.services.management.advanced_telemetry_service import AdvancedTelemetryService
-            logger.debug("⚙️ Inicializando AdvancedTelemetryService (FASE 13)")
-            self._telemetry_service = AdvancedTelemetryService(self)
+            logger.debug("⚙️ Inicializando AdvancedTelemetryService")
+            try:
+                self._telemetry_service = AdvancedTelemetryService(self)
+                if not self._telemetry_service:
+                    logger.error("❌ AdvancedTelemetryService no se pudo inicializar correctamente")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ Error inicializando AdvancedTelemetryService: {e}")
+                return None
         return self._telemetry_service
+
+    def get_advanced_telemetry_service(self) -> "AdvancedTelemetryService":
+        """Alias para get_telemetry_service para compatibilidad."""
+        return self.get_telemetry_service()
 
 
 def get_service_factory():

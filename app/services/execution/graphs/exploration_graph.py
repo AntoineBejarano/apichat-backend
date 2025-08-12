@@ -112,51 +112,28 @@ class ExplorationGraph:
                     # Obtener cache existente
                     cache_entry = cache_service.get_schema_cache(self.factory.user.id, db_id_uuid)
                     
-                    if cache_entry and cache_entry.compact and cache_entry.compact.strip():
-                        # Cache hit - usar existente
-                        logger.info(f"[ExplorationGraph] ✅ Cache hit para DB {db_id_str[:8]}")
-                        cache_status[db_id_str] = "cache_hit"
-                    else:
-                        # Cache miss - crear nuevo
-                        # Crear cache si no existe - usar introspección directa
-                        logger.info(f"[ExplorationGraph] 🆕 Creando cache para DB {db_id_str[:8]}...")
-                        try:
-                            # Introspección directa sin dependencias externas
-                            introspected_schema = self._introspect_database_schema(db_id_uuid)
-                            
-                            if introspected_schema and introspected_schema.get('tables'):
-                                # Crear snapshot desde introspección
-                                from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
-                                snapshot = SchemaSnapshot(
-                                    tables=introspected_schema['tables'],
-                                    enrichment_level=EnrichmentLevel.BASIC,
-                                    dialect=introspected_schema.get('dialect', 'postgresql'),
-                                    generated_at=datetime.now(timezone.utc)
-                                )
-                                
-                                # Crear cache
-                                cache_entry = cache_service.create_or_update_cache(
-                                    user_id=self.factory.user.id,
-                                    db_id=db_id_uuid,
-                                    snapshot=snapshot,
-                                    enrichment_level=EnrichmentLevel.BASIC
-                                )
+                    # Verificar que tengamos esquemas compactos válidos
+                    if cache_entry and cache_entry.compact:
+                        # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                        if isinstance(cache_entry.compact, str) and cache_entry.compact.strip():
+                            compact_schema = cache_entry.compact
+                            logger.info(f"[ExplorationGraph] ✅ Esquema compacto válido para DB {db_id_str}")
+                        elif isinstance(cache_entry.compact, dict) and cache_entry.compact.get("compact"):
+                            # Si es un dict, extraer el campo compact
+                            compact_schema = cache_entry.compact.get("compact")
+                            if isinstance(compact_schema, str) and compact_schema.strip():
+                                logger.info(f"[ExplorationGraph] ✅ Esquema compacto válido para DB {db_id_str} (desde dict)")
                             else:
-                                cache_entry = None
-                        except Exception as ce:
-                            logger.exception(f"[ExplorationGraph] ❌ Error creando cache para DB {db_id_str[:8]}: {ce}")
-                            cache_entry = None
-                        
-                        # Marcar cache status apropiado
-                        if cache_entry and cache_entry.compact and cache_entry.compact.strip():
-                            cache_status[db_id_str] = "cache_miss_created"
+                                compact_schema = None
                         else:
-                            cache_status[db_id_str] = "cache_miss_failed"
+                            compact_schema = None
+                    else:
+                        compact_schema = None
                     
-                    if cache_entry and cache_entry.compact and cache_entry.compact.strip():
+                    if compact_schema:
                         # Schema válido - incluir esta DB
                         db_ids.append(db_id_str)
-                        compact_schemas[db_id_str] = cache_entry.compact
+                        compact_schemas[db_id_str] = compact_schema
                         # cache_status ya está marcado arriba
                         
                         # d) Cargar instancia SQL (no registro ORM)
@@ -183,8 +160,8 @@ class ExplorationGraph:
                         except Exception as ce:
                             logger.warning(f"[ExplorationGraph] ⚠️ Error cargando instancia SQL DB {db_id_str[:8]}: {ce}")
                         
-                        logger.info(f"[ExplorationGraph] ✅ DB {db_id_str[:8]} ready (schema: {len(cache_entry.compact)} chars)")
-                    # Si llegamos aquí sin cache_entry válido, ya está marcado en cache_status
+                        logger.info(f"[ExplorationGraph] ✅ DB {db_id_str[:8]} ready (schema: {len(compact_schema)} chars)")
+                    # Si llegamos aquí sin compact_schema válido, ya está marcado en cache_status
                         
                 except Exception as e:
                     logger.exception(f"[ExplorationGraph] ❌ Error procesando DB {db_id_str[:8]}: {e}")
@@ -365,10 +342,19 @@ class ExplorationGraph:
                     # Combinar todos los schemas compactos
                     schema_parts = []
                     for db_id, compact_schema in compact_schemas.items():
-                        if compact_schema and compact_schema.strip():
-                            schema_parts.append(f"-- DATABASE {db_id} --")
-                            schema_parts.append(compact_schema)
-                            schema_parts.append("")
+                        # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                        if compact_schema:
+                            if isinstance(compact_schema, str) and compact_schema.strip():
+                                schema_parts.append(f"-- DATABASE {db_id} --")
+                                schema_parts.append(compact_schema)
+                                schema_parts.append("")
+                            elif isinstance(compact_schema, dict) and compact_schema.get("compact"):
+                                # Si es un dict, extraer el campo compact
+                                compact_value = compact_schema.get("compact")
+                                if isinstance(compact_value, str) and compact_value.strip():
+                                    schema_parts.append(f"-- DATABASE {db_id} --")
+                                    schema_parts.append(compact_value)
+                                    schema_parts.append("")
                     
                     if schema_parts:
                         db_schema = "\n".join(schema_parts)

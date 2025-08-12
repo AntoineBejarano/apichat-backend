@@ -210,25 +210,25 @@
 
 ---
 
-## Fase 14 — Tests mínimos (unit + e2e ligeros)
+## ✅ Fase 14 — Tests mínimos (unit + e2e ligeros) - COMPLETADA
 **Objetivo**: No romper UX.
 **Cambios**:
-- Unit: ResourceSelector, fast_lookup, guardrails, formatters.
-- E2E simulado: Guided con confirmación; Explorer → propuesta → Guided.
+- ✅ Unit: ResourceSelector, fast_lookup, guardrails, formatters.
+- ✅ E2E simulado: Guided con confirmación; Explorer → propuesta → Guided.
 **Archivos**: `tests/test_resource_selector.py`, `tests/test_schema_fastpath.py`, `tests/test_guardrails.py`, `tests/test_flow_e2e.py`.
 **Prompt Cursor**: “Crea tests mínimos de las piezas nuevas.”
-**Hecho cuando**: pasan los tests y se cubren rutas felices y errores.
+**Hecho cuando**: ✅ pasan los tests y se cubren rutas felices y errores.
 
 ---
 
-## Fase 15 — Hardening (timeouts, reintentos, undo)
+## ✅ Fase 15 — Hardening (timeouts, reintentos, undo) - COMPLETADA
 **Objetivo**: Robustez.
 **Cambios**:
-- Timeouts configurables para LLM y DB; reintentos con backoff.
-- Si función soporta rollback, añade `next_actions: [undo]`.
-**Archivos**: `services/execution_engine_service.py`, `function_executor_service.py`.
+- ✅ Timeouts configurables para LLM y DB; reintentos con backoff.
+- ✅ Si función soporta rollback, añade `next_actions: [undo]`.
+**Archivos**: `services/execution_engine_service.py`, `function_executor_service.py`, `retry_service.py`, `undo_service.py`.
 **Prompt Cursor**: “Añade timeouts, reintentos y undo cuando esté disponible.”
-**Hecho cuando**: fallos transitorios se recuperan y aparece opción undo.
+**Hecho cuando**: ✅ fallos transitorios se recuperan y aparece opción undo.
 
 ---
 
@@ -243,6 +243,7 @@
 **Hecho cuando**: dashboards/alertas básicos corren.
 
 ---
+Nice to have:
 ---
 
 ## 🔹 Fase 17 — Multi-tenant y seguridad avanzada

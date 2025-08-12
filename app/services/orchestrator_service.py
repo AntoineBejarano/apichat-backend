@@ -97,7 +97,16 @@ class OrchestratorService:
         
         # 🔒 CONTROL DE TOKENS - Inicializar módulos especializados
         self.token_budget = TokenBudgetManager()
-        self.context_loader = ContextLoader(factory)
+        
+        # 🔒 VALIDACIÓN: Crear ContextLoader con manejo de errores
+        try:
+            self.context_loader = ContextLoader(factory)
+            logger.info("[OrchestratorService] ✅ ContextLoader inicializado correctamente")
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error inicializando ContextLoader: {e}")
+            # Crear un ContextLoader por defecto o continuar sin él
+            self.context_loader = None
+        
         self.response_processor = ResponseProcessor()
         self.context_optimizer = ContextOptimizer()
         self.graph_runner = GraphRunner(factory)
@@ -305,7 +314,29 @@ class OrchestratorService:
             )
         
         # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo usando ContextLoader
-        context_tasks = await self.context_loader.load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
+        # 🔒 VALIDACIÓN: Verificar que context_loader esté disponible
+        if not self.context_loader:
+            logger.error("[OrchestratorService] ❌ ContextLoader no disponible - usando contexto mínimo")
+            return await self._handle_message_with_minimal_context(
+                chat_id, db_ids, app_ids, explorer, agent_id, message
+            )
+        
+        try:
+            context_tasks = await self.context_loader.load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
+            
+            # 🔒 VALIDACIÓN: Verificar que el contexto se cargó correctamente
+            if "error" in context_tasks:
+                logger.error(f"[OrchestratorService] ❌ Error cargando contexto: {context_tasks['error']}")
+                return await self._handle_message_with_minimal_context(
+                    chat_id, db_ids, app_ids, explorer, agent_id, message
+                )
+                
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error en ContextLoader: {e}")
+            # Usar contexto mínimo si falla el ContextLoader
+            return await self._handle_message_with_minimal_context(
+                chat_id, db_ids, app_ids, explorer, agent_id, message
+            )
         
         # Actualizar el contexto con el parámetro explorer
         context_tasks["explorer"] = explorer
@@ -1383,164 +1414,71 @@ class OrchestratorService:
         app_ids: Optional[List[UUID]],
         explorer: bool,
         agent_id: Optional[UUID],
-        message: ChatMessage,
+        message: ChatMessage
     ) -> Dict[str, Any]:
-        """Maneja el mensaje con contexto mínimo cuando el token bucket está limitado"""
-        logger.info("[OrchestratorService] 🔒 Usando contexto mínimo por limitación de token bucket")
+        """
+        Maneja mensajes con contexto mínimo cuando falla el ContextLoader.
         
+        Args:
+            chat_id: ID del chat
+            db_ids: IDs de bases de datos
+            app_ids: IDs de aplicaciones
+            explorer: Si está en modo explorador
+            agent_id: ID del agente
+            message: Mensaje del usuario
+            
+        Returns:
+            Respuesta básica con contexto mínimo
+        """
         try:
-            # Cargar solo contexto esencial
-            minimal_context = await self._load_minimal_context(chat_id, message, db_ids, app_ids, explorer)
+            logger.info("[OrchestratorService] 🔒 Usando contexto mínimo debido a fallo en ContextLoader")
             
-            # Ejecutar con contexto mínimo
-            graph_runner = self._select_graph_runner(explorer)
-            execution_results = await graph_runner.run(minimal_context)
-            
-            # Normalizar resultados
-            execution_results = self._normalize_graph_output(execution_results)
-            
-            # Extraer respuesta
-            assistant_response = self._extract_assistant_response(execution_results)
-            
-            # Guardar mensaje del asistente
-            await self._save_assistant_message_async(
-                chat_id=chat_id,
-                content=assistant_response,
-                token_count=None,
-                executed_strategy_id=None,
-            )
-            
-            return {
-                "assistant_response": assistant_response,
-                "execution_results": execution_results,
-                "steps": execution_results.get("steps", []),
+            # Crear contexto mínimo
+            minimal_context = {
+                "chat_history": [],
+                "database_schemas": {},
+                "compact_schemas": {},
+                "app_descriptors": [],
+                "functions": [],
+                "mcp_tools": {},
+                "explorer": explorer,
+                "error": "context_loader_failed"
             }
             
-        except Exception as e:
-            logger.exception("[OrchestratorService] ❌ Error con contexto mínimo: %s", e)
-            
-            # 🎯 FASE 11: Manejo de errores con remediación automática
+            # Intentar ejecutar con contexto mínimo
             try:
-                error_handler = self.factory.get_error_handler_service()
-                user_facing_error = await error_handler.handle_error(
-                    chat_id=str(chat_id),
-                    error=e,
-                    context={
-                        "operation": "minimal_context",
-                        "explorer": explorer,
-                        "db_ids": db_ids,
-                        "app_ids": app_ids
-                    },
-                    user_id=str(self.user_id)
+                execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, minimal_context)
+                execution_results = self.graph_runner.normalize_graph_output(execution_results)
+                
+                # Procesar respuesta
+                processed_response = await self.response_processor.process_response(
+                    execution_results, minimal_context, message.content
                 )
                 
                 return {
-                    "assistant_response": f"❌ {user_facing_error.human_message}",
-                    "error": user_facing_error.code,
-                    "suggested_actions": [
-                        {
-                            "label": action.label,
-                            "action": action.action,
-                            "description": action.description
-                        }
-                        for action in user_facing_error.suggested_actions[:3]
-                    ],
-                    "error_severity": user_facing_error.severity.value
+                    "assistant_response": processed_response.get("response", "Lo siento, estoy experimentando problemas técnicos. Por favor, intenta nuevamente."),
+                    "context_used": "minimal",
+                    "warning": "Se usó contexto mínimo debido a problemas técnicos"
                 }
                 
-            except Exception as error_handler_error:
-                logger.error(f"[OrchestratorService] ❌ Error en ErrorHandlerService: {error_handler_error}")
-                # Fallback a respuesta básica
-                return {
-                    "assistant_response": "Estoy reduciendo contexto para cumplir límites. Por favor, reformula tu consulta de manera más específica.",
-                    "error": str(e)
-                }
-
-    async def _load_minimal_context(
-        self, 
-        chat_id: UUID, 
-        message: ChatMessage, 
-        db_ids: Optional[List[UUID]], 
-        app_ids: Optional[List[UUID]], 
-        explorer: bool
-    ) -> Dict[str, Any]:
-        """Carga contexto mínimo para evitar exceder límites de tokens"""
-        logger.info("[OrchestratorService] 🔒 Cargando contexto mínimo")
-        
-        # Solo cargar historial mínimo
-        history = await self._load_history_async(chat_id)
-        if len(history) > 3:  # Solo últimos 3 turnos
-            history = history[-3:]
-        
-        # Cargar solo esquemas básicos si hay DBs
-        compact_schemas = {}
-        if db_ids:
-            for db_id in db_ids[:1]:  # Solo primera DB
-                try:
-                    cache_service = self.factory.get_detailed_schema_cache_service()
-                    cache_entry = cache_service.get_schema_cache(self.user.id, db_id)
-                    if cache_entry and cache_entry.compact:
-                        # Truncar schema a caracteres mínimos
-                        schema_text = cache_entry.compact[:1500]  # Muy limitado
-                        compact_schemas[db_id] = {"compact": schema_text}
-                except Exception as e:
-                    logger.warning(f"[OrchestratorService] ⚠️ Error cargando schema mínimo para DB {db_id}: {e}")
-        
-        # Cargar solo funciones básicas
-        functions = []
-        if app_ids:
-            try:
-                function_service = self.factory.get_function_service()
-                for app_id in app_ids[:1]:  # Solo primera app
-                    app_functions = function_service.get_by_app(app_id)
-                    if app_functions:
-                        functions.extend(app_functions[:2])  # Solo 2 funciones
             except Exception as e:
-                logger.warning(f"[OrchestratorService] ⚠️ Error cargando funciones mínimas: {e}")
-        
-        return {
-            "history": history,
-            "compact_schemas": compact_schemas,
-            "functions": functions,
-            "explorer": explorer,
-            "minimal_context": True  # Flag para indicar contexto mínimo
-        }
-
-    def _estimate_tokens_for_context(self, context: Dict[str, Any]) -> int:
-        """Estima el número de tokens para un contexto dado usando los managers especializados"""
-        try:
-            total_chars = 0
-            
-            # 1. Historial usando ChatHistoryManager
-            if "history" in context:
-                history = context["history"]
-                total_chars += self.chat_history_manager.estimate_history_tokens(history)
-            
-            # 2. Esquemas de base de datos
-            if "compact_schemas" in context:
-                for db_id, schema_data in context["compact_schemas"].items():
-                    if isinstance(schema_data, dict) and "compact" in schema_data:
-                        total_chars += len(schema_data["compact"])
-            
-            # 3. Descriptores de apps
-            if "app_descriptors_compact" in context and context["app_descriptors_compact"]:
-                total_chars += len(context["app_descriptors_compact"])
-            
-            # 4. Funciones y apps usando AppFunctionManager
-            if "functions" in context or "apps" in context or "mcp_tools" in context:
-                apps = context.get("apps", [])
-                functions = context.get("functions", [])
-                mcp_tools = context.get("mcp_tools", {})
-                total_chars += self.app_function_manager.estimate_app_function_tokens(apps, functions, mcp_tools)
-            
-            # Estimación aproximada: 1 token ≈ 4 caracteres
-            estimated_tokens = total_chars // 4
-            logger.debug(f"[OrchestratorService] 🔍 Tokens estimados para contexto: {estimated_tokens}")
-            return estimated_tokens
-            
+                logger.error(f"[OrchestratorService] ❌ Error ejecutando con contexto mínimo: {e}")
+                
+                # Respuesta de emergencia
+                return {
+                    "assistant_response": "Lo siento, estoy experimentando problemas técnicos temporales. Por favor, intenta nuevamente en unos momentos o contacta soporte si el problema persiste.",
+                    "error": "execution_failed",
+                    "context_used": "minimal",
+                    "technical_details": str(e)
+                }
+                
         except Exception as e:
-            logger.warning(f"[OrchestratorService] ⚠️ Error estimando tokens del contexto: {e}")
-            return 0
+            logger.error(f"[OrchestratorService] ❌ Error en manejo de contexto mínimo: {e}")
+            return {
+                "assistant_response": "Error interno del sistema. Por favor, contacta soporte.",
+                "error": "internal_error",
+                "technical_details": str(e)
+            }
 
     # ===================================================
     #  HELPERS (mantienen la funcionalidad original)

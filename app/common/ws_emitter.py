@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Union
 from fastapi import WebSocket
 from pydantic import BaseModel
 from uuid import UUID
+from datetime import datetime
 
 from .events import (
     BaseWsEvent, StatusTypingEvent, StatusProgressEvent, DecisionRequestEvent,
@@ -43,7 +44,10 @@ class WebSocketEmitter:
             if self.session_id:
                 event.session_id = self.session_id
             
+            # Convertir datetime a string antes de serializar
             event_data = event.model_dump()
+            event_data = self._convert_datetime_to_iso(event_data)
+            
             await self.websocket.send_json(event_data)
             logger.debug(f"✅ Evento WS emitido: {event.type}")
             return True
@@ -51,6 +55,19 @@ class WebSocketEmitter:
         except Exception as e:
             logger.error(f"❌ Error emitiendo evento WS {event.type}: {str(e)}")
             return False
+    
+    def _convert_datetime_to_iso(self, data: Any) -> Any:
+        """
+        Convierte recursivamente todos los objetos datetime a string ISO.
+        """
+        if isinstance(data, dict):
+            return {key: self._convert_datetime_to_iso(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._convert_datetime_to_iso(item) for item in data]
+        elif hasattr(data, 'isoformat'):  # datetime objects
+            return data.isoformat()
+        else:
+            return data
     
     async def emit_status_typing(self, is_typing: bool = True) -> bool:
         """Emite evento de estado de escritura."""

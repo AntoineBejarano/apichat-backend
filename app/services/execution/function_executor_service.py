@@ -11,6 +11,8 @@ from app.models.strategy_model import Strategy
 from app.services.data.usage_service import UsageService
 from app.models.function_call_log_model import FunctionCallLog
 from app.utils.token_counter import count_tokens  # ✅ define o importa esta función
+from app.services.execution.retry_service import retry_service
+from app.core.config import settings
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -90,14 +92,24 @@ class FunctionExecutor:
                     logger.warning("[FunctionExecutor] ⚠️ Proxy ID %s no válido para función %s", fn.proxy_id, fn.name)
 
             logger.info("[FunctionExecutor] 🌍 Haciendo request %s a %s", fn.method or "POST", url)
-            response = requests.request(
-                method=fn.method or "POST",
-                url=url,
-                headers=headers,
-                json=body,
-                proxies=proxies,
-                timeout=20
+            
+            # Usar timeout configurable y reintentos
+            @retry_service.retry_with_backoff(
+                max_retries=2,
+                timeout=settings.HTTP_REQUEST_TIMEOUT_SECONDS,
+                exceptions=(requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.RequestException)
             )
+            def make_request():
+                return requests.request(
+                    method=fn.method or "POST",
+                    url=url,
+                    headers=headers,
+                    json=body,
+                    proxies=proxies,
+                    timeout=settings.HTTP_REQUEST_TIMEOUT_SECONDS
+                )
+            
+            response = make_request()
 
             logger.info("[FunctionExecutor] ✅ Respuesta HTTP status=%s", response.status_code)
             response.raise_for_status()

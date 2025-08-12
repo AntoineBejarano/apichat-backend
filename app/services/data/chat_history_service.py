@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.chat_history_model import ChatHistory
 from app.schemas.chat_history_schema import ChatHistoryCreate
+from app.schemas.chat_schema import ChatMessage
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -206,6 +207,35 @@ class ChatHistoryService:
     # ─────────────────────────────────────────────
     def get_chat_history(self, chat_id: UUID) -> List[ChatHistory]:
         return self.get_history(chat_id)
+
+    def store_user_message(self, chat_id: UUID, message: ChatMessage) -> bool:
+        """
+        Almacena un mensaje del usuario.
+        Wrapper para compatibilidad con ContextLoader.
+        """
+        try:
+            from app.schemas.chat_history_schema import ChatHistoryCreate
+            
+            # Crear objeto ChatHistoryCreate
+            history_data = ChatHistoryCreate(
+                chat_id=chat_id,
+                role=message.role,
+                content=message.content,
+                name=getattr(message, 'name', None),
+                token_count=getattr(message, 'token_count', None),
+                is_function_call=getattr(message, 'is_function_call', False),
+                function_call_id=getattr(message, 'function_call_id', None),
+                executed_strategy_id=getattr(message, 'executed_strategy_id', None)
+            )
+            
+            # Usar el método existente create_message
+            self.create_message(history_data)
+            logger.debug(f"[ChatHistoryService] Mensaje del usuario almacenado para chat {chat_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[ChatHistoryService] Error almacenando mensaje del usuario: {e}")
+            return False
 
     # ─────────────────────────────────────────────
     #   Borrar historial de un chat

@@ -65,6 +65,31 @@ class AppDescriptorCacheService(BaseService):
         
         logger.info(f"[AppDescriptorCache] 📱 Descriptores generados: {len(descriptors)} apps, {total_chars} chars total")
         return descriptors
+
+    def get_app_descriptor(self, app_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el descriptor de una aplicación específica.
+        Método para compatibilidad con ContextLoader.
+        
+        Args:
+            app_id: ID de la aplicación
+            
+        Returns:
+            Descriptor de la aplicación o None si no se puede obtener
+        """
+        try:
+            descriptor = self._get_or_create_descriptor(app_id)
+            if descriptor:
+                return {
+                    "app_id": str(app_id),
+                    "descriptor": descriptor.get("compact", ""),
+                    "fingerprint": descriptor.get("fingerprint", ""),
+                    "generated_at": descriptor.get("generated_at")
+                }
+            return None
+        except Exception as e:
+            logger.error(f"[AppDescriptorCache] ❌ Error obteniendo descriptor para app {app_id}: {e}")
+            return None
     
     def _get_or_create_descriptor(self, app_id: UUID) -> Optional[Dict[str, Any]]:
         """Obtiene descriptor del cache o lo genera si no existe/está desactualizado"""

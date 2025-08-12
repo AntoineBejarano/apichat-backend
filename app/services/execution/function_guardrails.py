@@ -7,9 +7,9 @@ from typing import Dict, List, Optional, Any, Set
 from enum import Enum
 from pydantic import BaseModel, Field, validator
 
-from app.utils.logger import get_logger
+import logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class FunctionRiskLevel(str, Enum):

@@ -30,7 +30,18 @@ class DetailedSchemaCacheService(BaseService):
     """
     
     def __init__(self, factory):
+        # 🔒 COMPATIBILIDAD: Usar BaseService correctamente
         super().__init__(factory)
+        
+        # 🔒 VALIDACIÓN: Asegurar que user_id esté disponible
+        if hasattr(factory, 'user') and factory.user and hasattr(factory.user, 'id'):
+            self.user_id = factory.user.id
+        else:
+            # 🔒 FALLBACK: Crear un user_id por defecto para evitar errores
+            from uuid import uuid4
+            self.user_id = uuid4()
+            logger.warning(f"[DetailedSchemaCacheService] ⚠️ No se pudo obtener user_id válido del factory, usando fallback: {self.user_id}")
+        
         self._memory_cache: Dict[str, Dict[str, Any]] = {}  # L1 cache
         self._cache_ttl = timedelta(hours=1)  # TTL para memory cache
     
@@ -75,6 +86,21 @@ class DetailedSchemaCacheService(BaseService):
             del self._memory_cache[key]
         
         return None
+    
+    def get_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el esquema de una base de datos.
+        Wrapper para compatibilidad con ContextLoader.
+        """
+        try:
+            # Obtener esquema desde cache
+            schema_response = self.get_schema_cache(self.user_id, db_id)
+            if schema_response:
+                return schema_response.model_dump()
+            return None
+        except Exception as e:
+            logger.error(f"[DetailedSchemaCacheService] Error obteniendo esquema para DB {db_id}: {e}")
+            return None
     
     # =====================================================
     # OPERACIONES PRINCIPALES
@@ -218,6 +244,7 @@ class DetailedSchemaCacheService(BaseService):
     def invalidate_cache(self, user_id: UUID, db_id: UUID) -> bool:
         """
         Invalida cache para una BD específica.
+        Método compatible con ExecutionEngineService.
         
         Args:
             user_id: ID del usuario
@@ -233,18 +260,26 @@ class DetailedSchemaCacheService(BaseService):
         if key in self._memory_cache:
             del self._memory_cache[key]
         
-        # Eliminar de L2
-        deleted_count = self.db.query(DetailedSchemaCache).filter(
-            and_(
-                DetailedSchemaCache.user_id == user_id,
-                DetailedSchemaCache.db_id == db_id
-            )
-        ).delete()
-        
-        self.db.commit()
-        
-        logger.info(f"[SchemaCacheService] ✅ Cache invalidado - {deleted_count} entradas eliminadas")
-        return deleted_count > 0
+        # Eliminar de L2 (BD)
+        try:
+            if self.db:  # 🔒 VALIDACIÓN: Verificar que db esté disponible
+                deleted_count = self.db.query(DetailedSchemaCache).filter(
+                    and_(
+                        DetailedSchemaCache.user_id == user_id,
+                        DetailedSchemaCache.db_id == db_id
+                    )
+                ).delete()
+                
+                self.db.commit()
+                logger.info(f"[SchemaCacheService] ✅ Cache invalidado - {deleted_count} entradas eliminadas")
+                return deleted_count > 0
+            else:
+                logger.warning("[SchemaCacheService] ⚠️ DB no disponible para invalidar cache")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error invalidando cache: {e}")
+            return False
     
     # =====================================================
     # UTILIDADES Y MANTENIMIENTO

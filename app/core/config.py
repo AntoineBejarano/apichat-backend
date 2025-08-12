@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     CONF_FAST: float = float(os.getenv("CONF_FAST", "0.7"))  # Umbral alto para respuesta sin LLM
     CONF_AMBIGUOUS: float = float(os.getenv("CONF_AMBIGUOUS", "0.4"))  # Umbral bajo para desambiguación
     FAST_PATH_RESPONSE_TIME_MS: int = int(os.getenv("FAST_PATH_RESPONSE_TIME_MS", "150"))  # Objetivo de respuesta
+    
+    # Fase 15 - Hardening: Timeouts y reintentos
+    LLM_TIMEOUT_SECONDS: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))  # Timeout para LLM
+    DB_QUERY_TIMEOUT_SECONDS: int = int(os.getenv("DB_QUERY_TIMEOUT_SECONDS", "30"))  # Timeout para queries DB
+    HTTP_REQUEST_TIMEOUT_SECONDS: int = int(os.getenv("HTTP_REQUEST_TIMEOUT_SECONDS", "30"))  # Timeout para HTTP
+    MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))  # Máximo número de reintentos
+    RETRY_BACKOFF_FACTOR: float = float(os.getenv("RETRY_BACKOFF_FACTOR", "2.0"))  # Factor de backoff exponencial
+    RETRY_DELAY_SECONDS: float = float(os.getenv("RETRY_DELAY_SECONDS", "1.0"))  # Delay inicial entre reintentos
 
     class Config:
         case_sensitive = True

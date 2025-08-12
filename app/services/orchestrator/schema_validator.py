@@ -40,9 +40,18 @@ class SchemaValidator:
             # Buscar tanto con UUID como con str
             schema_found = False
             for key in [db_id, db_key, str(db_id)]:
-                if key in compact_schemas and compact_schemas[key] and compact_schemas[key].strip():
-                    schema_found = True
-                    break
+                if key in compact_schemas and compact_schemas[key]:
+                    # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                    schema_value = compact_schemas[key]
+                    if isinstance(schema_value, str) and schema_value.strip():
+                        schema_found = True
+                        break
+                    elif isinstance(schema_value, dict) and schema_value.get("compact"):
+                        # Si es un dict, verificar el campo compact
+                        compact_value = schema_value.get("compact")
+                        if isinstance(compact_value, str) and compact_value.strip():
+                            schema_found = True
+                            break
             
             if not schema_found:
                 self.logger.warning(f"[SchemaValidator] ⚠️ No hay compact_schema válido para DB {db_id}")
@@ -77,9 +86,18 @@ class SchemaValidator:
             # Buscar tanto con UUID como con str
             schema_found = False
             for key in [db_id, db_key, str(db_id)]:
-                if key in compact_schemas and compact_schemas[key] and compact_schemas[key].strip():
-                    schema_found = True
-                    break
+                if key in compact_schemas and compact_schemas[key]:
+                    # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                    schema_value = compact_schemas[key]
+                    if isinstance(schema_value, str) and schema_value.strip():
+                        schema_found = True
+                        break
+                    elif isinstance(schema_value, dict) and schema_value.get("compact"):
+                        # Si es un dict, verificar el campo compact
+                        compact_value = schema_value.get("compact")
+                        if isinstance(compact_value, str) and compact_value.strip():
+                            schema_found = True
+                            break
             
             if not schema_found:
                 self.logger.warning(f"[SchemaValidator] ⚠️ No hay compact_schema válido para DB {db_id} en iteración {iteration}")

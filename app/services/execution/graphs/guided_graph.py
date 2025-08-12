@@ -317,10 +317,19 @@ class GuidedGraph:
                     if compact_schemas:
                         schema_parts = []
                         for db_id, compact_schema in compact_schemas.items():
-                            if compact_schema and compact_schema.strip():
-                                schema_parts.append(f"-- DATABASE {db_id} --")
-                                schema_parts.append(compact_schema)
-                                schema_parts.append("")
+                            # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                            if compact_schema:
+                                if isinstance(compact_schema, str) and compact_schema.strip():
+                                    schema_parts.append(f"-- DATABASE {db_id} --")
+                                    schema_parts.append(compact_schema)
+                                    schema_parts.append("")
+                                elif isinstance(compact_schema, dict) and compact_schema.get("compact"):
+                                    # Si es un dict, extraer el campo compact
+                                    compact_value = compact_schema.get("compact")
+                                    if isinstance(compact_value, str) and compact_value.strip():
+                                        schema_parts.append(f"-- DATABASE {db_id} --")
+                                        schema_parts.append(compact_value)
+                                        schema_parts.append("")
                         
                         if schema_parts:
                             db_schema = "\n".join(schema_parts)
@@ -337,10 +346,19 @@ class GuidedGraph:
                     if app_descriptors:
                         app_parts = []
                         for app_id, descriptor in app_descriptors.items():
-                            if descriptor and descriptor.strip():
-                                app_parts.append(f"-- APP {app_id} --")
-                                app_parts.append(descriptor)
-                                app_parts.append("")
+                            # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
+                            if descriptor:
+                                if isinstance(descriptor, str) and descriptor.strip():
+                                    app_parts.append(f"-- APP {app_id} --")
+                                    app_parts.append(descriptor)
+                                    app_parts.append("")
+                                elif isinstance(descriptor, dict) and descriptor.get("descriptor"):
+                                    # Si es un dict, extraer el campo descriptor
+                                    desc_value = descriptor.get("descriptor")
+                                    if isinstance(desc_value, str) and desc_value.strip():
+                                        app_parts.append(f"-- APP {app_id} --")
+                                        app_parts.append(desc_value)
+                                        app_parts.append("")
                         
                         if app_parts:
                             app_descriptors_compact = "\n".join(app_parts)

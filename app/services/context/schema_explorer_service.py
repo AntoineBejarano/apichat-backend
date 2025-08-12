@@ -117,6 +117,65 @@ class SchemaExplorerService:
             logger.error(f"[SchemaExplorerService] ❌ Error en fast_lookup: {e}")
             return None, 0.0, "fallback"
     
+    def get_compact_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene esquema compacto para optimización de tokens.
+        Wrapper para compatibilidad con ContextLoader.
+        """
+        try:
+            # 🔧 FIX: Usar DetailedSchemaCacheService para obtener schema real
+            try:
+                detailed_cache_service = self.factory.get_detailed_schema_cache_service()
+                if detailed_cache_service:
+                    # Intentar obtener schema desde cache detallado
+                    schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                    if schema_response and schema_response.compact:
+                        logger.info(f"[SchemaExplorerService] ✅ Schema compacto obtenido desde DetailedSchemaCache para DB {db_id}")
+                        # Devolver el schema compacto real
+                        return {
+                            "db_id": str(db_id),
+                            "compact": schema_response.compact,
+                            "table_count": getattr(schema_response, 'table_count', 0),
+                            "generated_at": getattr(schema_response, 'generated_at', datetime.now().isoformat()),
+                            "type": "compact_from_cache"
+                        }
+                    else:
+                        logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
+                else:
+                    logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService no disponible")
+            except Exception as e:
+                logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+            
+            # 🔧 FALLBACK: Si no hay schema en cache detallado, usar cache local
+            cache_service = self.cache_service
+            cache_key = f"compact_schema_{db_id}"
+            
+            # Intentar obtener desde cache local
+            cached_schema = cache_service.get(cache_key)
+            if cached_schema:
+                logger.debug(f"[SchemaExplorerService] Esquema compacto obtenido desde cache local para DB {db_id}")
+                return cached_schema
+            
+            # 🔧 FALLBACK: Si no hay cache, generar esquema mínimo
+            logger.warning(f"[SchemaExplorerService] ⚠️ Generando esquema mínimo para DB {db_id} (no hay cache)")
+            compact_schema = {
+                "db_id": str(db_id),
+                "compact": f"Database {db_id[:8]} - Schema no disponible en cache",
+                "tables": [],
+                "generated_at": datetime.now().isoformat(),
+                "type": "compact_minimal"
+            }
+            
+            # Guardar en cache local
+            cache_service.set(cache_key, compact_schema, ttl=3600)  # 1 hora
+            
+            logger.debug(f"[SchemaExplorerService] Esquema mínimo generado para DB {db_id}")
+            return compact_schema
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] Error obteniendo esquema compacto para DB {db_id}: {e}")
+            return None
+    
     def _normalize_query(self, query: str) -> str:
         """Normalizar query para búsqueda léxica"""
         # Convertir a minúsculas y remover caracteres especiales
@@ -145,41 +204,95 @@ class SchemaExplorerService:
         return terms[:5]  # Máximo 5 términos
     
     def _build_lexical_index(self, db_id: UUID) -> None:
-        """Construir índice léxico para una base de datos"""
+        """Construye índice léxico para una base de datos específica"""
         try:
-            logger.info(f"[SchemaExplorerService] 🔨 Construyendo índice léxico para DB {db_id}")
-            
-            # Obtener esquema detallado
-            schema = self.detailed_cache.get_detailed_schema(db_id)
-            if not schema:
-                logger.warning(f"[SchemaExplorerService] ⚠️ No se pudo obtener esquema para DB {db_id}")
+            if db_id in self._lexical_indexes:
+                logger.debug(f"[SchemaExplorerService] ✅ Índice léxico ya existe para DB {db_id}")
                 return
             
-            # Inicializar índice para este DB
+            logger.info(f"[SchemaExplorerService] 🔨 Construyendo índice léxico para DB {db_id}")
+            
+            # 🔧 FIX: Usar DetailedSchemaCacheService en lugar de intentar construir desde cero
+            try:
+                detailed_cache_service = self.factory.get_detailed_schema_cache_service()
+                if detailed_cache_service:
+                    # Intentar obtener schema desde cache detallado
+                    schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                    if schema_response and schema_response.compact:
+                        logger.info(f"[SchemaExplorerService] ✅ Schema obtenido desde DetailedSchemaCache para DB {db_id}")
+                        # Construir índice desde el schema en cache
+                        self._build_index_from_schema(db_id, schema_response)
+                        return
+                    else:
+                        logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
+                else:
+                    logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService no disponible")
+            except Exception as e:
+                logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+            
+            # 🔧 FALLBACK: Si no hay schema en cache, crear índice mínimo
+            logger.info(f"[SchemaExplorerService] 🔄 Creando índice mínimo para DB {db_id}")
             self._lexical_indexes[db_id] = {}
             
-            # Indexar tablas y columnas
-            for table_name, table_info in schema.tables.items():
-                # Indexar nombre de tabla
-                self._index_term(db_id, table_name, table_name, "table", 1.0)
-                
-                # Indexar columnas
-                for col_name, col_info in table_info.columns.items():
-                    # Indexar nombre de columna
-                    self._index_term(db_id, col_name, table_name, "column", 0.9)
-                    
-                    # Indexar tipo de columna
-                    if col_info.semantic_type:
-                        self._index_term(db_id, col_info.semantic_type, table_name, "semantic_type", 0.7)
-                    
-                    # Indexar comentarios/descripciones si existen
-                    if col_info.description:
-                        self._index_term(db_id, col_info.description, table_name, "description", 0.6)
+            # Crear índice básico con términos comunes
+            basic_terms = ["table", "column", "field", "data", "record", "row"]
+            for term in basic_terms:
+                self._index_term(db_id, term, "general", "fallback", 0.5)
             
-            logger.info(f"[SchemaExplorerService] ✅ Índice léxico construido para DB {db_id}: {len(self._lexical_indexes[db_id])} términos")
+            logger.info(f"[SchemaExplorerService] ✅ Índice mínimo creado para DB {db_id}")
             
         except Exception as e:
             logger.error(f"[SchemaExplorerService] ❌ Error construyendo índice léxico para DB {db_id}: {e}")
+            # Crear índice vacío para evitar errores futuros
+            self._lexical_indexes[db_id] = {}
+    
+    def _build_index_from_schema(self, db_id: UUID, schema_response) -> None:
+        """Construye índice léxico desde un schema en cache"""
+        try:
+            self._lexical_indexes[db_id] = {}
+            
+            # Extraer información del schema
+            if hasattr(schema_response, 'snapshot') and schema_response.snapshot:
+                snapshot = schema_response.snapshot
+                if isinstance(snapshot, dict):
+                    tables = snapshot.get('tables', {})
+                else:
+                    # Si snapshot es un objeto, intentar acceder a sus atributos
+                    tables = getattr(snapshot, 'tables', {})
+                    if not tables:
+                        tables = {}
+            else:
+                tables = {}
+            
+            # Indexar tablas
+            for table_name, table_info in tables.items():
+                if isinstance(table_info, dict):
+                    # Indexar nombre de tabla
+                    self._index_term(db_id, table_name, table_name, "table", 1.0)
+                    
+                    # Indexar columnas si están disponibles
+                    columns = table_info.get('columns', {})
+                    for col_name, col_info in columns.items():
+                        if isinstance(col_info, dict):
+                            # Indexar nombre de columna
+                            self._index_term(db_id, col_name, table_name, "column", 0.9)
+                            
+                            # Indexar tipo de columna
+                            col_type = col_info.get('type', '')
+                            if col_type:
+                                self._index_term(db_id, str(col_type), table_name, "semantic_type", 0.7)
+                            
+                            # Indexar comentarios/descripciones si existen
+                            col_description = col_info.get('description', '')
+                            if col_description:
+                                self._index_term(db_id, col_description, table_name, "description", 0.6)
+            
+            logger.info(f"[SchemaExplorerService] ✅ Índice léxico construido desde schema para DB {db_id}: {len(self._lexical_indexes[db_id])} términos")
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error construyendo índice desde schema para DB {db_id}: {e}")
+            # Crear índice vacío como fallback
+            self._lexical_indexes[db_id] = {}
     
     def _index_term(self, db_id: UUID, term: str, table_name: str, term_type: str, base_score: float) -> None:
         """Indexar un término en el índice léxico"""
