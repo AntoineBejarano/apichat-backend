@@ -1,4 +1,4 @@
-# app/services/chat_history_service.py
+# app/services/data/chat_history_service.py
 """
 ChatHistoryService
 ──────────────────
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import hashlib
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Union, Dict, Any
 from uuid import UUID
 from functools import lru_cache
 
@@ -123,6 +123,130 @@ class ChatHistoryService:
                 # Si no encontramos el mensaje, re-lanzar la excepción original
                 logger.error(f"[ChatHistoryService] ❌ IntegrityError sin mensaje duplicado: {e}")
                 raise
+
+    # 🔧 FASE 7: Método create_chat_history para compatibilidad
+    async def create_chat_history(self, history_entry: Union[Dict[str, Any], ChatHistoryCreate]) -> ChatHistory:
+        """
+        🔧 FASE 7: Método async para compatibilidad con otros servicios.
+        Acepta tanto dict como ChatHistoryCreate y llama internamente a create_message.
+        """
+        logger.info(f"[ChatHistoryService] 🔧 FASE 7: create_chat_history llamado con {type(history_entry).__name__}")
+        
+        try:
+            # Si es un dict, convertirlo a ChatHistoryCreate
+            if isinstance(history_entry, dict):
+                # Extraer campos del dict
+                chat_id = UUID(history_entry.get('chat_id')) if isinstance(history_entry.get('chat_id'), str) else history_entry.get('chat_id')
+                user_id = UUID(history_entry.get('user_id')) if isinstance(history_entry.get('user_id'), str) else history_entry.get('user_id')
+                role = history_entry.get('role', 'user')
+                content = history_entry.get('content', '')
+                name = history_entry.get('name')
+                token_count = history_entry.get('token_count')
+                is_function_call = history_entry.get('is_function_call', False)
+                function_call_id = history_entry.get('function_call_id')
+                executed_strategy_id = history_entry.get('executed_strategy_id')
+                
+                # Crear ChatHistoryCreate
+                data = ChatHistoryCreate(
+                    chat_id=chat_id,
+                    role=role,
+                    content=content,
+                    name=name,
+                    token_count=token_count,
+                    is_function_call=is_function_call,
+                    function_call_id=function_call_id,
+                    executed_strategy_id=executed_strategy_id
+                )
+            else:
+                # Ya es ChatHistoryCreate
+                data = history_entry
+            
+            # Usar el método existente create_message
+            result = self.create_message(data)
+            logger.info(f"[ChatHistoryService] ✅ FASE 7: create_chat_history completado exitosamente")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[ChatHistoryService] ❌ FASE 7: Error en create_chat_history: {e}")
+            raise
+
+    # 🔧 FASE 7: Método create_chat_history_with_session para manejo de sesiones
+    def create_chat_history_with_session(self, history_entry: Union[Dict[str, Any], ChatHistoryCreate], session: Session) -> ChatHistory:
+        """
+        🔧 FASE 7: Método para crear historial usando una sesión específica.
+        Útil para transacciones controladas desde el exterior.
+        """
+        logger.info(f"[ChatHistoryService] 🔧 FASE 7: create_chat_history_with_session llamado con sesión")
+        
+        try:
+            # Si es un dict, convertirlo a ChatHistoryCreate
+            if isinstance(history_entry, dict):
+                # Extraer campos del dict
+                chat_id = UUID(history_entry.get('chat_id')) if isinstance(history_entry.get('chat_id'), str) else history_entry.get('chat_id')
+                user_id = UUID(history_entry.get('user_id')) if isinstance(history_entry.get('user_id'), str) else history_entry.get('user_id')
+                role = history_entry.get('role', 'user')
+                content = history_entry.get('content', '')
+                name = history_entry.get('name')
+                token_count = history_entry.get('token_count')
+                is_function_call = history_entry.get('is_function_call', False)
+                function_call_id = history_entry.get('function_call_id')
+                executed_strategy_id = history_entry.get('executed_strategy_id')
+                
+                # Crear ChatHistoryCreate
+                data = ChatHistoryCreate(
+                    chat_id=chat_id,
+                    role=role,
+                    content=content,
+                    name=name,
+                    token_count=token_count,
+                    is_function_call=is_function_call,
+                    function_call_id=function_call_id,
+                    executed_strategy_id=executed_strategy_id
+                )
+            else:
+                # Ya es ChatHistoryCreate
+                data = history_entry
+            
+            # Generar clave de idempotencia
+            idempotency_key = data.idempotency_key or self._generate_idempotency_key(
+                chat_id=data.chat_id,
+                user_id=self.user_id,
+                content=data.content,
+                role=data.role
+            )
+            
+            # Verificar si ya existe un mensaje con esta clave en la sesión
+            existing_msg = session.query(ChatHistory).filter(
+                ChatHistory.idempotency_key == idempotency_key
+            ).first()
+            
+            if existing_msg:
+                logger.info(f"[ChatHistoryService] ♻️ FASE 7: Mensaje duplicado detectado en sesión - devolviendo existente (id={existing_msg.id})")
+                return existing_msg
+            
+            # Crear nuevo mensaje usando la sesión proporcionada
+            msg = ChatHistory(
+                user_id=self.user_id,
+                chat_id=data.chat_id,
+                role=data.role,
+                content=data.content,
+                name=data.name,
+                token_count=data.token_count,
+                is_function_call=data.is_function_call,
+                function_call_id=data.function_call_id,
+                executed_strategy_id=data.executed_strategy_id,
+                idempotency_key=idempotency_key
+            )
+            
+            session.add(msg)
+            # NO hacer commit aquí - la sesión se maneja desde el exterior
+            
+            logger.info(f"[ChatHistoryService] ✅ FASE 7: Mensaje creado con sesión (id={msg.id}, key={idempotency_key[:16]}...)")
+            return msg
+            
+        except Exception as e:
+            logger.error(f"[ChatHistoryService] ❌ FASE 7: Error en create_chat_history_with_session: {e}")
+            raise
 
     # ─────────────────────────────────────────────
     #   Obtener historial de un chat (OPTIMIZADO)

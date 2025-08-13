@@ -303,6 +303,20 @@ class AdvancedTelemetryService(BaseService):
             if not success:
                 context.errors_encountered += 1
             
+            # 🔧 FASE 3: Garantizar que completed_at > started_at
+            now = datetime.now(timezone.utc)
+            
+            # Calcular started_at basado en duration_ms, pero asegurar que sea anterior a completed_at
+            if duration_ms > 0:
+                started_at = now - timedelta(milliseconds=duration_ms)
+            else:
+                # Si duration_ms es 0 o muy pequeño, usar un microsegundo antes
+                started_at = now - timedelta(microseconds=1)
+            
+            # Asegurar que started_at sea estrictamente anterior a completed_at
+            if started_at >= now:
+                started_at = now - timedelta(microseconds=1)
+            
             # Crear métricas del paso
             step_metrics = StepMetricsCreate(
                 conversation_metrics_id=context.conversation_id,  # Temporal, se actualizará
@@ -316,8 +330,8 @@ class AdvancedTelemetryService(BaseService):
                 database_queries=database_queries,
                 llm_calls=llm_calls,
                 metadata=metadata,
-                started_at=datetime.now(timezone.utc) - timedelta(milliseconds=duration_ms),
-                completed_at=datetime.now(timezone.utc)
+                started_at=started_at,
+                completed_at=now
             )
             
             # Guardar en base de datos (asíncrono)

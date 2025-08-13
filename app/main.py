@@ -32,13 +32,14 @@ from app.core.config import settings
 tprint("APIchat", font="slant")
 
 # ────────────────────────────────
-# Logging configuration
+# 🔧 FASE 9: Logging configuration centralizada
 # ────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
+from app.utils.logging_config import setup_logging
+
+# 🔧 FASE 9: Usar configuración centralizada
+setup_logging(level="INFO")
 logger = logging.getLogger("APIchat")
+logger.info("🔧 FASE 9: Aplicación iniciada con logging centralizado")
 
 # ────────────────────────────────
 # Lifespan Event (Startup/Shutdown)

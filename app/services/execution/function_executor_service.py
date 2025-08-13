@@ -1,7 +1,7 @@
 import json
 import requests
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -11,6 +11,7 @@ from app.models.strategy_model import Strategy
 from app.services.data.usage_service import UsageService
 from app.models.function_call_log_model import FunctionCallLog
 from app.utils.token_counter import count_tokens  # ✅ define o importa esta función
+from app.utils.response_normalizer import safe_serialize_result  # 🔧 FASE 10: Importar serialización segura
 from app.services.execution.retry_service import retry_service
 from app.core.config import settings
 
@@ -149,15 +150,23 @@ class FunctionExecutor:
         for index, step in enumerate(strategy.steps):
             function_id = step.get("function_id")
             inputs = step.get("inputs", {})
-            logger.info("[FunctionExecutor] ▶ Paso %d: Ejecutando función ID=%s con inputs=%s", index + 1, function_id, inputs)
+            
+            # 🔧 FASE 10: Serialización segura de inputs para logging
+            safe_inputs = safe_serialize_result(inputs, max_length=150)
+            logger.info("[FunctionExecutor] ▶ Paso %d: Ejecutando función ID=%s con inputs=%s", 
+                       index + 1, function_id, safe_inputs)
 
             try:
                 result = self.execute_by_id(function_id, inputs)
+                
+                # 🔧 FASE 10: Serialización segura del resultado para el step
+                safe_result = safe_serialize_result(result, max_length=200)
+                
                 results.append({
                     "step": index + 1,
                     "function_id": str(function_id),
                     "status": "success",
-                    "result": result
+                    "result": safe_result  # 🔧 FASE 10: Usar resultado serializado
                 })
                 logger.info("[FunctionExecutor] ✅ Paso %d completado", index + 1)
 
@@ -194,12 +203,16 @@ class FunctionExecutor:
             # Contar tokens
             tokens_used = count_tokens(str(result))
             
+            # 🔧 FASE 10: Serialización segura para logging
+            safe_params = safe_serialize_result(params, max_length=200)
+            safe_result = safe_serialize_result(result, max_length=500)
+            
             # Registrar log
             call_log = FunctionCallLog(
                 user_id=self.user_id,
                 function_id=function_id,
-                parameters=json.dumps(params),
-                result=json.dumps(result),
+                parameters=safe_params,  # 🔧 FASE 10: Usar parámetros serializados
+                result=safe_result,      # 🔧 FASE 10: Usar resultado serializado
                 tokens_used=tokens_used,
                 execution_time=0.0  # TODO: Implementar timing
             )

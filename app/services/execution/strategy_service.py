@@ -205,3 +205,59 @@ class StrategyService(BaseService):  # 👈 Hereda BaseService
             },
             "steps": strategy.steps
         }
+
+    # 🔧 FASE 2: Stub para run_guided_graph
+    async def run_guided_graph(
+        self,
+        chat_id: UUID,
+        user_message: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Stub del método run_guided_graph para compatibilidad con GraphRunner.
+        
+        Args:
+            chat_id: ID del chat
+            user_message: Mensaje del usuario
+            context: Contexto del chat
+            
+        Returns:
+            Respuesta básica del grafo guiado
+        """
+        logger.warning(f"[StrategyService] ⚠️ run_guided_graph llamado como stub para chat_id={chat_id}")
+        
+        try:
+            # 🔧 FASE 2: Lógica básica de fallback
+            # Por ahora, devolver una respuesta simple
+            # En el futuro, esto se integrará con el GuidedGraph real
+            
+            response = {
+                "content": f"🎯 Grafo guiado ejecutado para: '{user_message[:50]}...'",
+                "chat_id": str(chat_id),
+                "mode": "guided",
+                "status": "completed",
+                "fallback": True,
+                "message": "Este es un stub temporal. La funcionalidad completa estará disponible próximamente."
+            }
+            
+            # Agregar información del contexto si está disponible
+            if context:
+                response["context_summary"] = {
+                    "has_databases": bool(context.get('databases')),
+                    "has_apps": bool(context.get('apps')),
+                    "context_keys": list(context.keys())
+                }
+            
+            logger.info(f"[StrategyService] ✅ Stub run_guided_graph completado para chat_id={chat_id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"[StrategyService] ❌ Error en stub run_guided_graph: {e}")
+            return {
+                "content": "❌ Error ejecutando grafo guiado",
+                "error": str(e),
+                "chat_id": str(chat_id),
+                "mode": "guided",
+                "status": "error",
+                "fallback": True
+            }

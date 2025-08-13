@@ -28,9 +28,10 @@ class SchemaExplorerService:
     Servicio para explorar y cachear esquemas de base de datos con información completa.
     """
     
-    def __init__(self, cache_service: CacheService, database_service: DatabaseService):
+    def __init__(self, cache_service: CacheService, database_service: DatabaseService, factory=None):
         self.cache_service = cache_service
         self.database_service = database_service
+        self.factory = factory  # 🔧 FIX: Inyectar ServiceFactory
         self.detailed_cache = DetailedSchemaCache()
         
         # Umbrales para Fast Schema Path (Fase 7) desde configuración
@@ -42,6 +43,10 @@ class SchemaExplorerService:
         self._lexical_indexes = {}  # {db_id: {term: [(table, column, score)]}}
         
         logger.info(f"[SchemaExplorerService] 🦄 Inicializado con Fast Schema Path (CONF_FAST={self.CONF_FAST})")
+        if factory:
+            logger.info(f"[SchemaExplorerService] ✅ ServiceFactory inyectado correctamente")
+        else:
+            logger.warning(f"[SchemaExplorerService] ⚠️ ServiceFactory no inyectado - algunas funcionalidades pueden no estar disponibles")
     
     def fast_lookup(
         self, 
@@ -92,8 +97,45 @@ class SchemaExplorerService:
                 return None, 0.0, "fallback"
             
             # 3. Calcular confianza y determinar tipo de respuesta
-            avg_confidence = total_score / len(all_matches)
-            confidence = min(avg_confidence, 1.0)  # Cap en 1.0
+            # 🔧 FASE 8: Mejorar cálculo de confianza con más factores
+            if all_matches:
+                # Calcular confianza base
+                avg_confidence = total_score / len(all_matches)
+                
+                # 🔧 FASE 8: Factores adicionales para mejorar confianza
+                confidence_boost = 0.0
+                
+                # Boost por número de matches (más matches = más confianza)
+                if len(all_matches) >= 3:
+                    confidence_boost += 0.1
+                elif len(all_matches) >= 2:
+                    confidence_boost += 0.05
+                
+                # Boost por calidad de matches (exactos vs parciales)
+                exact_matches = sum(1 for match in all_matches if match.get('score', 0) >= 0.9)
+                if exact_matches >= 2:
+                    confidence_boost += 0.15
+                elif exact_matches >= 1:
+                    confidence_boost += 0.1
+                
+                # Boost por cobertura de tablas (más tablas = más contexto)
+                unique_tables = len(set(match.get('table', '') for match in all_matches))
+                if unique_tables >= 3:
+                    confidence_boost += 0.1
+                elif unique_tables >= 2:
+                    confidence_boost += 0.05
+                
+                # Boost por términos de búsqueda específicos
+                query_terms = self._extract_search_terms(self._normalize_query(query))
+                if len(query_terms) >= 3:
+                    confidence_boost += 0.05
+                
+                # Aplicar boost y cap en 1.0
+                confidence = min(avg_confidence + confidence_boost, 1.0)
+                
+                logger.info(f"[SchemaExplorerService] 🔧 FASE 8: Confianza calculada: base={avg_confidence:.2f}, boost={confidence_boost:.2f}, final={confidence:.2f}")
+            else:
+                confidence = 0.0
             
             # 4. Determinar tipo de respuesta según umbrales
             if confidence >= self.CONF_FAST:
@@ -124,27 +166,30 @@ class SchemaExplorerService:
         """
         try:
             # 🔧 FIX: Usar DetailedSchemaCacheService para obtener schema real
-            try:
-                detailed_cache_service = self.factory.get_detailed_schema_cache_service()
-                if detailed_cache_service:
-                    # Intentar obtener schema desde cache detallado
-                    schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
-                    if schema_response and schema_response.compact:
-                        logger.info(f"[SchemaExplorerService] ✅ Schema compacto obtenido desde DetailedSchemaCache para DB {db_id}")
-                        # Devolver el schema compacto real
-                        return {
-                            "db_id": str(db_id),
-                            "compact": schema_response.compact,
-                            "table_count": getattr(schema_response, 'table_count', 0),
-                            "generated_at": getattr(schema_response, 'generated_at', datetime.now().isoformat()),
-                            "type": "compact_from_cache"
-                        }
+            if self.factory and hasattr(self.factory, 'get_detailed_schema_cache_service'):
+                try:
+                    detailed_cache_service = self.factory.get_detailed_schema_cache_service()
+                    if detailed_cache_service and hasattr(self.factory, 'user') and self.factory.user:
+                        # Intentar obtener schema desde cache detallado
+                        schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                        if schema_response and schema_response.compact:
+                            logger.info(f"[SchemaExplorerService] ✅ Schema compacto obtenido desde DetailedSchemaCache para DB {db_id}")
+                            # Devolver el schema compacto real
+                            return {
+                                "db_id": str(db_id),
+                                "compact": schema_response.compact,
+                                "table_count": getattr(schema_response, 'table_count', 0),
+                                "generated_at": getattr(schema_response, 'generated_at', datetime.now().isoformat()),
+                                "type": "compact_from_cache"
+                            }
+                        else:
+                            logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
                     else:
-                        logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
-                else:
-                    logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService no disponible")
-            except Exception as e:
-                logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+                        logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService o user no disponible")
+                except Exception as e:
+                    logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+            else:
+                logger.debug(f"[SchemaExplorerService] ℹ️ ServiceFactory no disponible, usando fallback local")
             
             # 🔧 FALLBACK: Si no hay schema en cache detallado, usar cache local
             cache_service = self.cache_service
@@ -185,21 +230,41 @@ class SchemaExplorerService:
         return normalized
     
     def _extract_search_terms(self, normalized_query: str) -> List[str]:
-        """Extraer términos de búsqueda relevantes"""
-        # Palabras clave comunes en consultas de esquema
+        """
+        Extrae términos de búsqueda relevantes de la query normalizada.
+        Mejorado para Fase 8 con más sinónimos y términos relacionados.
+        """
+        # 🔧 FASE 8: Expandir sinónimos y términos relacionados
         schema_keywords = {
-            'tabla', 'table', 'columna', 'column', 'campo', 'field',
+            # Palabras comunes de esquema
             'donde', 'where', 'esta', 'is', 'find', 'buscar', 'search',
-            'email', 'user', 'usuario', 'id', 'name', 'nombre', 'date', 'fecha'
+            'email', 'user', 'usuario', 'id', 'name', 'nombre', 'date', 'fecha',
+            # 🔧 FASE 8: Sinónimos adicionales
+            'campo', 'field', 'columna', 'column', 'tabla', 'table',
+            'registro', 'record', 'dato', 'data', 'fila', 'row',
+            'encontrar', 'localizar', 'ubicar', 'situar', 'posicionar',
+            'mostrar', 'listar', 'obtener', 'traer', 'extraer',
+            # 🔧 FASE 8: Términos de negocio comunes
+            'cliente', 'customer', 'producto', 'product', 'venta', 'sale',
+            'pedido', 'order', 'factura', 'invoice', 'pago', 'payment',
+            'empleado', 'employee', 'departamento', 'department', 'categoria', 'category'
         }
         
         # Filtrar palabras comunes y muy cortas
         words = normalized_query.split()
         terms = [word for word in words if len(word) >= 3 and word not in schema_keywords]
         
-        # Si no hay términos específicos, usar palabras más largas
+        # 🔧 FASE 8: Si no hay términos específicos, usar palabras más largas
         if not terms:
             terms = [word for word in words if len(word) >= 4]
+        
+        # 🔧 FASE 8: Añadir términos relacionados si la query es muy corta
+        if len(terms) < 2 and len(normalized_query) > 10:
+            # Buscar palabras clave que podrían estar relacionadas
+            for word in words:
+                if len(word) >= 4 and word not in terms:
+                    terms.append(word)
+                    break
         
         return terms[:5]  # Máximo 5 términos
     
@@ -213,22 +278,25 @@ class SchemaExplorerService:
             logger.info(f"[SchemaExplorerService] 🔨 Construyendo índice léxico para DB {db_id}")
             
             # 🔧 FIX: Usar DetailedSchemaCacheService en lugar de intentar construir desde cero
-            try:
-                detailed_cache_service = self.factory.get_detailed_schema_cache_service()
-                if detailed_cache_service:
-                    # Intentar obtener schema desde cache detallado
-                    schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
-                    if schema_response and schema_response.compact:
-                        logger.info(f"[SchemaExplorerService] ✅ Schema obtenido desde DetailedSchemaCache para DB {db_id}")
-                        # Construir índice desde el schema en cache
-                        self._build_index_from_schema(db_id, schema_response)
-                        return
+            if self.factory and hasattr(self.factory, 'get_detailed_schema_cache_service'):
+                try:
+                    detailed_cache_service = self.factory.get_detailed_schema_cache_service()
+                    if detailed_cache_service and hasattr(self.factory, 'user') and self.factory.user:
+                        # Intentar obtener schema desde cache detallado
+                        schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                        if schema_response and schema_response.compact:
+                            logger.info(f"[SchemaExplorerService] ✅ Schema obtenido desde DetailedSchemaCache para DB {db_id}")
+                            # Construir índice desde el schema en cache
+                            self._build_index_from_schema(db_id, schema_response)
+                            return
+                        else:
+                            logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
                     else:
-                        logger.warning(f"[SchemaExplorerService] ⚠️ No hay schema en DetailedSchemaCache para DB {db_id}")
-                else:
-                    logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService no disponible")
-            except Exception as e:
-                logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+                        logger.warning(f"[SchemaExplorerService] ⚠️ DetailedSchemaCacheService o user no disponible")
+                except Exception as e:
+                    logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo schema desde DetailedSchemaCache: {e}")
+            else:
+                logger.debug(f"[SchemaExplorerService] ℹ️ ServiceFactory no disponible, usando fallback local")
             
             # 🔧 FALLBACK: Si no hay schema en cache, crear índice mínimo
             logger.info(f"[SchemaExplorerService] 🔄 Creando índice mínimo para DB {db_id}")
@@ -264,64 +332,157 @@ class SchemaExplorerService:
             else:
                 tables = {}
             
-            # Indexar tablas
+            # 🔧 FASE 8: Indexar tablas con score alto
             for table_name, table_info in tables.items():
                 if isinstance(table_info, dict):
-                    # Indexar nombre de tabla
+                    # Indexar nombre de tabla con score alto
                     self._index_term(db_id, table_name, table_name, "table", 1.0)
                     
-                    # Indexar columnas si están disponibles
+                    # 🔧 FASE 8: Indexar columnas con score alto
                     columns = table_info.get('columns', {})
                     for col_name, col_info in columns.items():
                         if isinstance(col_info, dict):
-                            # Indexar nombre de columna
+                            # Indexar nombre de columna con score alto
                             self._index_term(db_id, col_name, table_name, "column", 0.9)
                             
-                            # Indexar tipo de columna
+                            # 🔧 FASE 8: Indexar tipo de columna con score medio
                             col_type = col_info.get('type', '')
                             if col_type:
                                 self._index_term(db_id, str(col_type), table_name, "semantic_type", 0.7)
                             
-                            # Indexar comentarios/descripciones si existen
+                            # 🔧 FASE 8: Indexar comentarios/descripciones con score medio
                             col_description = col_info.get('description', '')
                             if col_description:
-                                self._index_term(db_id, col_description, table_name, "description", 0.6)
+                                # Indexar palabras individuales de la descripción
+                                desc_words = col_description.split()
+                                for word in desc_words:
+                                    if len(word) >= 3:  # Solo palabras de 3+ caracteres
+                                        self._index_term(db_id, word, table_name, "description", 0.6)
+                            
+                            # 🔧 FASE 8: Indexar constraints si están disponibles
+                            if col_info.get('primary_key'):
+                                self._index_term(db_id, 'primary_key', table_name, "constraint", 0.8)
+                            if col_info.get('foreign_key'):
+                                self._index_term(db_id, 'foreign_key', table_name, "constraint", 0.8)
+                            if col_info.get('unique'):
+                                self._index_term(db_id, 'unique', table_name, "constraint", 0.7)
+                            if col_info.get('not_null'):
+                                self._index_term(db_id, 'not_null', table_name, "constraint", 0.6)
             
-            logger.info(f"[SchemaExplorerService] ✅ Índice léxico construido desde schema para DB {db_id}: {len(self._lexical_indexes[db_id])} términos")
+            # 🔧 FASE 8: Indexar metadatos de la base de datos
+            if hasattr(schema_response, 'table_count'):
+                self._index_term(db_id, f"{schema_response.table_count}_tables", "metadata", "count", 0.5)
+            if hasattr(schema_response, 'total_columns'):
+                self._index_term(db_id, f"{schema_response.total_columns}_columns", "metadata", "count", 0.5)
+            
+            logger.info(f"[SchemaExplorerService] ✅ FASE 8: Índice léxico construido para DB {db_id} con {len(tables)} tablas")
             
         except Exception as e:
-            logger.error(f"[SchemaExplorerService] ❌ Error construyendo índice desde schema para DB {db_id}: {e}")
-            # Crear índice vacío como fallback
+            logger.error(f"[SchemaExplorerService] ❌ Error construyendo índice desde schema: {e}")
+            # Crear índice vacío para evitar errores futuros
             self._lexical_indexes[db_id] = {}
     
-    def _index_term(self, db_id: UUID, term: str, table_name: str, term_type: str, base_score: float) -> None:
-        """Indexar un término en el índice léxico"""
-        if not term:
-            return
-        
-        # Normalizar término
-        normalized_term = self._normalize_query(term)
-        if not normalized_term:
-            return
-        
-        # Generar trigrams para búsqueda fuzzy
-        trigrams = self._generate_trigrams(normalized_term)
-        
-        for trigram in trigrams:
-            if trigram not in self._lexical_indexes[db_id]:
-                self._lexical_indexes[db_id][trigram] = []
+    def _index_term(self, db_id: UUID, term: str, table: str, term_type: str, base_score: float) -> None:
+        """
+        Indexa un término en el índice léxico con sinónimos y términos relacionados.
+        Mejorado para Fase 8 con indexación más inteligente.
+        """
+        try:
+            if db_id not in self._lexical_indexes:
+                self._lexical_indexes[db_id] = {}
             
-            # Añadir entrada al índice
+            # 🔧 FASE 8: Indexar término principal
+            term_key = term.lower().strip()
+            if term_key not in self._lexical_indexes[db_id]:
+                self._lexical_indexes[db_id][term_key] = []
+            
+            # Añadir entrada principal
             entry = {
-                'table': table_name,
-                'column': table_name if term_type == "table" else None,
+                'term': term,
+                'table': table,
                 'term_type': term_type,
-                'original_term': term,
                 'score': base_score,
-                'trigram': trigram
+                'db_id': str(db_id)
             }
             
-            self._lexical_indexes[db_id][trigram].append(entry)
+            # Evitar duplicados
+            if not any(e['table'] == table and e['term_type'] == term_type for e in self._lexical_indexes[db_id][term_key]):
+                self._lexical_indexes[db_id][term_key].append(entry)
+            
+            # 🔧 FASE 8: Indexar sinónimos automáticamente
+            synonyms = self._get_synonyms(term)
+            for synonym in synonyms:
+                if synonym != term_key:
+                    if synonym not in self._lexical_indexes[db_id]:
+                        self._lexical_indexes[db_id][synonym] = []
+                    
+                    # Añadir sinónimo con score ligeramente menor
+                    synonym_entry = entry.copy()
+                    synonym_entry['term'] = synonym
+                    synonym_entry['score'] = base_score * 0.8  # Score reducido para sinónimos
+                    
+                    if not any(e['table'] == table and e['term_type'] == term_type for e in self._lexical_indexes[db_id][synonym]):
+                        self._lexical_indexes[db_id][synonym].append(synonym_entry)
+            
+            # 🔧 FASE 8: Indexar términos relacionados
+            related_terms = self._get_related_terms(term, term_type)
+            for related_term in related_terms:
+                if related_term not in self._lexical_indexes[db_id]:
+                    self._lexical_indexes[db_id][related_term] = []
+                
+                # Añadir término relacionado con score menor
+                related_entry = entry.copy()
+                related_entry['term'] = related_term
+                related_entry['score'] = base_score * 0.6  # Score reducido para términos relacionados
+                
+                if not any(e['table'] == table and e['term_type'] == term_type for e in self._lexical_indexes[db_id][related_term]):
+                    self._lexical_indexes[db_id][related_term].append(related_entry)
+                    
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error indexando término '{term}': {e}")
+    
+    def _get_synonyms(self, term: str) -> List[str]:
+        """
+        🔧 FASE 8: Obtener sinónimos de un término.
+        """
+        synonyms_map = {
+            # Sinónimos de campos comunes
+            'email': ['correo', 'mail', 'e-mail', 'electronic_mail'],
+            'user': ['usuario', 'usuario_id', 'user_id'],
+            'name': ['nombre', 'nombres', 'apellido', 'apellidos'],
+            'date': ['fecha', 'fecha_creacion', 'created_at', 'timestamp'],
+            'id': ['identificador', 'primary_key', 'pk'],
+            'phone': ['telefono', 'phone_number', 'celular', 'mobile'],
+            'address': ['direccion', 'domicilio', 'ubicacion'],
+            'price': ['precio', 'costo', 'valor', 'amount'],
+            'status': ['estado', 'situacion', 'condicion'],
+            'type': ['tipo', 'categoria', 'clasificacion'],
+            'description': ['descripcion', 'detalle', 'comentario', 'nota'],
+            'created': ['creado', 'fecha_creacion', 'created_at'],
+            'updated': ['actualizado', 'modificado', 'updated_at', 'modified_at'],
+            'active': ['activo', 'habilitado', 'enabled', 'visible'],
+            'deleted': ['eliminado', 'borrado', 'deleted_at', 'removed']
+        }
+        
+        term_lower = term.lower()
+        return synonyms_map.get(term_lower, [])
+    
+    def _get_related_terms(self, term: str, term_type: str) -> List[str]:
+        """
+        🔧 FASE 8: Obtener términos relacionados de un término.
+        """
+        related_terms_map = {
+            # Términos relacionados por tipo
+            'table': ['tabla', 'entidad', 'modelo', 'collection'],
+            'column': ['columna', 'campo', 'atributo', 'propiedad'],
+            'field': ['campo', 'columna', 'atributo', 'propiedad'],
+            'record': ['registro', 'fila', 'tupla', 'documento'],
+            'row': ['fila', 'registro', 'tupla', 'entrada'],
+            'data': ['dato', 'informacion', 'contenido', 'valor']
+        }
+        
+        term_lower = term.lower()
+        return related_terms_map.get(term_lower, [])
     
     def _generate_trigrams(self, text: str) -> List[str]:
         """Generar trigrams para búsqueda fuzzy"""

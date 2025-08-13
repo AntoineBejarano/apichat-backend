@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     UX_PROGRESS_STREAMING: bool = os.getenv("UX_PROGRESS_STREAMING", "True") == "True"
     UX_CONFIRMATION_TIMEOUT: int = int(os.getenv("UX_CONFIRMATION_TIMEOUT", 30))  # segundos
     
-    # Fast Schema Path (Fase 7) - Umbrales de confianza
-    CONF_FAST: float = float(os.getenv("CONF_FAST", "0.7"))  # Umbral alto para respuesta sin LLM
+    # 🔧 FASE 8: Fast Schema Path - Ajustar umbral temporalmente
+    CONF_FAST: float = float(os.getenv("CONF_FAST", "0.6"))  # 🔧 FASE 8: Bajado de 0.7 a 0.6 temporalmente
     CONF_AMBIGUOUS: float = float(os.getenv("CONF_AMBIGUOUS", "0.4"))  # Umbral bajo para desambiguación
     FAST_PATH_RESPONSE_TIME_MS: int = int(os.getenv("FAST_PATH_RESPONSE_TIME_MS", "150"))  # Objetivo de respuesta
     

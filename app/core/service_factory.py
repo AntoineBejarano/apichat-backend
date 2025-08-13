@@ -234,7 +234,8 @@ class ServiceFactory:
                     logger.error("❌ DatabaseService no disponible para SchemaExplorerService")
                     return None
                 
-                self._schema_explorer_service = SchemaExplorerService(cache_service, database_service)
+                # 🔧 FIX: Pasar el factory al SchemaExplorerService
+                self._schema_explorer_service = SchemaExplorerService(cache_service, database_service, self)
                 
             except Exception as e:
                 logger.error(f"❌ Error inicializando SchemaExplorerService: {e}")

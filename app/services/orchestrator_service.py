@@ -53,6 +53,9 @@ from app.services.orchestrator import (
     DecisionManager
 )
 
+from app.utils.response_normalizer import normalize_assistant_response, validate_response_structure  # 🔧 FASE 10: Importar normalización
+from app.services.ai.fallback_response_service import FallbackResponseService  # 🔧 FASE 11: Importar servicio de fallback
+
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
 
@@ -129,6 +132,9 @@ class OrchestratorService:
         # 🎯 FASE 13: SERVICIO DE TELEMETRÍA AVANZADO
         self.telemetry_service = factory.get_advanced_telemetry_service()
         self.current_telemetry_context = None
+        
+        # 🔧 FASE 11: Inicializar servicio de fallback
+        self.fallback_service = FallbackResponseService()
         
         logger.info(f"[OrchestratorService] Initialized for user_id={self.user_id}")
         logger.info("[OrchestratorService] ✅ Módulos especializados cargados")
@@ -359,9 +365,9 @@ class OrchestratorService:
                 message=f"⚠️ Presupuesto de tokens alto ({budget_hint['current_usage']['budget_usage_percent']:.1f}%). {budget_hint['suggestions'][0]}",
                 level="warning",
                 actions=[
-                    {"label": "Modo Rápido", "action": "switch_to_fast_mode"},
-                    {"label": "Modo Equilibrado", "action": "switch_to_balanced_mode"},
-                    {"label": "Continuar", "action": "continue_current_mode"}
+                    "switch_to_fast_mode",
+                    "switch_to_balanced_mode",
+                    "continue_current_mode"
                 ]
             )
         else:
@@ -369,9 +375,9 @@ class OrchestratorService:
                 message=f"📊 Presupuesto de tokens: {budget_hint['current_usage']['budget_usage_percent']:.1f}% - Modo recomendado: {budget_hint['recommended_mode']}",
                 level="info",
                 actions=[
-                    {"label": f"Cambiar a {budget_hint['recommended_mode'].title()}", "action": f"switch_to_{budget_hint['recommended_mode']}_mode"},
-                    {"label": "Ver opciones", "action": "show_mode_options"},
-                    {"label": "Continuar", "action": "continue_current_mode"}
+                    f"switch_to_{budget_hint['recommended_mode']}_mode",
+                    "show_mode_options",
+                    "continue_current_mode"
                 ]
             )
 
@@ -398,9 +404,9 @@ class OrchestratorService:
                     message=f"🔒 Contexto optimizado: Se recortó {', '.join(trimming_messages)} para ahorrar ~{tokens_saved} tokens",
                     level="info",
                     actions=[
-                        {"label": "Ver detalles", "action": "show_trimming_details"},
-                        {"label": "Ajustar modo", "action": "adjust_mode"},
-                        {"label": "Continuar", "action": "continue_optimized"}
+                        "show_trimming_details",
+                        "adjust_mode",
+                        "continue_optimized"
                     ]
                 )
                 
@@ -1583,222 +1589,48 @@ class OrchestratorService:
     def _extract_assistant_response(self, execution_results: Dict[str, Any]) -> str:
         """Extraer la respuesta del asistente de los resultados de ejecución"""
         logger.info(f"[OrchestratorService] 🔍 Extrayendo respuesta del resultado (keys: {list(execution_results.keys())}")
-        logger.info(f"[OrchestratorService] 🔍 Contenido completo de execution_results: {execution_results}")
         
-        # 🔍 DEBUG: Verificar si hay query_result en variables
-        if "variables" in execution_results and execution_results["variables"]:
-            variables = execution_results["variables"]
-            if "query_result" in variables:
-                logger.info(f"[OrchestratorService] 🔍 QUERY_RESULT encontrado en variables: {variables['query_result']}")
-            else:
-                logger.info(f"[OrchestratorService] 🔍 NO hay query_result en variables")
-        else:
-            logger.info(f"[OrchestratorService] 🔍 NO hay variables en execution_results")
-        
-        # 🔧 FIX: Priorizar assistant_response como primera opción
-        if "assistant_response" in execution_results and execution_results["assistant_response"]:
-            response_value = execution_results["assistant_response"]
-            logger.info(f"[OrchestratorService] 🔍 Encontrado assistant_response: {response_value}")
-            if isinstance(response_value, dict) and 'content' in response_value:
-                actual_response = response_value['content']
-                logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en 'assistant_response.content' (longitud: {len(str(actual_response))} chars)")
-                logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO assistant_response.content")
-                return str(actual_response)
-            else:
-                response_length = len(str(response_value))
-                logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en 'assistant_response' (longitud: {response_length} chars)")
-                logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO assistant_response directo")
-                return str(response_value)
-        else:
-            logger.info(f"[OrchestratorService] 🔍 NO hay assistant_response o está vacío")
-        
-        # 🔧 FIX: Buscar en objeto response estructurado si existe
-        if "response" in execution_results and execution_results["response"]:
-            response_obj = execution_results["response"]
-            logger.info(f"[OrchestratorService] 🔍 Encontrado response: {response_obj}")
-            if isinstance(response_obj, dict):
-                # Buscar content, message, o text en el objeto response
-                for content_key in ["content", "message", "text", "answer"]:
-                    if content_key in response_obj and response_obj[content_key]:
-                        content_value = response_obj[content_key]
-                        response_length = len(str(content_value))
-                        logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en 'response.{content_key}' (longitud: {response_length} chars)")
-                        logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO response.{content_key}")
-                        return str(content_value)
-                # Si no hay content específico, usar todo el objeto response
-                response_length = len(str(response_obj))
-                logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en 'response' completo (longitud: {response_length} chars)")
-                logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO response completo")
-                return str(response_obj)
-            else:
-                # Si response no es dict, usarlo directamente
-                response_length = len(str(response_obj))
-                logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en 'response' directo (longitud: {response_length} chars)")
-                logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO response directo")
-                return str(response_obj)
-        else:
-            logger.info(f"[OrchestratorService] 🔍 NO hay response o está vacío")
-        
-        # 🔧 FIX: Buscar en variables como fallback útil
-        if "variables" in execution_results and execution_results["variables"]:
-            variables = execution_results["variables"]
-            logger.info(f"[OrchestratorService] 🔍 Encontradas variables: {variables}")
-            # Buscar variables que puedan contener respuestas útiles
-            for var_name, var_value in variables.items():
-                if var_name in ["query_result", "result", "answer", "response", "content"] and var_value:
-                    logger.info(f"[OrchestratorService] 🔍 Procesando variable útil: {var_name} = {var_value}")
-                    if isinstance(var_value, str) and len(var_value.strip()) > 10:  # Solo strings con contenido
-                        logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en variables['{var_name}'] (longitud: {len(var_value)} chars)")
-                        logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO variable string")
-                        return str(var_value)
-                    elif isinstance(var_value, (dict, list)) and var_value:
-                        # Si es un objeto complejo, convertirlo a string legible
-                        try:
-                            if isinstance(var_value, dict):
-                                # Para dicts, buscar campos útiles
-                                for key in ["content", "message", "text", "result"]:
-                                    if key in var_value and var_value[key]:
-                                        content = var_value[key]
-                                        if isinstance(content, str) and len(content.strip()) > 10:
-                                            logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en variables['{var_name}'].{key} (longitud: {len(content)} chars)")
-                                            logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO variable.{key}")
-                                            return str(content)
-                                # 🔧 FIX: Si es query_result, formatear para que sea más corto
-                                if var_name == "query_result" and "result" in var_value:
-                                    result_data = var_value["result"]
-                                    logger.info(f"[OrchestratorService] 🔍 PROCESANDO query_result: {result_data} (tipo: {type(result_data)})")
-                                    
-                                    if isinstance(result_data, list) and len(result_data) > 0:
-                                        # Solo mostrar los primeros 3 valores para que sea más corto
-                                        limited_result = result_data[:3]
-                                        formatted_result = f"Resultados obtenidos (mostrando primeros 3): {limited_result}"
-                                        if len(result_data) > 3:
-                                            formatted_result += f" ... y {len(result_data) - 3} más"
-                                        logger.info(f"[OrchestratorService] ✅ Formateando query_result para mostrar solo primeros 3 valores")
-                                        logger.info(f"[OrchestratorService] ✅ RESULTADO FORMATEADO: '{formatted_result}'")
-                                        logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO RESULTADO FORMATEADO")
-                                        return formatted_result
-                                    else:
-                                        # Si no es lista, usar el resultado completo pero limitado
-                                        result_str = str(result_data)
-                                        if len(result_str) > 200:  # Limitar longitud si es muy largo
-                                            result_str = result_str[:200] + "..."
-                                        logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en variables['{var_name}'] formateada (longitud: {len(result_str)} chars)")
-                                        final_result = f"Resultados obtenidos: {result_str}"
-                                        logger.info(f"[OrchestratorService] ✅ RESULTADO FORMATEADO: '{final_result}'")
-                                        logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO RESULTADO FORMATEADO")
-                                        return final_result
-                                # Si no hay campos útiles, usar todo el dict
-                                response_str = str(var_value)
-                                if len(response_str) > 20:  # Solo si tiene contenido sustancial
-                                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en variables['{var_name}'] completo (longitud: {len(response_str)} chars)")
-                                    logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO variable completo")
-                                    return str(response_str)
-                            else:
-                                # Para lists, usar el primer elemento si es string
-                                if var_value and isinstance(var_value[0], str) and len(var_value[0].strip()) > 10:
-                                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en variables['{var_name}'][0] (longitud: {len(var_value[0])} chars)")
-                                    logger.info(f"[OrchestratorService] ✅ DEVOLVIENDO variable[0]")
-                                    return str(var_value[0])
-                        except Exception as e:
-                            logger.debug(f"[OrchestratorService] Error procesando variable {var_name}: {e}")
-                            continue
-        else:
-            logger.info(f"[OrchestratorService] 🔍 NO hay variables o están vacías")
-        
-        # 🔧 FIX: Si hay steps, generar respuesta basada en steps pero SIN usar message del usuario
-        if execution_results.get("steps"):
-            steps = execution_results.get("steps", [])
-            logger.info(f"[OrchestratorService] 📋 Encontrados {len(steps)} steps en el plan")
-            logger.info(f"[OrchestratorService] 📋 Contenido de steps: {steps}")
-            
-            # Buscar en steps por contenido útil, evitando mensajes del usuario
-            for i, step in enumerate(steps):
-                logger.info(f"[OrchestratorService] 🔍 Procesando step {i}: {step}")
-                if isinstance(step, dict):
-                    # Buscar en campos del step que NO sean message (que puede ser del usuario)
-                    for step_key in ["content", "result", "output", "data"]:
-                        if step_key in step and step[step_key]:
-                            step_content = step[step_key]
-                            logger.info(f"[OrchestratorService] 🔍 Encontrado contenido en step[{i}].{step_key}: {step_content}")
-                            if isinstance(step_content, str) and len(step_content.strip()) > 10:
-                                # Verificar que no sea el mensaje del usuario
-                                if not any(user_indicator in step_content.lower() for user_indicator in ["tu pregunta", "responder a", "para responder"]):
-                                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en step[{i}]['{step_key}'] (longitud: {len(step_content)} chars)")
-                                    return str(step_content)
-                                else:
-                                    logger.info(f"[OrchestratorService] ⚠️ Contenido del step parece ser del usuario, saltando")
-            
-            # Si no hay contenido útil en steps, generar mensaje genérico
-            logger.info(f"[OrchestratorService] 📋 Steps encontrados pero sin contenido útil, generando mensaje genérico")
-            return "Consultando base de datos..."
-        else:
-            logger.info(f"[OrchestratorService] 🔍 NO hay steps en execution_results")
-        
-        # 🔧 FIX: Buscar en otros campos posibles (excluyendo message que es del usuario)
-        for key in ["content", "output", "result", "answer"]:
-            if key in execution_results and execution_results[key]:
-                response_value = execution_results[key]
-                logger.info(f"[OrchestratorService] 🔍 Encontrado campo '{key}': {response_value}")
-                if isinstance(response_value, dict) and 'content' in response_value:
-                    actual_response = response_value['content']
-                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en '{key}.content' (longitud: {len(str(actual_response))} chars)")
-                    return str(actual_response)
-                else:
-                    response_length = len(str(response_value))
-                    logger.info(f"[OrchestratorService] ✅ Encontrada respuesta en '{key}' (longitud: {response_length} chars)")
-                    return str(response_value)
-        
-        # Si hay error, devolver mensaje de error
-        if "error" in execution_results:
-            logger.error(f"[OrchestratorService] ❌ Error encontrado: {execution_results['error']}")
-            return f"❌ Error: {execution_results['error']}"
-        
-        # Si hay execution_error, devolver mensaje de error
-        if "execution_error" in execution_results:
-            logger.error(f"[OrchestratorService] ❌ Error de ejecución: {execution_results['execution_error']}")
-            return f"❌ Error de ejecución: {execution_results['execution_error']}"
-        
-        # Si no hay respuesta, devolver mensaje por defecto
-        logger.warning("[OrchestratorService] ⚠️ No se encontró respuesta en los resultados")
-        logger.warning(f"[OrchestratorService] ⚠️ Contenido completo de execution_results: {execution_results}")
-        logger.warning("[OrchestratorService] ⚠️ DEVOLVIENDO MENSAJE POR DEFECTO")
-        return "🤖 No se pudo generar una respuesta"
-
-    def _safe_sqlalchemy_to_dict(self, obj: Any) -> Dict[str, Any]:
-        """
-        Convierte objetos SQLAlchemy a diccionarios de forma segura.
-        Maneja casos donde el objeto puede no tener ciertos atributos.
-        """
+        # 🔧 FASE 10: Usar normalización centralizada
         try:
-            if hasattr(obj, '__dict__'):
-                # Objeto SQLAlchemy - extraer atributos
-                result = {}
-                for key, value in obj.__dict__.items():
-                    # Ignorar atributos internos de SQLAlchemy
-                    if not key.startswith('_'):
-                        try:
-                            # Convertir datetime a ISO string si es posible
-                            if hasattr(value, 'isoformat'):
-                                result[key] = value.isoformat()
-                            else:
-                                result[key] = value
-                        except Exception:
-                            # Si falla la conversión, usar string
-                            result[key] = str(value)
-                return result
-            elif hasattr(obj, 'model_dump'):
-                # Objeto Pydantic
-                return obj.model_dump()
-            elif isinstance(obj, dict):
-                # Ya es un diccionario
-                return obj
-            else:
-                # Otro tipo - convertir a string
-                return {'value': str(obj)}
+            # Intentar normalizar directamente si hay assistant_response
+            if "assistant_response" in execution_results and execution_results["assistant_response"]:
+                normalized = normalize_assistant_response(execution_results["assistant_response"])
+                logger.info(f"[OrchestratorService] 🔧 FASE 10: assistant_response normalizado: '{normalized}'")
+                return normalized
+            
+            # Si no hay assistant_response, buscar en otros campos
+            for field in ["response", "message", "content"]:
+                if field in execution_results and execution_results[field]:
+                    normalized = normalize_assistant_response(execution_results[field])
+                    logger.info(f"[OrchestratorService] 🔧 FASE 10: {field} normalizado: '{normalized}'")
+                    return normalized
+            
+            # 🔧 FASE 10: Buscar en variables como fallback
+            if "variables" in execution_results and execution_results["variables"]:
+                variables = execution_results["variables"]
+                for var_name, var_value in variables.items():
+                    if var_name in ["query_result", "result", "answer"] and var_value:
+                        normalized = normalize_assistant_response(var_value)
+                        logger.info(f"[OrchestratorService] 🔧 FASE 10: Variable {var_name} normalizada: '{normalized}'")
+                        return normalized
+            
+            # 🔧 FASE 11: Si no hay respuesta válida, usar servicio de fallback
+            logger.warning(f"[OrchestratorService] 🔧 FASE 11: No hay respuesta válida, usando servicio de fallback")
+            fallback_response = self.fallback_service.generate_fallback_response(
+                execution_results=execution_results,
+                user_message="",  # Se pasará desde el método que llama
+                context=None
+            )
+            return fallback_response
+            
         except Exception as e:
-            logger.warning(f"[OrchestratorService] Error convirtiendo objeto a diccionario: {e}")
-            return {'error': f'Error converting object: {str(e)}'}
+            logger.error(f"[OrchestratorService] 🔧 FASE 10: Error normalizando respuesta: {e}")
+            # 🔧 FASE 11: En caso de error, usar fallback
+            return self.fallback_service.generate_fallback_response(
+                execution_results={"error": str(e)},
+                user_message="",
+                context=None
+            )
 
     # ===================================================
     #  MÉTODOS STUB DE EMISIÓN WEBSOCKET (FASE 0)
@@ -2045,3 +1877,69 @@ class OrchestratorService:
                 "error": str(e),
                 "context_optimized": False
             }
+
+    def process_chat_message(self, chat_id: UUID, user_message: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Procesar mensaje de chat y generar respuesta"""
+        try:
+            # ... existing code ...
+            
+            # 🔧 FASE 11: Verificar si se debe usar fallback
+            if self.fallback_service.should_use_fallback(execution_results):
+                logger.warning(f"[OrchestratorService] 🔧 FASE 11: Usando servicio de fallback para chat_id={chat_id}")
+                fallback_response = self.fallback_service.generate_fallback_response(
+                    execution_results=execution_results,
+                    user_message=user_message,
+                    context=context
+                )
+                # Reemplazar assistant_response con fallback
+                execution_results["assistant_response"] = fallback_response
+                execution_results["_fallback_used"] = True
+                execution_results["_fallback_reason"] = "assistant_response_vacio_o_con_error"
+            
+            # ... existing code ...
+            
+            # 🔧 FASE 10: Normalizar respuesta final
+            final_response = {
+                "message": assistant_response,
+                "chat_id": str(chat_id),
+                "assistant_response": assistant_response,
+                "execution_summary": {
+                    "total_tokens": total_tokens_out,
+                    "execution_time_ms": execution_time_ms,
+                    "steps_executed": len(execution_results.get("steps", [])),
+                    "status": "completed"
+                }
+            }
+            
+            # 🔧 FASE 11: Añadir información de fallback si se usó
+            if execution_results.get("_fallback_used"):
+                final_response["fallback_info"] = {
+                    "used": True,
+                    "reason": execution_results.get("_fallback_reason", "unknown"),
+                    "generated_at": datetime.now().isoformat(),
+                    "version": "fase11"
+                }
+            
+            # 🔧 FASE 10: Validar y normalizar estructura completa
+            normalized_response = validate_response_structure(final_response)
+            
+            logger.info(f"[OrchestratorService] 🔧 FASE 10: Respuesta final normalizada y validada")
+            return normalized_response
+            
+        except Exception as e:
+            logger.error(f"[OrchestratorService] ❌ Error procesando mensaje de chat: {e}")
+            # 🔧 FASE 11: Respuesta de error con fallback
+            error_response = {
+                "message": "🤖 Error interno del sistema. Por favor, contacta soporte.",
+                "chat_id": str(chat_id),
+                "assistant_response": "🤖 Error interno del sistema. Por favor, contacta soporte.",
+                "error": str(e),
+                "status": "error",
+                "fallback_info": {
+                    "used": True,
+                    "reason": "error_interno",
+                    "generated_at": datetime.now().isoformat(),
+                    "version": "fase11"
+                }
+            }
+            return validate_response_structure(error_response)

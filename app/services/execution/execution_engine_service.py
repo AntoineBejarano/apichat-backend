@@ -1,7 +1,7 @@
 # app/services/execution_engine_service.py
 from __future__ import annotations
 
-import json, re, logging
+import json, re, logging, asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypedDict
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from app.utils.text import format_database_tables, format_query_results
 from app.services.execution.retry_service import retry_service
 from app.services.execution.undo_service import undo_service, create_db_undo_operation
 from app.core.config import settings
+from app.utils.response_normalizer import safe_serialize_result  # 🔧 FASE 10: Importar serialización segura
 
 if TYPE_CHECKING:                       # evita import cíclicos en tiempo real
     from app.core.service_factory import ServiceFactory
@@ -49,6 +50,9 @@ class ExecutionEngineService:
 
         # 🔧 FIX: Ejecutar acciones secuencialmente en lugar de usar StateGraph
         logger.info(f"[ExecutionEngine] 🎯 Ejecutando {len(actions)} acciones secuencialmente")
+        
+        # 🔧 FASE 4: Enriquecer acciones del plan con database_id antes de ejecutarlas
+        actions = self._enrich_plan_actions_with_database_id(actions, variables)
         
         for idx, action in enumerate(actions, start=1):
             logger.info(f"[ExecutionEngine] ▶️ Ejecutando acción {idx}/{len(actions)}: {action['type']}")
@@ -133,7 +137,7 @@ class ExecutionEngineService:
     # ────────────────────────────────────────────────────────────────
     # … dentro de class ExecutionEngineService …
 
-    def _run_db_query(self, action: Dict[str, Any], ctx: Dict[str, Any]):
+    async def _run_db_query(self, action: Dict[str, Any], ctx: Dict[str, Any]):
         # Verificar si fue bloqueada por guardrails
         if action.get('_guardrails_error'):
             logger.error(f"[ExecutionEngine] 🚫 Consulta SQL bloqueada por guardrails")
@@ -302,9 +306,130 @@ class ExecutionEngineService:
             rendered_q = self._render_text(question, ctx)
             # Obtener el DatabaseConnection para pasar a ask_database_question
             db_record = db_service.get_record(db_id)
-            return self.factory.get_langchain_service().ask_database_question(db_record, rendered_q)
-
+            
+            # 🔧 FASE 5: Usar await correctamente con el método async
+            try:
+                result = await self.factory.get_langchain_service().ask_database_question(db_record, rendered_q)
+                logger.info(f"[ExecutionEngine] ✅ FASE 5: ask_database_question ejecutado correctamente")
+                
+                # 🔧 FASE 11: Normalizar salida de acciones DB
+                normalized_result = self._normalize_db_query_result(result, action, db_id)
+                logger.info(f"[ExecutionEngine] 🔧 FASE 11: Resultado de DB normalizado: {safe_serialize_result(normalized_result, max_length=200)}")
+                
+                return normalized_result
+                
+            except Exception as e:
+                logger.error(f"[ExecutionEngine] ❌ FASE 5: Error en ask_database_question: {e}")
+                
+                # 🔧 FASE 11: Resultado de error normalizado
+                error_result = {
+                    "ok": False,
+                    "error": str(e),
+                    "rows": [],
+                    "sql": "",
+                    "summary": f"Error procesando pregunta: {str(e)}",
+                    "source": "execution_engine_error",
+                    "database_id": str(db_id),
+                    "question": rendered_q,
+                    "_error_type": "database_query_execution_failed",
+                    "_timestamp": datetime.now().isoformat()
+                }
+                
+                return error_result
+                
         raise ValueError("Acción db_query sin 'sql' ni 'question'")
+
+    def _normalize_db_query_result(self, result: Dict[str, Any], action: Dict[str, Any], db_id: UUID) -> Dict[str, Any]:
+        """
+        🔧 FASE 11: Normalizar la salida de las acciones DB para estructura consistente.
+        
+        Args:
+            result: Resultado de la consulta DB
+            action: Acción que se ejecutó
+            db_id: ID de la base de datos
+            
+        Returns:
+            Resultado normalizado con estructura consistente
+        """
+        try:
+            # 🔧 FASE 11: Estructura base normalizada
+            normalized = {
+                "ok": True,
+                "rows": result.get("rows", []),
+                "sql": result.get("sql", ""),
+                "summary": result.get("summary", ""),
+                "source": result.get("source", "database_query"),
+                "database_id": str(db_id),
+                "question": action.get("question", ""),
+                "_timestamp": datetime.now().isoformat(),
+                "_normalization_version": "fase11"
+            }
+            
+            # 🔧 FASE 11: Verificar si hay errores en el resultado
+            if result.get("error"):
+                normalized["ok"] = False
+                normalized["error"] = result["error"]
+                normalized["_error_type"] = "query_result_error"
+            
+            # 🔧 FASE 11: Normalizar filas si existen
+            if normalized["rows"]:
+                # Limitar número de filas para evitar respuestas excesivamente largas
+                max_rows = 100
+                if len(normalized["rows"]) > max_rows:
+                    normalized["rows"] = normalized["rows"][:max_rows]
+                    normalized["_rows_truncated"] = True
+                    normalized["_total_rows"] = len(result["rows"])
+                    normalized["summary"] += f" (mostrando primeras {max_rows} filas de {len(result['rows'])})"
+                
+                # Añadir información de filas
+                normalized["_row_count"] = len(normalized["rows"])
+                normalized["_columns"] = list(normalized["rows"][0].keys()) if normalized["rows"] else []
+            
+            # 🔧 FASE 11: Normalizar SQL
+            if normalized["sql"]:
+                # Verificar que SQL no sea excesivamente largo
+                max_sql_length = 500
+                if len(normalized["sql"]) > max_sql_length:
+                    normalized["sql"] = normalized["sql"][:max_sql_length] + "..."
+                    normalized["_sql_truncated"] = True
+                
+                # Añadir información de SQL
+                normalized["_sql_length"] = len(normalized["sql"])
+                normalized["_sql_type"] = "SELECT" if "SELECT" in normalized["sql"].upper() else "OTHER"
+            
+            # 🔧 FASE 11: Normalizar resumen
+            if normalized["summary"]:
+                # Limitar longitud del resumen
+                max_summary_length = 300
+                if len(normalized["summary"]) > max_summary_length:
+                    normalized["summary"] = normalized["summary"][:max_summary_length] + "..."
+                    normalized["_summary_truncated"] = True
+            
+            # 🔧 FASE 11: Añadir metadatos de la acción
+            normalized["_action_type"] = action.get("type", "unknown")
+            normalized["_action_id"] = action.get("id", "unknown")
+            normalized["_execution_time"] = getattr(result, "execution_time", None)
+            
+            logger.info(f"[ExecutionEngine] 🔧 FASE 11: Resultado DB normalizado exitosamente (ok={normalized['ok']}, rows={normalized['_row_count']})")
+            return normalized
+            
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] 🔧 FASE 11: Error normalizando resultado DB: {e}")
+            
+            # 🔧 FASE 11: Resultado de error de normalización
+            return {
+                "ok": False,
+                "error": f"Error normalizando resultado: {str(e)}",
+                "rows": [],
+                "sql": "",
+                "summary": "Error interno procesando resultado de base de datos",
+                "source": "normalization_error",
+                "database_id": str(db_id),
+                "question": action.get("question", ""),
+                "_error_type": "normalization_error",
+                "_timestamp": datetime.now().isoformat(),
+                "_normalization_version": "fase11"
+            }
 
 
     def _run_api_function(self, action: Dict[str, Any], ctx: Dict[str, Any], chat_id: UUID):
@@ -1306,3 +1431,97 @@ class ExecutionEngineService:
             }
         except:
             return {}
+
+    # 🔧 FASE 4: Enriquecer acciones del plan con database_id
+    def _enrich_plan_actions_with_database_id(self, actions: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Enriquece las acciones del plan con database_id antes de ejecutarlas.
+        
+        Args:
+            actions: Lista de acciones del plan
+            context: Contexto de ejecución
+            
+        Returns:
+            Lista de acciones enriquecidas con database_id
+        """
+        logger.info(f"[ExecutionEngine] 🔧 FASE 4: Enriqueciendo {len(actions)} acciones con database_id")
+        
+        # Obtener database_id del contexto
+        context_db_ids = context.get("db_ids", [])
+        if not context_db_ids:
+            logger.warning("[ExecutionEngine] ⚠️ No hay db_ids en el contexto - no se puede enriquecer")
+            return actions
+        
+        # Si hay múltiples DBs, usar la primera como principal
+        primary_db_id = context_db_ids[0] if context_db_ids else None
+        logger.info(f"[ExecutionEngine] 🔧 Usando database_id principal: {primary_db_id}")
+        
+        enriched_actions = []
+        for i, action in enumerate(actions):
+            action_copy = action.copy()
+            
+            # Solo enriquecer acciones de tipo db_query
+            if action_copy.get('type') == 'db_query':
+                # Si ya tiene database_id, mantenerlo
+                if action_copy.get('database_id'):
+                    logger.debug(f"[ExecutionEngine] 🔧 Acción {i+1} ya tiene database_id: {action_copy['database_id']}")
+                else:
+                    # Enriquecer con database_id del contexto
+                    action_copy['database_id'] = primary_db_id
+                    logger.info(f"[ExecutionEngine] 🔧 FASE 4: Enriquecida acción {i+1} con database_id: {primary_db_id}")
+                
+                # 🔧 FASE 6: Generar SQL desde pregunta si no hay sql
+                if not action_copy.get('sql') and action_copy.get('question'):
+                    logger.info(f"[ExecutionEngine] 🔧 FASE 6: Generando SQL desde pregunta: {action_copy['question'][:50]}...")
+                    try:
+                        # Usar LangchainService para generar SQL seguro
+                        langchain_service = self.factory.get_langchain_service()
+                        
+                        # Obtener esquema de la base de datos para contexto
+                        db_service = self.factory.get_database_service()
+                        db_record = db_service.get_record(primary_db_id)
+                        
+                        # 🔧 FASE 6: Usar método síncrono para evitar problemas de event loop
+                        sql_result = langchain_service.generate_sql_from_question_sync(
+                            question=action_copy['question'],
+                            db_id=primary_db_id,
+                            table_schema=db_record.schema if hasattr(db_record, 'schema') else None
+                        )
+                        
+                        if sql_result.get('sql') and not sql_result.get('error'):
+                            action_copy['sql'] = sql_result['sql']
+                            action_copy['_sql_generated'] = True
+                            action_copy['_sql_source'] = 'langchain_generation'
+                            action_copy['_sql_metadata'] = {
+                                'security_validated': sql_result.get('security_validated', False),
+                                'auto_limit_added': sql_result.get('auto_limit_added', False),
+                                'generation_timestamp': sql_result.get('timestamp')
+                            }
+                            logger.info(f"[ExecutionEngine] ✅ FASE 6: SQL generado exitosamente: {sql_result['sql'][:100]}...")
+                        else:
+                            # Si falla la generación, crear SQL placeholder seguro
+                            logger.warning(f"[ExecutionEngine] ⚠️ FASE 6: Falló generación de SQL: {sql_result.get('error', 'Unknown error')}")
+                            action_copy['sql'] = f"SELECT * FROM information_schema.tables WHERE table_name LIKE '%{action_copy['question'][:20]}%' LIMIT 10"
+                            action_copy['_sql_generated'] = True
+                            action_copy['_sql_source'] = 'fallback_placeholder'
+                            action_copy['_sql_fallback_reason'] = sql_result.get('error', 'Generation failed')
+                            
+                    except Exception as e:
+                        logger.error(f"[ExecutionEngine] ❌ FASE 6: Error generando SQL: {e}")
+                        # Fallback a SQL placeholder seguro
+                        action_copy['sql'] = f"SELECT * FROM information_schema.tables WHERE table_name LIKE '%{action_copy['question'][:20]}%' LIMIT 10"
+                        action_copy['_sql_generated'] = True
+                        action_copy['_sql_source'] = 'error_fallback'
+                        action_copy['_sql_error'] = str(e)
+            
+            enriched_actions.append(action_copy)
+        
+        # Log del enriquecimiento
+        enriched_count = sum(1 for a in enriched_actions if a.get('type') == 'db_query' and a.get('database_id'))
+        total_db_queries = sum(1 for a in actions if a.get('type') == 'db_query')
+        sql_generated_count = sum(1 for a in enriched_actions if a.get('_sql_generated'))
+        
+        logger.info(f"[ExecutionEngine] ✅ FASE 4: Enriquecidas {enriched_count}/{total_db_queries} acciones db_query con database_id")
+        logger.info(f"[ExecutionEngine] ✅ FASE 6: Generado SQL para {sql_generated_count} acciones desde preguntas")
+        
+        return enriched_actions
