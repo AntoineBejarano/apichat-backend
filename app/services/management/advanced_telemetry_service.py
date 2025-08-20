@@ -127,7 +127,8 @@ class TelemetryContext:
             session_id=self.session_id,
             tokens_in=self.tokens_in,
             tokens_out=self.tokens_out,
-            estimated_cost_usd=self._calculate_cost(),
+            # estimated_cost_usd es una columna generada automáticamente por PostgreSQL
+            # No se debe incluir en la creación
             latency_total_ms=Decimal(str(self.get_total_latency_ms())),
             latency_llm_ms=Decimal(str(self.latency_llm_ms)),
             latency_db_ms=Decimal(str(self.latency_db_ms)),
@@ -431,7 +432,11 @@ class AdvancedTelemetryService(BaseService):
     def _save_conversation_metrics(self, metrics_data: ConversationMetricsCreate) -> ConversationMetrics:
         """Guarda las métricas de conversación en la base de datos."""
         try:
-            metrics = ConversationMetrics(**metrics_data.model_dump())
+            # 🔧 FASE 4: Eliminar estimated_cost_usd del dict de parámetros antes del INSERT
+            metrics_dict = metrics_data.model_dump()
+            metrics_dict.pop("estimated_cost_usd", None)
+            
+            metrics = ConversationMetrics(**metrics_dict)
             self.db.add(metrics)
             self.db.commit()
             self.db.refresh(metrics)
@@ -445,6 +450,37 @@ class AdvancedTelemetryService(BaseService):
             self.db.rollback()
             logger.error(f"[AdvancedTelemetryService] ❌ Error guardando métricas: {e}")
             raise
+
+    def track_event(self, event_name: str, metadata: dict):
+        """
+        🔧 FASE 4: Método faltante para tracking de eventos.
+        
+        Args:
+            event_name: Nombre del evento a trackear
+            metadata: Metadatos adicionales del evento
+        """
+        logger.debug(f"[AdvancedTelemetryService] 🔧 FASE 4: Tracking event: {event_name}")
+        
+        try:
+            # Implementación opcional de tracking de eventos aquí
+            # Por ahora solo logueamos el evento
+            event_data = {
+                "event_name": event_name,
+                "metadata": metadata,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "user_id": getattr(self, 'user_id', None),
+                "session_id": getattr(self, 'session_id', None)
+            }
+            
+            # Log del evento para debugging
+            logger.info(f"[AdvancedTelemetryService] 📊 Event tracked: {event_name} - {metadata}")
+            
+            # Aquí se podría implementar almacenamiento en base de datos
+            # o envío a servicios externos de analytics
+            
+        except Exception as e:
+            logger.warning(f"[AdvancedTelemetryService] ⚠️ Error tracking event {event_name}: {e}")
+            # No fallar si el tracking falla
 
     async def _save_step_metrics(self, step_metrics: StepMetricsCreate):
         """Guarda las métricas de un paso."""

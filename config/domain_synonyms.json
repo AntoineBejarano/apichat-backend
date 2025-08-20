@@ -1,0 +1,191 @@
+{
+  "ecommerce": {
+    "products": [
+      "productos", 
+      "articulos", 
+      "items", 
+      "mercancias", 
+      "bienes",
+      "servicios",
+      "productos_disponibles",
+      "catalogo",
+      "inventario"
+    ],
+    "orders": [
+      "pedidos", 
+      "ordenes", 
+      "compras", 
+      "ventas", 
+      "transacciones",
+      "ordenes_de_compra",
+      "pedidos_online",
+      "compras_web"
+    ],
+    "customers": [
+      "clientes", 
+      "usuarios", 
+      "compradores", 
+      "consumidores",
+      "usuarios_finales",
+      "clientes_registrados",
+      "compradores_online"
+    ],
+    "cart": [
+      "carrito", 
+      "carrito_de_compras", 
+      "cesta",
+      "shopping_cart",
+      "carrito_online"
+    ],
+    "shipping": [
+      "envio", 
+      "envios", 
+      "envio_gratis", 
+      "envio_express",
+      "shipping",
+      "delivery",
+      "entrega"
+    ],
+    "reviews": [
+      "reseñas", 
+      "opiniones", 
+      "calificaciones",
+      "reviews",
+      "comentarios",
+      "valoraciones"
+    ]
+  },
+  "crm": {
+    "contacts": [
+      "contactos", 
+      "personas", 
+      "clientes", 
+      "prospectos",
+      "leads",
+      "personas_de_contacto"
+    ],
+    "leads": [
+      "prospectos", 
+      "oportunidades", 
+      "posibles_clientes",
+      "leads_calientes",
+      "prospectos_calientes"
+    ],
+    "deals": [
+      "negocios", 
+      "oportunidades", 
+      "ventas", 
+      "acuerdos",
+      "ofertas",
+      "propuestas"
+    ],
+    "accounts": [
+      "cuentas", 
+      "empresas", 
+      "organizaciones",
+      "companias",
+      "clientes_corporativos"
+    ],
+    "opportunities": [
+      "oportunidades", 
+      "posibilidades", 
+      "chances",
+      "oportunidades_de_venta"
+    ]
+  },
+  "hr": {
+    "employees": [
+      "empleados", 
+      "trabajadores", 
+      "personal",
+      "staff",
+      "colaboradores",
+      "recursos_humanos",
+      "plantilla"
+    ],
+    "departments": [
+      "departamentos", 
+      "areas", 
+      "secciones",
+      "divisiones",
+      "unidades",
+      "areas_funcionales"
+    ],
+    "positions": [
+      "puestos", 
+      "cargos", 
+      "posiciones",
+      "roles",
+      "funciones",
+      "responsabilidades"
+    ],
+    "attendance": [
+      "asistencia", 
+      "presencia", 
+      "control_asistencia",
+      "registro_horario",
+      "time_tracking"
+    ]
+  },
+  "finance": {
+    "invoices": [
+      "facturas", 
+      "recibos", 
+      "comprobantes",
+      "documentos_fiscales",
+      "bills",
+      "cuentas_por_cobrar"
+    ],
+    "payments": [
+      "pagos", 
+      "transacciones", 
+      "cobros",
+      "abonos",
+      "movimientos",
+      "operaciones_financieras"
+    ],
+    "expenses": [
+      "gastos", 
+      "costos", 
+      "egresos",
+      "desembolsos",
+      "costos_operativos"
+    ],
+    "revenue": [
+      "ingresos", 
+      "ventas", 
+      "facturacion",
+      "ganancias",
+      "ingresos_brutos"
+    ]
+  },
+  "inventory": {
+    "stock": [
+      "stock", 
+      "inventario", 
+      "existencias",
+      "cantidad_disponible",
+      "stock_disponible"
+    ],
+    "warehouse": [
+      "almacen", 
+      "bodega", 
+      "deposito",
+      "warehouse",
+      "centro_de_distribucion"
+    ],
+    "suppliers": [
+      "proveedores", 
+      "suministradores", 
+      "vendores",
+      "proveedores_de_materia_prima"
+    ],
+    "categories": [
+      "categorias", 
+      "clasificaciones", 
+      "tipos",
+      "grupos",
+      "familias_de_productos"
+    ]
+  }
+}

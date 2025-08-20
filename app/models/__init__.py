@@ -30,6 +30,7 @@ from app.models.function_group_model import FunctionGroup
 from app.models.event_definition_model import EventDefinition
 from app.models.trigger_model import Trigger
 from app.models.event_trigger_model import EventTrigger
+from app.models.llm_runs_model import LLMRun
 
 __all__ = [
     "Base",
@@ -37,7 +38,7 @@ __all__ = [
     "DatabaseConnection", "Function", "Integration", "MCPIntegration",
     "OpenAPIIntegration", "Permission", "Plan", "Proxy", "Role",
     "Session", "Strategy", "TokenUsage", "Subscription",
-    "OAuthAccount", "FunctionGroup", "EventDefinition", "Trigger", "EventTrigger"
+    "OAuthAccount", "FunctionGroup", "EventDefinition", "Trigger", "EventTrigger", "LLMRun"
 ]
 
 def init_model_relationships():

@@ -36,22 +36,8 @@ from app.common.ws_emitter import WebSocketEmitter
 from app.common.enums import Mode
 from app.core.config import settings
 
-# Importar módulos especializados
-from app.services.orchestrator import (
-    TokenBudgetManager,
-    ContextLoader,
-    ResponseProcessor,
-    ContextOptimizer,
-    GraphRunner,
-    MessageHandler,
-    IterativeRAGHandler,
-    SchemaValidator,
-    ResponseFormatter,
-    SchemaManager,
-    ChatHistoryManager,
-    AppFunctionManager,
-    DecisionManager
-)
+# Importar ReAct Orchestrator simplificado
+from app.services.react_orchestrator import ReActOrchestrator
 
 from app.utils.response_normalizer import normalize_assistant_response, validate_response_structure  # 🔧 FASE 10: Importar normalización
 from app.services.ai.fallback_response_service import FallbackResponseService  # 🔧 FASE 11: Importar servicio de fallback
@@ -98,33 +84,16 @@ class OrchestratorService:
         self.db = factory.db
         self.user_id = factory.user.id
         
-        # 🔒 CONTROL DE TOKENS - Inicializar módulos especializados
-        self.token_budget = TokenBudgetManager()
+        # 🧠 ReAct Orchestrator simplificado
+        self.react_orchestrator = ReActOrchestrator(factory)
         
-        # 🔒 VALIDACIÓN: Crear ContextLoader con manejo de errores
-        try:
-            self.context_loader = ContextLoader(factory)
-            logger.info("[OrchestratorService] ✅ ContextLoader inicializado correctamente")
-        except Exception as e:
-            logger.error(f"[OrchestratorService] ❌ Error inicializando ContextLoader: {e}")
-            # Crear un ContextLoader por defecto o continuar sin él
-            self.context_loader = None
-        
-        self.response_processor = ResponseProcessor()
-        self.context_optimizer = ContextOptimizer()
-        self.graph_runner = GraphRunner(factory)
-        self.message_handler = MessageHandler(factory)
-        self.iterative_rag_handler = IterativeRAGHandler(factory)
-        self.schema_validator = SchemaValidator()
-        self.response_formatter = ResponseFormatter()
-        
-        # 🆕 NUEVOS MÓDULOS ESPECIALIZADOS
-        self.schema_manager = SchemaManager(factory)
-        self.chat_history_manager = ChatHistoryManager(factory)
-        self.app_function_manager = AppFunctionManager(factory)
-        # self.agent_manager = AgentManager(factory)  # Comentado temporalmente para tests
-        # self.plan_strategy_manager = PlanStrategyManager(factory)  # Comentado temporalmente para tests
-        self.decision_manager = DecisionManager()
+        # 🔧 Configuración básica para compatibilidad
+        self._token_bucket = {
+            "max_tokens_per_window": 10000,
+            "tokens_used": 0,
+            "window_start": time.time(),
+            "window_size": 3600  # 1 hora
+        }
         
         # 🆕 WEBSOCKET EMITTER para eventos en tiempo real
         self.ws_emitter: Optional[WebSocketEmitter] = factory.get_ws_emitter()
@@ -151,7 +120,6 @@ class OrchestratorService:
     #  PUBLIC ENTRY-POINT
     # ===================================================
     @monitor_performance("orchestrator_handle_message")
-    @profile_function("orchestrator_handle_message")
     async def handle_user_message(
         self,
         chat_id: UUID,
@@ -161,565 +129,103 @@ class OrchestratorService:
         agent_id: Optional[UUID],
         message: ChatMessage,
     ) -> Dict[str, Any]:
-
-        # 🎯 FASE 13: INICIAR TRACKING DE TELEMETRÍA
+        """
+        🧠 Maneja mensajes de usuario usando ReAct Orchestrator simplificado
+        """
         start_time = time.time()
-        conversation_id = str(uuid4())
-        
-        if self.telemetry_service:
-            try:
-                self.current_telemetry_context = self.telemetry_service.start_conversation_tracking(
-                    conversation_id=conversation_id,
-                    user_id=self.user_id,
-                    chat_id=chat_id,
-                    mode="explorer" if explorer else "guided",
-                    user_preferences={
-                        "response_format": "detailed",
-                        "detail_level": "normal",
-                        "risk_tolerance": "medium",
-                        "language": "es"
-                    }
-                )
-                logger.info(f"[OrchestratorService] 🎯 FASE 13: Tracking de telemetría iniciado para conversación {conversation_id}")
-            except Exception as e:
-                logger.warning(f"[OrchestratorService] ⚠️ Error iniciando tracking de telemetría: {e}")
-                self.current_telemetry_context = None
-
-        # 🚀 FASE 1: Emisión básica de progreso en tiempo real
-        await self.emit_status_typing(True)  # Usuario está escribiendo
-        await self.emit_status_progress(1, 1, "Recibiendo mensaje", 10.0)
-
-        # 📊 Profiling de memoria
-        memory_profiler.take_snapshot("orchestrator_start")
-
-        # 🚀 FASE 7: Fast Schema Path - Intentar respuesta rápida sin LLM
-        if settings.UX_FAST_PATH and db_ids and self._is_schema_lookup_intent(message.content):
-            try:
-                logger.info("[OrchestratorService] 🚀 Intentando Fast Schema Path...")
-                await self.emit_status_progress(2, 5, "Buscando en índices léxicos...", 20.0)
-                
-                # Obtener SchemaExplorerService
-                schema_explorer = self.factory.get_schema_explorer_service()
-                
-                # Intentar fast lookup
-                fast_result, confidence, response_type = schema_explorer.fast_lookup(message.content, db_ids)
-                
-                if response_type == "fast" and fast_result:
-                    logger.info(f"[OrchestratorService] ✅ Fast Schema Path exitoso (confianza: {confidence:.2f})")
-                    
-                    # 🎯 FASE 13: TRACKING DE PASO EXITOSO
-                    if self.current_telemetry_context:
-                        try:
-                            self.telemetry_service.track_step_execution(
-                                conversation_id=conversation_id,
-                                step_number=1,
-                                step_type="fast_schema_lookup",
-                                duration_ms=(time.time() - start_time) * 1000,
-                                success=True,
-                                tokens_used=0,
-                                cache_operations=1,
-                                database_queries=0,
-                                llm_calls=0,
-                                metadata={
-                                    "confidence": confidence,
-                                    "tables_found": len(fast_result.get('tables', [])),
-                                    "response_type": response_type
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning(f"[OrchestratorService] ⚠️ Error tracking paso de telemetría: {e}")
-                    
-                    # Emitir resultado final directamente
-                    await self.emit_result_final(
-                        summary=fast_result.get('message', 'Consulta de esquema resuelta rápidamente'),
-                        data=fast_result,
-                        next_actions=[
-                            "Pregunta algo más específico sobre las tablas encontradas",
-                            "Explora los datos de una tabla en particular",
-                            "Verifica la estructura de las columnas"
-                        ],
-                        usage_stats={
-                            'response_time_ms': fast_result.get('response_time_ms', 0),
-                            'confidence': confidence,
-                            'tables_found': len(fast_result.get('tables', [])),
-                            'mode': 'fast_schema_path'
-                        }
-                    )
-                    
-                    # Guardar mensaje del usuario
-                    await self._store_user_message_async(chat_id, message)
-                    
-                    # Guardar respuesta del asistente
-                    await self._save_assistant_message_async(
-                        chat_id, 
-                        fast_result.get('message', 'Consulta resuelta'),
-                        None,  # No contamos tokens en fast path
-                        None
-                    )
-                    
-                    # 🎯 FASE 13: FINALIZAR TRACKING Y EMITIR SNAPSHOT
-                    if self.current_telemetry_context:
-                        try:
-                            # Finalizar tracking de conversación
-                            metrics = self.telemetry_service.end_conversation_tracking(
-                                conversation_id=conversation_id
-                            )
-                            
-                            # Emitir snapshot de telemetría
-                            await self.emit_telemetry_snapshot(
-                                tokens_in=0,  # Fast path no usa LLM
-                                tokens_out=0,
-                                latency_ms=(time.time() - start_time) * 1000,
-                                cache_hit_ratio=1.0,  # Fast path es cache hit
-                                steps_executed=1,
-                                confirmations_required=0,
-                                mode=Mode.EXPLORER if explorer else Mode.GUIDED
-                            )
-                            
-                            logger.info(f"[OrchestratorService] 🎯 FASE 13: Telemetría finalizada y snapshot emitido para conversación {conversation_id}")
-                            
-                        except Exception as e:
-                            logger.warning(f"[OrchestratorService] ⚠️ Error finalizando telemetría: {e}")
-                    
-                    return {
-                        "assistant_response": fast_result.get('message', 'Consulta resuelta'),
-                        "fast_path_used": True,
-                        "confidence": confidence,
-                        "response_type": "fast_schema_lookup"
-                    }
-                
-                elif response_type == "ambiguous" and fast_result:
-                    logger.info(f"[OrchestratorService] 🤔 Fast Schema Path ambigua (confianza: {confidence:.2f})")
-                    
-                    # Emitir resultado parcial para desambiguación
-                    await self.emit_result_partial(
-                        step=1,
-                        data=fast_result,
-                        preview=f"Encontré {len(fast_result.get('tables', []))} posibles coincidencias. ¿Podrías ser más específico?"
-                    )
-                    
-                    # Continuar con el flujo normal para desambiguación
-                    await self.emit_status_progress(3, 5, "Procesando consulta ambigua...", 40.0)
-                
-                else:
-                    logger.info(f"[OrchestratorService] 📉 Fast Schema Path falló (confianza: {confidence:.2f}) - usando LLM")
-                    await self.emit_status_progress(3, 5, "Usando análisis inteligente...", 40.0)
-            except Exception as e:
-                logger.warning(f"[OrchestratorService] ⚠️ Error en Fast Schema Path: {e} - continuando con LLM")
-                await self.emit_status_progress(3, 5, "Error en búsqueda rápida, usando análisis inteligente...", 40.0)
-
-        # 🔒 CONTROL DE TOKENS: Aplicar presupuesto antes de cargar contexto
-        db_ids = self.token_budget.apply_token_budget_to_db_ids(db_ids)
-        app_ids = self.token_budget.apply_token_budget_to_app_ids(app_ids)
-        
-        # 🔒 CONTROL DE TOKENS: Verificar token bucket antes de proceder
-        if not self.token_budget.check_token_bucket():
-            logger.warning("[OrchestratorService] 🔒 Token bucket limitado - usando contexto mínimo")
-            return await self._handle_message_with_minimal_context(
-                chat_id, db_ids, app_ids, explorer, agent_id, message
-            )
-        
-        # ⚡ OPTIMIZACIÓN: Ejecutar operaciones en paralelo usando ContextLoader
-        # 🔒 VALIDACIÓN: Verificar que context_loader esté disponible
-        if not self.context_loader:
-            logger.error("[OrchestratorService] ❌ ContextLoader no disponible - usando contexto mínimo")
-            return await self._handle_message_with_minimal_context(
-                chat_id, db_ids, app_ids, explorer, agent_id, message
-            )
+        logger.info(f"[OrchestratorService] 🧠 ReAct: Procesando mensaje para chat_id={chat_id}")
         
         try:
-            context_tasks = await self.context_loader.load_context_parallel(chat_id, message, db_ids, app_ids, explorer)
-            
-            # 🔒 VALIDACIÓN: Verificar que el contexto se cargó correctamente
-            if "error" in context_tasks:
-                logger.error(f"[OrchestratorService] ❌ Error cargando contexto: {context_tasks['error']}")
-                return await self._handle_message_with_minimal_context(
-                    chat_id, db_ids, app_ids, explorer, agent_id, message
-                )
-                
-        except Exception as e:
-            logger.error(f"[OrchestratorService] ❌ Error en ContextLoader: {e}")
-            # Usar contexto mínimo si falla el ContextLoader
-            return await self._handle_message_with_minimal_context(
-                chat_id, db_ids, app_ids, explorer, agent_id, message
+            # 🧠 Usar ReAct Orchestrator para procesar el mensaje
+            react_response = await self.react_orchestrator.handle_message(
+                chat_id=chat_id,
+                message=message,
+                db_ids=db_ids,
+                app_ids=app_ids,
+                explorer=explorer
             )
-        
-        # Actualizar el contexto con el parámetro explorer
-        context_tasks["explorer"] = explorer
-
-        # 🔧 FIX: Validar compact_schemas antes de ejecutar el grafo
-        if db_ids and not self._validate_compact_schemas(context_tasks.get("compact_schemas", {}), db_ids):
-            logger.error("[OrchestratorService] ❌ Sin schemas válidos para DBs solicitadas - abortando ejecución")
-            return {
-                "assistant_response": "❌ Error: No se pudo obtener información de las bases de datos solicitadas. Por favor, verifica la conexión.",
-                "error": "missing_valid_schemas"
-            }
-
-        # 🎯 FASE 10: TokenBudget UX - Estimación y budget hints
-        estimated_tokens = self.token_budget.estimate_tokens_for_context(context_tasks)
-        budget_hint = self.token_budget.budget_hint(estimated_tokens)
-        
-        # Emitir budget hint como notice.info
-        if budget_hint["current_usage"]["status"] == "warning":
-            await self.emit_notice_info(
-                message=f"⚠️ Presupuesto de tokens alto ({budget_hint['current_usage']['budget_usage_percent']:.1f}%). {budget_hint['suggestions'][0]}",
-                level="warning",
-                actions=[
-                    "switch_to_fast_mode",
-                    "switch_to_balanced_mode",
-                    "continue_current_mode"
-                ]
+            
+            # Guardar mensaje del usuario
+            await self._store_user_message_async(chat_id, message)
+            
+            # Guardar respuesta del asistente
+            await self._save_assistant_message_async(
+                chat_id, 
+                react_response.get('content', 'Respuesta generada por ReAct'),
+                None,  # No contamos tokens en ReAct por ahora
+                None
             )
-        else:
-            await self.emit_notice_info(
-                message=f"📊 Presupuesto de tokens: {budget_hint['current_usage']['budget_usage_percent']:.1f}% - Modo recomendado: {budget_hint['recommended_mode']}",
-                level="info",
-                actions=[
-                    f"switch_to_{budget_hint['recommended_mode']}_mode",
-                    "show_mode_options",
-                    "continue_current_mode"
-                ]
-            )
-
-        # 🔒 CONTROL DE TOKENS: Aplicar trimming dinámico al contexto usando TokenBudgetManager
-        trimmed_context = self.token_budget.apply_intelligent_context_trimming(context_tasks)
-        
-        # 🎯 FASE 10: Emitir avisos de trimming cuando se recorte el contexto
-        if "_trimming_info" in trimmed_context:
-            trimming_info = trimmed_context["_trimming_info"]
-            trimming_messages = []
             
-            if trimming_info["chat_history_trimmed"]:
-                trimming_messages.append("historial de chat")
-            if trimming_info["db_schemas_trimmed"]:
-                trimming_messages.append("esquemas de base de datos")
-            if trimming_info["app_descriptors_trimmed"]:
-                trimming_messages.append("descriptores de aplicaciones")
-            if trimming_info["functions_trimmed"]:
-                trimming_messages.append("descripciones de funciones")
-            
-            if trimming_messages:
-                tokens_saved = trimming_info["original_tokens"] - trimming_info["trimmed_tokens"]
-                await self.emit_notice_info(
-                    message=f"🔒 Contexto optimizado: Se recortó {', '.join(trimming_messages)} para ahorrar ~{tokens_saved} tokens",
-                    level="info",
-                    actions=[
-                        "show_trimming_details",
-                        "adjust_mode",
-                        "continue_optimized"
-                    ]
-                )
-                
-                logger.info(f"[OrchestratorService] 🎯 FASE 10: Contexto optimizado - {tokens_saved} tokens ahorrados")
-        
-        # 🎯 Ejecutar el grafo usando GraphRunner
-        try:
-            # 🚀 FASE 1: Emisión de progreso antes de ejecutar el grafo
-            await self.emit_status_progress(2, 3, "Seleccionando grafo de ejecución...", 30.0)
-            
-            execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, trimmed_context)
-            logger.info("[OrchestratorService] Graph execution completed")
-            
-            # 🚀 FASE 1: Emisión de progreso después de ejecutar el grafo
-            await self.emit_status_progress(3, 3, "Grafo ejecutado, procesando resultados...", 60.0)
-            
-            # 🔄 NORMALIZAR SIEMPRE la salida del grafo a dict antes de tocarla
-            execution_results = self.graph_runner.normalize_graph_output(execution_results)
-            logger.info(f"[OrchestratorService] ✅ Salida del grafo normalizada a dict con claves: {list(execution_results.keys())}")
-            
-            # ─────────────────────────────────────────────────────────────
-            # SHORT-CIRCUIT: Si la intención es de ESQUEMA, responder desde caché
-            # ─────────────────────────────────────────────────────────────
-            if self._is_schema_intent(execution_results, message.content):
-                schema_response = self._generate_schema_response(trimmed_context, db_ids, message.content)
-                execution_results["assistant_response"] = schema_response
-                if "plan" in execution_results:
-                    execution_results["plan"] = None
-                logger.info("[OrchestratorService] ✅ Short-circuit de esquema aplicado: respuesta directa desde caché")
-
-            # 🔒 CONTROL DE TOKENS: Forzar plan cuando hay intención de base de datos (salvo esquema)
-            if self._should_force_plan(db_ids, message.content, execution_results):
-                logger.info("[OrchestratorService] 🔒 Forzando generación de plan por intención de base de datos")
-                if not execution_results.get("plan"):
-                    # Generar plan mínimo si no se generó uno
-                    execution_results["plan"] = self._generate_minimal_plan_for_db_intention(message.content, db_ids)
-            
-            # 🔄 Ejecutar el plan si se generó uno
-            if execution_results.get("plan"):
-                logger.info("[OrchestratorService] 🚀 Ejecutando plan generado")
-                
-                # 🚀 FASE 1: Emisión de progreso antes de ejecutar el plan
-                await self.emit_status_progress(4, 5, "Ejecutando plan generado...", 80.0)
-                
-                # 🔧 FIX: Preservar los steps originales del plan antes de ejecutarlo
-                original_steps = execution_results.get("plan", {}).get("steps", [])
-                logger.info(f"[OrchestratorService] 📋 Plan generado con {len(original_steps)} steps originales")
-                
-                plan_actions = len(execution_results.get('plan', {}).get('actions', [])) if execution_results.get('plan', {}).get('actions') else 0
-                logger.info(f"[OrchestratorService] 📋 Plan generado con {plan_actions} acciones")
-                execution_engine = self.factory.get_execution_engine_service()
-                
-                # Asegurar que el contexto tenga db_ids
-                execution_context = trimmed_context.copy()
-                if db_ids:
-                    execution_context["db_ids"] = db_ids  # 🔧 Mantener como UUID end-to-end
-                
-                # 🎯 FASE 13: TRACKING DE EJECUCIÓN DEL PLAN
-                if self.current_telemetry_context:
-                    try:
-                        self.telemetry_service.track_step_execution(
-                            conversation_id=conversation_id,
-                            step_number=1,
-                            step_type="plan_execution_start",
-                            duration_ms=0,  # Se medirá al final
-                            success=True,
-                            tokens_used=0,
-                            cache_operations=0,
-                            database_queries=0,
-                            llm_calls=0,
-                            metadata={
-                                "plan_actions": len(execution_results.get('plan', {}).get('actions', [])),
-                                "plan_steps": len(execution_results.get('plan', {}).get('steps', [])),
-                                "context_size": len(str(execution_context))
-                            }
-                        )
-                    except Exception as e:
-                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking inicio de ejecución: {e}")
-                
-                # 🔧 FIX: Mover execution_engine.run a thread pool para evitar bloquear el loop
-                loop = asyncio.get_running_loop()
-                plan_start_time = time.time()
-                final_results = await execution_engine.run(
-                    plan=execution_results.get("plan", {}),
-                    chat_id=chat_id,
-                    ctx=execution_context
-                )
-                plan_execution_time = (time.time() - plan_start_time) * 1000
-                
-                # Combinar resultados
-                execution_results.update(final_results)
-                
-                # 🎯 FASE 13: TRACKING DE EJECUCIÓN COMPLETADA
-                if self.current_telemetry_context:
-                    try:
-                        self.telemetry_service.track_step_execution(
-                            conversation_id=conversation_id,
-                            step_number=2,
-                            step_type="plan_execution_complete",
-                            duration_ms=plan_execution_time,
-                            success=True,
-                            tokens_used=final_results.get("token_count", 0),
-                            cache_operations=0,  # TODO: Implementar tracking de cache
-                            database_queries=len(final_results.get("variables", {})),
-                            llm_calls=1,  # Asumimos al menos una llamada LLM
-                            metadata={
-                                "execution_time_ms": plan_execution_time,
-                                "variables_generated": len(final_results.get('variables', {})),
-                                "success": True
-                            }
-                        )
-                    except Exception as e:
-                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking ejecución completada: {e}")
-                
-                # 🚀 FASE 1: Emisión de progreso después de ejecutar el plan
-                await self.emit_status_progress(5, 5, "Plan ejecutado, finalizando...", 100.0)
-                
-                # 🔧 FIX: Preservar los steps originales del plan
-                execution_results["steps"] = original_steps
-                logger.info("[OrchestratorService] ✅ Plan ejecutado correctamente")
-                logger.info(f"[OrchestratorService] 📤 Variables generadas: {len(final_results.get('variables', {}))}")
-                logger.info(f"[OrchestratorService] 📋 Steps preservados: {len(original_steps)}")
-            else:
-                logger.info("[OrchestratorService] 📝 No se generó plan, usando respuesta directa")
-                # Ahora execution_results es SIEMPRE un dict, calcular longitud de forma segura
-                content_length = self._calculate_content_length(execution_results)
-                logger.info(f"[OrchestratorService] 📤 Respuesta directa generada (longitud: {content_length} chars)")
-                
-        except Exception as e:
-            logger.exception("[OrchestratorService] Graph execution failed: %s", e)
-            
-            # 🎯 FASE 13: TRACKING DE ERROR
-            if self.current_telemetry_context:
-                try:
-                    self.telemetry_service.track_error(
-                        conversation_id=conversation_id,
-                        error_type="execution_error",
-                        error_message=str(e),
-                        error_code="GRAPH_EXECUTION_FAILED",
-                        error_stack=str(e.__traceback__),
-                        step_number=1,
-                        step_type="graph_execution",
-                        user_input=message.content,
-                        severity="high",
-                        recovered=False,
-                        recovery_action="error_handler_service"
-                    )
-                except Exception as telemetry_error:
-                    logger.warning(f"[OrchestratorService] ⚠️ Error tracking error de telemetría: {telemetry_error}")
-            
-            # 🎯 FASE 11: Manejo de errores con remediación automática
-            try:
-                error_handler = self.factory.get_error_handler_service()
-                user_facing_error = await error_handler.handle_error(
-                    chat_id=str(chat_id),
-                    error=e,
-                    context={
-                        "explorer": explorer,
-                        "db_ids": db_ids,
-                        "app_ids": app_ids,
-                        "agent_id": agent_id,
-                        "user_message": message.content
-                    },
-                    user_id=str(self.user_id)
-                )
-                
-                # Usar el error procesado por el ErrorHandlerService
-                execution_results = {
-                    "error": user_facing_error.code,
-                    "error_message": user_facing_error.human_message,
-                    "suggested_actions": [
-                        {
-                            "label": action.label,
-                            "action": action.action,
-                            "description": action.description
-                        }
-                        for action in user_facing_error.suggested_actions[:3]
-                    ],
-                    "error_severity": user_facing_error.severity.value,
-                    "retry_after": user_facing_error.retry_after
+            # Emitir resultado final
+            await self.emit_result_final(
+                summary=react_response.get('content', 'Consulta procesada por ReAct'),
+                data=react_response,
+                next_actions=[
+                    "Pregunta algo más específico",
+                    "Explora los datos disponibles",
+                    "Verifica la estructura de las tablas"
+                ],
+                usage_stats={
+                    'response_time_ms': react_response.get('response_time_ms', 0),
+                    'iterations': react_response.get('iterations', 0),
+                    'method': react_response.get('method', 'react_hybrid'),
+                    'mode': 'react_orchestrator'
                 }
-                
-                logger.info(f"[OrchestratorService] 🎯 FASE 11: Error manejado con remediación - {user_facing_error.code}")
-                
-                # 🎯 FASE 13: TRACKING DE RECUPERACIÓN DE ERROR
-                if self.current_telemetry_context:
-                    try:
-                        self.telemetry_service.track_error(
-                            conversation_id=conversation_id,
-                            error_type="error_recovery",
-                            error_message="Error recuperado por ErrorHandlerService",
-                            error_code=user_facing_error.code,
-                            step_number=1,
-                            step_type="error_recovery",
-                            user_input=message.content,
-                            severity="medium",
-                            recovered=True,
-                            recovery_action="error_handler_service"
-                        )
-                    except Exception as telemetry_error:
-                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking recuperación de telemetría: {telemetry_error}")
-                
-            except Exception as error_handler_error:
-                logger.error(f"[OrchestratorService] ❌ Error en ErrorHandlerService: {error_handler_error}")
-                # Fallback a error básico
-                execution_results = {"error": str(e)}
-                
-                # 🎯 FASE 13: TRACKING DE ERROR NO RECUPERADO
-                if self.current_telemetry_context:
-                    try:
-                        self.telemetry_service.track_error(
-                            conversation_id=conversation_id,
-                            error_type="unrecovered_error",
-                            error_message="Error no recuperado por ErrorHandlerService",
-                            error_code="ERROR_HANDLER_FAILED",
-                            error_stack=str(error_handler_error.__traceback__),
-                            step_number=1,
-                            step_type="error_handler_failure",
-                            user_input=message.content,
-                            severity="critical",
-                            recovered=False,
-                            recovery_action="none"
-                        )
-                    except Exception as telemetry_error:
-                        logger.warning(f"[OrchestratorService] ⚠️ Error tracking error no recuperado de telemetría: {telemetry_error}")
-
-        # 📝 Guardar respuesta del asistente
-        assistant_response = self._extract_assistant_response(execution_results)
-        
-        # 💾 Guardar mensaje del asistente de forma async
-        # Ahora execution_results es SIEMPRE un dict
-        token_count = execution_results.get("token_count")
-        executed_strategy_id = execution_results.get("executed_strategy_id")
-        steps = execution_results.get("steps", [])
-        
-        # 🔍 DEBUG: Log del assistant_response antes de guardar
-        logger.info(f"[OrchestratorService] 🔍 ASSISTANT_RESPONSE extraído: '{assistant_response}' (tipo: {type(assistant_response)}, longitud: {len(str(assistant_response))})")
-        
-        await self._save_assistant_message_async(
-            chat_id=chat_id,
-            content=assistant_response,
-            token_count=token_count,
-            executed_strategy_id=executed_strategy_id,
-        )
-
-        # 🔒 CONTROL DE TOKENS: Actualizar token bucket
-        estimated_tokens = self._estimate_tokens_for_context(trimmed_context)
-        self._update_token_bucket(estimated_tokens)
-
-        # 📊 Profiling final
-        memory_profiler.take_snapshot("orchestrator_end")
-
-        # 🎯 FASE 13: FINALIZAR TRACKING Y EMITIR SNAPSHOT DE TELEMETRÍA
-        if self.current_telemetry_context:
-            try:
-                # Calcular métricas finales
-                total_latency_ms = (time.time() - start_time) * 1000
-                total_tokens_in = token_count or 0
-                total_tokens_out = len(assistant_response.split()) if assistant_response else 0
-                total_steps = len(steps) if steps else 0
-                cache_hit_ratio = 0.0  # TODO: Implementar tracking de cache
-                confirmations_required = 0  # TODO: Implementar tracking de confirmaciones
-                
-                # Finalizar tracking de conversación
-                metrics = self.telemetry_service.end_conversation_tracking(
-                    conversation_id=conversation_id
-                )
-                
-                # Emitir snapshot de telemetría
-                await self.emit_telemetry_snapshot(
-                    tokens_in=total_tokens_in,
-                    tokens_out=total_tokens_out,
-                    latency_ms=total_latency_ms,
-                    cache_hit_ratio=cache_hit_ratio,
-                    steps_executed=total_steps,
-                    confirmations_required=confirmations_required,
-                    mode=Mode.EXPLORER if explorer else Mode.GUIDED
-                )
-                
-                logger.info(f"[OrchestratorService] 🎯 FASE 13: Telemetría finalizada y snapshot emitido para conversación {conversation_id}")
-                logger.info(f"[OrchestratorService] 📊 Métricas: {total_latency_ms:.1f}ms, {total_tokens_in}+{total_tokens_out} tokens, {total_steps} steps")
-                
-            except Exception as e:
-                logger.warning(f"[OrchestratorService] ⚠️ Error finalizando telemetría: {e}")
-
-        # 🚀 FASE 1: Emisión de progreso final antes de retornar
-        await self.emit_status_progress(6, 6, "Respuesta lista, enviando...", 100.0)
-        
-        # 🔧 FIX: Determinar el tipo de respuesta basado en si hay steps
-        if steps and len(steps) > 0:
-            # Si hay steps, devolver respuesta tipo "step" para el websocket
-            final_response = {
-                "type": "step",
-                "message": assistant_response,
-                "steps": steps,
-                "execution_results": execution_results,
-                "formatted": True,
-                "timestamp": datetime.now().isoformat()
+            )
+            
+            # 🎯 FASE 13: TRACKING DE TELEMETRÍA (si está disponible)
+            if hasattr(self, 'telemetry_service') and self.telemetry_service:
+                try:
+                    self.telemetry_service.track_conversation_metrics(
+                        conversation_id=str(uuid4()),
+                        user_id=self.user_id,
+                        chat_id=chat_id,
+                        mode="explorer" if explorer else "guided",
+                        total_tokens=react_response.get("iterations", 0) * 100,  # Estimación
+                        execution_time_ms=react_response.get("response_time_ms", 0),
+                        success=True,
+                        metadata={
+                            "method": "react_hybrid",
+                            "iterations": react_response.get("iterations", 0),
+                            "source": react_response.get("source", "react_orchestrator")
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"[OrchestratorService] ⚠️ Error en tracking de telemetría: {e}")
+            
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            logger.info(f"[OrchestratorService] ✅ ReAct completado en {execution_time_ms}ms")
+            
+            return {
+                "assistant_response": react_response.get("content", "Respuesta generada por ReAct"),
+                "execution_results": react_response,
+                "execution_time_ms": execution_time_ms,
+                "method": "react_hybrid",
+                "status": "completed"
             }
-            logger.info(f"[OrchestratorService] 🎯 DEVOLVIENDO RESPUESTA FINAL tipo 'step'")
-            logger.info(f"[OrchestratorService] 🎯 MESSAGE field: '{final_response['message']}' (tipo: {type(final_response['message'])})")
-            logger.info(f"[OrchestratorService] 🎯 STEPS count: {len(final_response['steps'])}")
-            logger.info(f"[OrchestratorService] 🎯 EXECUTION_RESULTS keys: {list(final_response['execution_results'].keys())}")
-            return final_response
-        else:
-            # Si no hay steps, devolver respuesta normal
-            final_response = {
-                "assistant_response": assistant_response,
-                "execution_results": execution_results,
-                "steps": steps,
+            
+        except Exception as e:
+            logger.exception(f"[OrchestratorService] ❌ Error en ReAct: {e}")
+            
+            # Respuesta de error
+            error_response = {
+                "assistant_response": "🤖 Error interno del sistema. Por favor, contacta soporte.",
+                "error": str(e),
+                "status": "error",
+                "method": "react_hybrid"
             }
-            logger.info(f"[OrchestratorService] 🎯 DEVOLVIENDO RESPUESTA FINAL tipo normal: {final_response}")
-            return final_response
+            
+            await self.emit_error_user_facing(
+                code="REACT_ERROR",
+                human_message="Error procesando la consulta con ReAct",
+                suggested_actions=[
+                    "Intentar nuevamente",
+                    "Contactar soporte si el problema persiste"
+                ],
+                technical_details=str(e)
+            )
+            
+            return error_response
 
     def _is_schema_intent(self, execution_results: Dict[str, Any], user_message: str) -> bool:
         """
@@ -1590,29 +1096,69 @@ class OrchestratorService:
         """Extraer la respuesta del asistente de los resultados de ejecución"""
         logger.info(f"[OrchestratorService] 🔍 Extrayendo respuesta del resultado (keys: {list(execution_results.keys())}")
         
+        # 🛡️ GUARD CLAUSE: Si hay plan ejecutado, SIEMPRE priorizar sobre stub
+        if execution_results.get("plan") and execution_results.get("variables"):
+            logger.info(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Plan ejecutado detectado - priorizando sobre cualquier stub")
+            
+            # Buscar respuesta del plan ejecutado
+            variables = execution_results.get("variables", {})
+            for var_name, var_value in variables.items():
+                if var_name in ["query_result", "result", "answer", "response"] and var_value:
+                    if "stub temporal" not in str(var_value).lower():
+                        normalized = normalize_assistant_response(var_value)
+                        logger.info(f"[OrchestratorService] 🛡️ PLAN REAL: Variable {var_name} priorizada: '{normalized}'")
+                        return normalized
+        
+        # 🛡️ GUARD CLAUSE: Si hay bases de datos, nunca devolver stub temporal
+        has_databases = (
+            execution_results.get("db_ids") or 
+            execution_results.get("databases") or
+            execution_results.get("selected_database")
+        )
+        
+        if has_databases:
+            logger.info(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Bases de datos detectadas - evitando stub temporal")
+        
         # 🔧 FASE 10: Usar normalización centralizada
         try:
-            # Intentar normalizar directamente si hay assistant_response
+            # Intentar normalizar directamente si hay assistant_response (y no es stub)
             if "assistant_response" in execution_results and execution_results["assistant_response"]:
-                normalized = normalize_assistant_response(execution_results["assistant_response"])
-                logger.info(f"[OrchestratorService] 🔧 FASE 10: assistant_response normalizado: '{normalized}'")
-                return normalized
+                response_text = str(execution_results["assistant_response"])
+                if has_databases and "stub temporal" in response_text.lower():
+                    logger.warning(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Rechazando assistant_response por contener stub temporal con DB presente")
+                else:
+                    normalized = normalize_assistant_response(execution_results["assistant_response"])
+                    logger.info(f"[OrchestratorService] 🔧 FASE 10: assistant_response normalizado: '{normalized}'")
+                    return normalized
             
-            # Si no hay assistant_response, buscar en otros campos
+            # Si no hay assistant_response, buscar en otros campos (evitando stub si hay DB)
             for field in ["response", "message", "content"]:
                 if field in execution_results and execution_results[field]:
+                    field_text = str(execution_results[field])
+                    if has_databases and "stub temporal" in field_text.lower():
+                        logger.warning(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Rechazando {field} por contener stub temporal con DB presente")
+                        continue
                     normalized = normalize_assistant_response(execution_results[field])
                     logger.info(f"[OrchestratorService] 🔧 FASE 10: {field} normalizado: '{normalized}'")
                     return normalized
             
-            # 🔧 FASE 10: Buscar en variables como fallback
+            # 🔧 FASE 10: Buscar en variables como fallback (evitando stub si hay DB)
             if "variables" in execution_results and execution_results["variables"]:
                 variables = execution_results["variables"]
                 for var_name, var_value in variables.items():
                     if var_name in ["query_result", "result", "answer"] and var_value:
+                        var_text = str(var_value)
+                        if has_databases and "stub temporal" in var_text.lower():
+                            logger.warning(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Rechazando variable {var_name} por contener stub temporal con DB presente")
+                            continue
                         normalized = normalize_assistant_response(var_value)
                         logger.info(f"[OrchestratorService] 🔧 FASE 10: Variable {var_name} normalizada: '{normalized}'")
                         return normalized
+            
+            # 🛡️ GUARD CLAUSE: Si hay bases de datos, generar respuesta específica en lugar de fallback genérico
+            if has_databases:
+                logger.warning(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Con DB presente, generando respuesta específica en lugar de fallback")
+                return "He procesado tu consulta sobre la base de datos. Los resultados están disponibles en el contexto de ejecución."
             
             # 🔧 FASE 11: Si no hay respuesta válida, usar servicio de fallback
             logger.warning(f"[OrchestratorService] 🔧 FASE 11: No hay respuesta válida, usando servicio de fallback")
@@ -1625,6 +1171,12 @@ class OrchestratorService:
             
         except Exception as e:
             logger.error(f"[OrchestratorService] 🔧 FASE 10: Error normalizando respuesta: {e}")
+            
+            # 🛡️ GUARD CLAUSE: Si hay bases de datos, evitar fallback genérico incluso en error
+            if has_databases:
+                logger.warning(f"[OrchestratorService] 🛡️ GUARD CLAUSE: Error con DB presente, generando respuesta específica")
+                return f"Se produjo un error procesando la consulta de base de datos: {str(e)}"
+            
             # 🔧 FASE 11: En caso de error, usar fallback
             return self.fallback_service.generate_fallback_response(
                 execution_results={"error": str(e)},
@@ -1878,68 +1430,90 @@ class OrchestratorService:
                 "context_optimized": False
             }
 
-    def process_chat_message(self, chat_id: UUID, user_message: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Procesar mensaje de chat y generar respuesta"""
+    async def process_chat_message(self, chat_id: UUID, user_message: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        🧠 Procesar mensaje de chat usando ReAct Orchestrator simplificado
+        
+        Args:
+            chat_id: ID del chat
+            user_message: Mensaje del usuario
+            context: Contexto opcional
+            
+        Returns:
+            Respuesta procesada con ReAct
+        """
         try:
-            # ... existing code ...
+            start_time = time.time()
+            logger.info(f"[OrchestratorService] 🧠 Iniciando ReAct para chat_id={chat_id}")
             
-            # 🔧 FASE 11: Verificar si se debe usar fallback
-            if self.fallback_service.should_use_fallback(execution_results):
-                logger.warning(f"[OrchestratorService] 🔧 FASE 11: Usando servicio de fallback para chat_id={chat_id}")
-                fallback_response = self.fallback_service.generate_fallback_response(
-                    execution_results=execution_results,
-                    user_message=user_message,
-                    context=context
-                )
-                # Reemplazar assistant_response con fallback
-                execution_results["assistant_response"] = fallback_response
-                execution_results["_fallback_used"] = True
-                execution_results["_fallback_reason"] = "assistant_response_vacio_o_con_error"
+            # Crear ChatMessage para ReAct
+            message = ChatMessage(
+                content=user_message,
+                role="user",
+                chat_id=chat_id,
+                user_id=self.user_id
+            )
             
-            # ... existing code ...
+            # Extraer db_ids y app_ids del contexto si están disponibles
+            db_ids = context.get("db_ids") if context else None
+            app_ids = context.get("app_ids") if context else None
+            explorer = context.get("explorer", True) if context else True
             
-            # 🔧 FASE 10: Normalizar respuesta final
+            # 🧠 Usar ReAct Orchestrator para procesar el mensaje
+            react_response = await self.react_orchestrator.handle_message(
+                chat_id=chat_id,
+                message=message,
+                db_ids=db_ids,
+                app_ids=app_ids,
+                explorer=explorer
+            )
+            
+            # Calcular tiempo de ejecución
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Construir respuesta final compatible
             final_response = {
-                "message": assistant_response,
+                "message": react_response.get("content", "Respuesta generada por ReAct"),
                 "chat_id": str(chat_id),
-                "assistant_response": assistant_response,
+                "assistant_response": react_response.get("content", "Respuesta generada por ReAct"),
                 "execution_summary": {
-                    "total_tokens": total_tokens_out,
+                    "total_tokens": react_response.get("iterations", 0) * 100,  # Estimación
                     "execution_time_ms": execution_time_ms,
-                    "steps_executed": len(execution_results.get("steps", [])),
-                    "status": "completed"
+                    "steps_executed": react_response.get("iterations", 0),
+                    "status": "completed",
+                    "method": "react_hybrid"
+                },
+                "react_info": {
+                    "iterations": react_response.get("iterations", 0),
+                    "method": react_response.get("method", "react_hybrid"),
+                    "source": react_response.get("source", "react_orchestrator"),
+                    "history": react_response.get("react_history", [])
                 }
             }
             
-            # 🔧 FASE 11: Añadir información de fallback si se usó
-            if execution_results.get("_fallback_used"):
-                final_response["fallback_info"] = {
-                    "used": True,
-                    "reason": execution_results.get("_fallback_reason", "unknown"),
-                    "generated_at": datetime.now().isoformat(),
-                    "version": "fase11"
-                }
+            # Añadir información de contexto si está disponible
+            if react_response.get("context_used"):
+                final_response["context_used"] = react_response["context_used"]
             
-            # 🔧 FASE 10: Validar y normalizar estructura completa
-            normalized_response = validate_response_structure(final_response)
-            
-            logger.info(f"[OrchestratorService] 🔧 FASE 10: Respuesta final normalizada y validada")
-            return normalized_response
+            logger.info(f"[OrchestratorService] ✅ ReAct completado en {execution_time_ms}ms, {react_response.get('iterations', 0)} iteraciones")
+            return final_response
             
         except Exception as e:
-            logger.error(f"[OrchestratorService] ❌ Error procesando mensaje de chat: {e}")
-            # 🔧 FASE 11: Respuesta de error con fallback
+            logger.exception(f"[OrchestratorService] ❌ Error en ReAct: {e}")
+            
+            # Respuesta de error simplificada
             error_response = {
                 "message": "🤖 Error interno del sistema. Por favor, contacta soporte.",
                 "chat_id": str(chat_id),
                 "assistant_response": "🤖 Error interno del sistema. Por favor, contacta soporte.",
                 "error": str(e),
                 "status": "error",
-                "fallback_info": {
-                    "used": True,
-                    "reason": "error_interno",
-                    "generated_at": datetime.now().isoformat(),
-                    "version": "fase11"
+                "execution_summary": {
+                    "total_tokens": 0,
+                    "execution_time_ms": 0,
+                    "steps_executed": 0,
+                    "status": "error"
                 }
             }
-            return validate_response_structure(error_response)
+            return error_response
+

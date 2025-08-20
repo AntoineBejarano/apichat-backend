@@ -22,7 +22,7 @@ class GraphRunner:
     def __init__(self, factory):
         self.factory = factory
         self.exploration_service = factory.get_strategy_service()
-        self.guided_service = factory.get_strategy_service()  # Mismo servicio, diferente modo
+        self.guided_service = factory.get_guided_service()  # Servicio real de grafos guiados
     
     def select_graph_runner(self, explorer: bool):
         """

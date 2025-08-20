@@ -1,0 +1,37 @@
+{
+  "version": "1.0.0",
+  "description": "Configuración principal para el sistema de sinónimos del Fast Schema Path",
+  "last_updated": "2025-08-20",
+  "config_files": {
+    "general_synonyms": "synonyms.json",
+    "translations": "translations.json",
+    "domain_synonyms": "domain_synonyms.json"
+  },
+  "settings": {
+    "auto_reload": true,
+    "cache_ttl_seconds": 300,
+    "max_synonyms_per_term": 10,
+    "confidence_thresholds": {
+      "exact_match": 1.0,
+      "synonym_match": 0.8,
+      "fuzzy_match": 0.6,
+      "domain_match": 0.7
+    }
+  },
+  "domains": [
+    "ecommerce",
+    "crm", 
+    "hr",
+    "finance",
+    "inventory"
+  ],
+  "supported_languages": [
+    "es",
+    "en"
+  ],
+  "metadata": {
+    "total_synonyms": 0,
+    "total_translations": 0,
+    "total_domains": 5
+  }
+}

@@ -29,15 +29,43 @@ class WebSocketMCPConnector(BaseMCPConnector):
             return json.loads(response)
 
     def list_tools(self) -> list[dict]:
+        """🔧 FASE 1: Método sync compatible con loops activos"""
         payload = {
             "action": self.endpoints.get("list_tools", "listTools")
         }
-        return asyncio.run(self._send_and_receive(payload))
+        
+        try:
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                # Si estamos en un loop activo, crear una tarea futura
+                future = asyncio.ensure_future(self._send_and_receive(payload))
+                # Ejecutar en el loop actual
+                return asyncio.run_coroutine_threadsafe(future, loop).result()
+            else:
+                # Si no hay loop activo, usar asyncio.run
+                return asyncio.run(self._send_and_receive(payload))
+        except RuntimeError:
+            # No hay loop activo, usar asyncio.run
+            return asyncio.run(self._send_and_receive(payload))
 
     def call_tool(self, name: str, parameters: dict) -> dict:
+        """🔧 FASE 1: Método sync compatible con loops activos"""
         payload = {
             "action": self.endpoints.get("call_tool", "callTool"),
             "name": name,
             "args": parameters
         }
-        return asyncio.run(self._send_and_receive(payload))
+        
+        try:
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                # Si estamos en un loop activo, crear una tarea futura
+                future = asyncio.ensure_future(self._send_and_receive(payload))
+                # Ejecutar en el loop actual
+                return asyncio.run_coroutine_threadsafe(future, loop).result()
+            else:
+                # Si no hay loop activo, usar asyncio.run
+                return asyncio.run(self._send_and_receive(payload))
+        except RuntimeError:
+            # No hay loop activo, usar asyncio.run
+            return asyncio.run(self._send_and_receive(payload))

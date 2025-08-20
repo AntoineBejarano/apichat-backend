@@ -181,25 +181,27 @@ class ChatHistoryManager:
     ):
         """Guarda mensaje del asistente de forma asíncrona"""
         try:
-            with performance_context("save_assistant_message"):
-                # Crear entrada de historial
-                history_entry = ChatHistoryCreate(
-                    chat_id=chat_id,
-                    role="assistant",
-                    content=content,
-                    message_type="text",
-                    user_id=self.user_id,
-                    metadata={
-                        "token_count": token_count,
-                        "executed_strategy_id": str(executed_strategy_id) if executed_strategy_id else None
-                    }
-                )
-                
-                # Guardar en base de datos
-                await self.chat_history_service.create_chat_history(history_entry)
-                
-                logger.info(f"Mensaje del asistente guardado para chat {chat_id}")
-                
+            # 🔧 FASE 1: Usar solo un timer para evitar duplicación
+            # with performance_context("save_assistant_message"):  # Removido para evitar duplicación
+            
+            # Crear entrada de historial
+            history_entry = ChatHistoryCreate(
+                chat_id=chat_id,
+                role="assistant",
+                content=content,
+                message_type="text",
+                user_id=self.user_id,
+                metadata={
+                    "token_count": token_count,
+                    "executed_strategy_id": str(executed_strategy_id) if executed_strategy_id else None
+                }
+            )
+            
+            # Guardar en base de datos
+            await self.chat_history_service.create_chat_history(history_entry)
+            
+            logger.info(f"Mensaje del asistente guardado para chat {chat_id}")
+            
         except Exception as e:
             logger.error(f"Error guardando mensaje del asistente: {e}")
             raise

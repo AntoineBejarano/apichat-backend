@@ -13,6 +13,7 @@ from app.services.execution.retry_service import retry_service
 from app.services.execution.undo_service import undo_service, create_db_undo_operation
 from app.core.config import settings
 from app.utils.response_normalizer import safe_serialize_result  # 🔧 FASE 10: Importar serialización segura
+from app.core.langsmith_config import langsmith_config, traceable_if_enabled  # 🔧 FASE 6: Langsmith integration
 
 if TYPE_CHECKING:                       # evita import cíclicos en tiempo real
     from app.core.service_factory import ServiceFactory
@@ -52,7 +53,7 @@ class ExecutionEngineService:
         logger.info(f"[ExecutionEngine] 🎯 Ejecutando {len(actions)} acciones secuencialmente")
         
         # 🔧 FASE 4: Enriquecer acciones del plan con database_id antes de ejecutarlas
-        actions = self._enrich_plan_actions_with_database_id(actions, variables)
+        actions = await self._enrich_plan_actions_with_database_id(actions, variables)
         
         for idx, action in enumerate(actions, start=1):
             logger.info(f"[ExecutionEngine] ▶️ Ejecutando acción {idx}/{len(actions)}: {action['type']}")
@@ -137,6 +138,11 @@ class ExecutionEngineService:
     # ────────────────────────────────────────────────────────────────
     # … dentro de class ExecutionEngineService …
 
+    @traceable_if_enabled(
+        name="run_db_query",
+        tags=["sql_execution", "execution_engine"],
+        metadata={"service": "ExecutionEngineService"}
+    )
     async def _run_db_query(self, action: Dict[str, Any], ctx: Dict[str, Any]):
         # Verificar si fue bloqueada por guardrails
         if action.get('_guardrails_error'):
@@ -169,6 +175,19 @@ class ExecutionEngineService:
         if sql := action.get("sql"):
             rendered_sql = self._render_text(sql, ctx)
             fixed_sql = self._rewrite_sql_for_dialect(rendered_sql, dialect)
+            
+            # 🔧 FASE 2: Evitar ejecución si el contenido parece explicativo y no SQL
+            if self._is_explanatory_response(fixed_sql):
+                logger.warning(f"[ExecutionEngine] ⚠️ FASE 2: Detenido: respuesta no es SQL ejecutable")
+                return {
+                    "error": "La IA no generó SQL ejecutable. Revisa si la base de datos fue conectada correctamente.",
+                    "content": fixed_sql,
+                    "status": "llm_response",
+                    "blocked_execution": True,
+                    "database_id": str(db_id),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
             try:
                 raw_result = db_service.execute_sql(db_conn, fixed_sql)
                 
@@ -178,6 +197,9 @@ class ExecutionEngineService:
                 # 🔧 NUEVO: Agregar metadata de guardrails si se aplicaron
                 if action.get('_chat_guardrails_applied'):
                     formatted_result['_guardrails_info'] = action['_chat_guardrails_applied']
+                
+                # 🔧 FASE 6: Marcar SQL como ejecutado en LLM runs
+                await self._mark_sql_executed_in_llm_runs(action, ctx, success=True)
                 
                 return formatted_result
             except Exception as e:
@@ -338,6 +360,38 @@ class ExecutionEngineService:
                 return error_result
                 
         raise ValueError("Acción db_query sin 'sql' ni 'question'")
+
+    def _is_explanatory_response(self, sql: str) -> bool:
+        """
+        🔧 FASE 2: Detecta si el contenido parece ser una respuesta explicativa del LLM y no SQL ejecutable.
+        
+        Args:
+            sql: String a validar como SQL
+            
+        Returns:
+            True si parece ser texto explicativo, False si parece ser SQL válido
+        """
+        if not sql or not isinstance(sql, str):
+            return True
+            
+        sql_lower = sql.strip().lower()
+        
+        # Verificar que comience con SELECT y contenga FROM
+        if not sql_lower.startswith("select") or "from" not in sql_lower:
+            return True
+            
+        # Verificar que no sea solo texto explicativo
+        explanatory_phrases = [
+            "lo siento", "no puedo", "necesitaría", "reemplaza", "no tengo",
+            "no hay", "no existe", "no se puede", "imposible", "error",
+            "no tengo acceso", "no puedo acceder", "no se encuentra",
+            "no está disponible", "no puedo procesar", "no puedo generar"
+        ]
+        
+        if any(phrase in sql_lower for phrase in explanatory_phrases):
+            return True
+            
+        return False
 
     def _normalize_db_query_result(self, result: Dict[str, Any], action: Dict[str, Any], db_id: UUID) -> Dict[str, Any]:
         """
@@ -1433,7 +1487,7 @@ class ExecutionEngineService:
             return {}
 
     # 🔧 FASE 4: Enriquecer acciones del plan con database_id
-    def _enrich_plan_actions_with_database_id(self, actions: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def _enrich_plan_actions_with_database_id(self, actions: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Enriquece las acciones del plan con database_id antes de ejecutarlas.
         
@@ -1481,8 +1535,8 @@ class ExecutionEngineService:
                         db_service = self.factory.get_database_service()
                         db_record = db_service.get_record(primary_db_id)
                         
-                        # 🔧 FASE 6: Usar método síncrono para evitar problemas de event loop
-                        sql_result = langchain_service.generate_sql_from_question_sync(
+                        # 🔧 FASE 6: Usar método async correctamente
+                        sql_result = await langchain_service.generate_sql_from_question_sync(
                             question=action_copy['question'],
                             db_id=primary_db_id,
                             table_schema=db_record.schema if hasattr(db_record, 'schema') else None
@@ -1499,20 +1553,30 @@ class ExecutionEngineService:
                             }
                             logger.info(f"[ExecutionEngine] ✅ FASE 6: SQL generado exitosamente: {sql_result['sql'][:100]}...")
                         else:
-                            # Si falla la generación, crear SQL placeholder seguro
+                            # 🔧 FASE 6: Si falla la generación, usar consulta de catálogo segura
                             logger.warning(f"[ExecutionEngine] ⚠️ FASE 6: Falló generación de SQL: {sql_result.get('error', 'Unknown error')}")
-                            action_copy['sql'] = f"SELECT * FROM information_schema.tables WHERE table_name LIKE '%{action_copy['question'][:20]}%' LIMIT 10"
+                            logger.info(f"[ExecutionEngine] 🔧 FASE 6: Usando consulta de catálogo segura como fallback")
+                            
+                            catalog_query = self._get_safe_catalog_queries(action_copy['question'])
+                            action_copy['sql'] = catalog_query['sql']
                             action_copy['_sql_generated'] = True
-                            action_copy['_sql_source'] = 'fallback_placeholder'
+                            action_copy['_sql_source'] = 'safe_catalog_fallback'
                             action_copy['_sql_fallback_reason'] = sql_result.get('error', 'Generation failed')
+                            action_copy['_catalog_query_type'] = catalog_query['query_type']
+                            action_copy['_is_catalog_query'] = True
                             
                     except Exception as e:
                         logger.error(f"[ExecutionEngine] ❌ FASE 6: Error generando SQL: {e}")
-                        # Fallback a SQL placeholder seguro
-                        action_copy['sql'] = f"SELECT * FROM information_schema.tables WHERE table_name LIKE '%{action_copy['question'][:20]}%' LIMIT 10"
+                        logger.info(f"[ExecutionEngine] 🔧 FASE 6: Usando consulta de catálogo segura tras error")
+                        
+                        # 🔧 FASE 6: Usar consulta de catálogo segura en lugar de interpolación
+                        catalog_query = self._get_safe_catalog_queries(action_copy['question'])
+                        action_copy['sql'] = catalog_query['sql']
                         action_copy['_sql_generated'] = True
-                        action_copy['_sql_source'] = 'error_fallback'
+                        action_copy['_sql_source'] = 'safe_catalog_error_fallback'
                         action_copy['_sql_error'] = str(e)
+                        action_copy['_catalog_query_type'] = catalog_query['query_type']
+                        action_copy['_is_catalog_query'] = True
             
             enriched_actions.append(action_copy)
         
@@ -1525,3 +1589,136 @@ class ExecutionEngineService:
         logger.info(f"[ExecutionEngine] ✅ FASE 6: Generado SQL para {sql_generated_count} acciones desde preguntas")
         
         return enriched_actions
+
+    def _get_safe_catalog_queries(self, question: str) -> Dict[str, str]:
+        """
+        🔧 FASE 6: Genera consultas de catálogo seguras sin interpolar texto del usuario.
+        
+        Args:
+            question: Pregunta del usuario (solo para logging, no se interpola)
+            
+        Returns:
+            Dict con consultas de catálogo seguras predefinidas
+        """
+        # 🛡️ SEGURIDAD: Consultas completamente predefinidas sin interpolación
+        safe_catalog_queries = {
+            "list_tables": """
+                SELECT 
+                    table_name,
+                    table_type,
+                    table_schema
+                FROM information_schema.tables 
+                WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                ORDER BY table_name 
+                LIMIT 50
+            """,
+            
+            "list_columns": """
+                SELECT 
+                    table_name,
+                    column_name,
+                    data_type,
+                    is_nullable,
+                    column_default
+                FROM information_schema.columns 
+                WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                ORDER BY table_name, ordinal_position 
+                LIMIT 100
+            """,
+            
+            "table_relationships": """
+                SELECT 
+                    kcu.table_name,
+                    kcu.column_name,
+                    kcu.referenced_table_name,
+                    kcu.referenced_column_name
+                FROM information_schema.key_column_usage kcu
+                WHERE kcu.referenced_table_name IS NOT NULL
+                    AND kcu.table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                ORDER BY kcu.table_name 
+                LIMIT 50
+            """,
+            
+            "table_stats": """
+                SELECT 
+                    table_name,
+                    table_rows,
+                    data_length,
+                    index_length
+                FROM information_schema.tables 
+                WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                    AND table_type = 'BASE TABLE'
+                ORDER BY table_rows DESC 
+                LIMIT 20
+            """
+        }
+        
+        # 🔧 FASE 6: Seleccionar query más apropiada basada en palabras clave (sin interpolación)
+        question_lower = question.lower()
+        
+        if any(keyword in question_lower for keyword in ['columna', 'campo', 'column', 'field']):
+            selected_query = safe_catalog_queries["list_columns"]
+            query_type = "list_columns"
+        elif any(keyword in question_lower for keyword in ['relacion', 'foreign', 'key', 'relationship']):
+            selected_query = safe_catalog_queries["table_relationships"]
+            query_type = "table_relationships"
+        elif any(keyword in question_lower for keyword in ['estadistica', 'estadísticas', 'stats', 'size', 'rows', 'tamaño']):
+            selected_query = safe_catalog_queries["table_stats"]
+            query_type = "table_stats"
+        else:
+            # Default: listar tablas
+            selected_query = safe_catalog_queries["list_tables"]
+            query_type = "list_tables"
+        
+        logger.info(f"[ExecutionEngine] 🔧 FASE 6: Consulta de catálogo seleccionada: {query_type}")
+        
+        return {
+            "sql": selected_query.strip(),
+            "query_type": query_type,
+            "is_catalog_query": True,
+            "safe": True
+        }
+    
+    async def _mark_sql_executed_in_llm_runs(self, action: Dict[str, Any], ctx: Dict[str, Any], success: bool = True):
+        """
+        🔧 FASE 6: Marca SQL como ejecutado en LLM runs para trazabilidad.
+        
+        Args:
+            action: Acción que contiene el SQL
+            ctx: Contexto de ejecución
+            success: Si la ejecución fue exitosa
+        """
+        try:
+            # Obtener servicio de LLM runs
+            llm_runs_service = self.factory.get_llm_runs_service()
+            if not llm_runs_service:
+                logger.debug("[ExecutionEngine] ⚠️ LLM runs service no disponible para marcar SQL ejecutado")
+                return
+            
+            # Buscar LLM runs relacionados con este SQL
+            sql_content = action.get('sql', '')
+            if not sql_content:
+                return
+            
+            # Obtener runs del usuario actual
+            user_id = getattr(self.factory.user, 'id', None)
+            if not user_id:
+                logger.debug("[ExecutionEngine] ⚠️ No se pudo obtener user_id para marcar SQL ejecutado")
+                return
+            
+            # Buscar runs recientes que contengan este SQL
+            user_runs = await llm_runs_service.get_llm_runs_by_user(user_id, limit=10)
+            
+            for run in user_runs:
+                if (run.sql_generated and 
+                    run.sql_generated.strip().lower() == sql_content.strip().lower() and
+                    not run.sql_executed):
+                    
+                    # Marcar como ejecutado
+                    await llm_runs_service.mark_sql_executed(run.id, executed=success)
+                    logger.info(f"[ExecutionEngine] ✅ LLM run marcado como SQL ejecutado: {run.id}")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"[ExecutionEngine] ❌ Error marcando SQL ejecutado: {e}")
+            # No fallar la operación principal por errores de tracking

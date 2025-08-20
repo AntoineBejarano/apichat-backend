@@ -6,8 +6,8 @@ from app.core.service_factory import ServiceFactory
 from app.schemas.plan_schema import PlanModel
 from app.schemas.chat_schema import ChatMessage
 from app.models.function_model import Function
-from app.services.intent_classifier_service import IntentType
-from app.services.telemetry_service import EventType, TelemetryContextManager
+from app.services.context.intent_classifier_service import IntentType
+from app.services.management.telemetry_service import EventType, TelemetryContextManager
 
 import logging
 import time

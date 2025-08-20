@@ -1,0 +1,182 @@
+{
+  "field_synonyms": {
+    "email": [
+      "correo", 
+      "mail", 
+      "e-mail", 
+      "electronic_mail", 
+      "direccion_email",
+      "email_address",
+      "correo_electronico"
+    ],
+    "user": [
+      "usuario", 
+      "usuario_id", 
+      "user_id", 
+      "cliente", 
+      "miembro",
+      "persona",
+      "individuo"
+    ],
+    "name": [
+      "nombre", 
+      "nombres", 
+      "apellido", 
+      "apellidos", 
+      "full_name", 
+      "complete_name",
+      "primer_nombre",
+      "segundo_nombre"
+    ],
+    "phone": [
+      "telefono", 
+      "phone_number", 
+      "celular", 
+      "mobile", 
+      "movil", 
+      "contacto",
+      "numero_telefono",
+      "telefono_movil"
+    ],
+    "address": [
+      "direccion", 
+      "domicilio", 
+      "ubicacion",
+      "domicilio_fiscal",
+      "direccion_postal",
+      "localizacion"
+    ],
+    "price": [
+      "precio", 
+      "costo", 
+      "valor", 
+      "amount",
+      "importe",
+      "tarifa",
+      "coste"
+    ],
+    "status": [
+      "estado", 
+      "situacion", 
+      "condicion",
+      "estado_actual",
+      "situacion_actual"
+    ],
+    "type": [
+      "tipo", 
+      "categoria", 
+      "clasificacion",
+      "clase",
+      "variedad"
+    ],
+    "description": [
+      "descripcion", 
+      "detalle", 
+      "comentario", 
+      "nota",
+      "resumen",
+      "explicacion"
+    ],
+    "created": [
+      "creado", 
+      "fecha_creacion", 
+      "created_at",
+      "fecha_alta",
+      "fecha_registro"
+    ],
+    "updated": [
+      "actualizado", 
+      "modificado", 
+      "updated_at", 
+      "modified_at",
+      "fecha_modificacion",
+      "ultima_actualizacion"
+    ],
+    "active": [
+      "activo", 
+      "habilitado", 
+      "enabled", 
+      "visible",
+      "disponible",
+      "funcionando"
+    ],
+    "deleted": [
+      "eliminado", 
+      "borrado", 
+      "deleted_at", 
+      "removed",
+      "fecha_eliminacion"
+    ],
+    "id": [
+      "identificador", 
+      "primary_key", 
+      "pk",
+      "codigo",
+      "numero"
+    ],
+    "date": [
+      "fecha", 
+      "fecha_creacion", 
+      "created_at", 
+      "timestamp",
+      "dia",
+      "momento"
+    ]
+  },
+  "table_synonyms": {
+    "users": [
+      "usuarios", 
+      "clientes", 
+      "miembros", 
+      "personas",
+      "usuarios_registrados"
+    ],
+    "products": [
+      "productos", 
+      "articulos", 
+      "items", 
+      "mercancias",
+      "bienes",
+      "servicios"
+    ],
+    "orders": [
+      "pedidos", 
+      "ordenes", 
+      "compras", 
+      "ventas",
+      "transacciones"
+    ],
+    "customers": [
+      "clientes", 
+      "usuarios", 
+      "compradores", 
+      "consumidores",
+      "usuarios_finales"
+    ],
+    "employees": [
+      "empleados", 
+      "trabajadores", 
+      "personal",
+      "staff",
+      "colaboradores"
+    ],
+    "departments": [
+      "departamentos", 
+      "areas", 
+      "secciones",
+      "divisiones"
+    ],
+    "invoices": [
+      "facturas", 
+      "recibos", 
+      "comprobantes",
+      "documentos_fiscales"
+    ],
+    "payments": [
+      "pagos", 
+      "transacciones", 
+      "cobros",
+      "abonos"
+    ]
+  }
+}

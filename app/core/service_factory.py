@@ -36,6 +36,8 @@ class ServiceFactory:
         self._intent_classifier_service = None
         self._app_descriptor_cache_service = None
         self._telemetry_service = None
+        self._llm_runs_service = None
+        self._react_orchestrator = None
         self._vector_search_service = None
         self._prompt_engineering_service = None
         self._query_validation_service = None
@@ -69,6 +71,7 @@ class ServiceFactory:
         self._resource_selector_service = None
         self._plan_builder_service = None
         self._error_handler_service = None
+        self._guided_service = None
         self._ws_emitter = None
 
 
@@ -351,6 +354,13 @@ class ServiceFactory:
             logger.debug("⚙️ Inicializando StrategyService")
             self._strategy_service = StrategyService(self)
         return self._strategy_service
+
+    def get_guided_service(self) -> "GuidedService":
+        if not self._guided_service:
+            from app.services.execution.guided_service import GuidedService
+            logger.debug("⚙️ Inicializando GuidedService")
+            self._guided_service = GuidedService(self)
+        return self._guided_service
 
     def get_openapi_processor(self) -> "OpenAPIProcessor":
         if not self._openapi_processor:
@@ -641,6 +651,30 @@ class ServiceFactory:
     def get_advanced_telemetry_service(self) -> "AdvancedTelemetryService":
         """Alias para get_telemetry_service para compatibilidad."""
         return self.get_telemetry_service()
+    
+    def get_llm_runs_service(self) -> "LLMRunsService":
+        """Obtiene el servicio de LLM runs para trazabilidad."""
+        if not self._llm_runs_service:
+            try:
+                from app.services.management.llm_runs_service import LLMRunsService
+                self._llm_runs_service = LLMRunsService(self)
+                logger.info("✅ LLMRunsService inicializado")
+            except Exception as e:
+                logger.error(f"❌ Error inicializando LLMRunsService: {e}")
+                return None
+        return self._llm_runs_service
+    
+    def get_react_orchestrator(self) -> "ReActOrchestrator":
+        """Obtiene el ReAct Orchestrator simplificado."""
+        if not self._react_orchestrator:
+            try:
+                from app.services.react_orchestrator import ReActOrchestrator
+                self._react_orchestrator = ReActOrchestrator(self)
+                logger.info("✅ ReActOrchestrator inicializado")
+            except Exception as e:
+                logger.error(f"❌ Error inicializando ReActOrchestrator: {e}")
+                return None
+        return self._react_orchestrator
 
 
 def get_service_factory():

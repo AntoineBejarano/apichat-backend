@@ -4,10 +4,10 @@ from typing import Optional, List
 from datetime import datetime
 
 class EventDefinitionBase(BaseModel):
-    name: str = Field(..., example="new_row_in_table")
-    group: str = Field(..., example="database")  # Ej: 'database', 'webhook', 'api'
-    description: Optional[str] = Field(None, example="Dispara al insertar una nueva fila")
-    required_fields: List[str] = Field(..., example=["connection_id", "table_name", "time_field"])
+    name: str = Field(..., json_schema_extra={"example": "new_row_in_table"})
+    group: str = Field(..., json_schema_extra={"example": "database"})  # Ej: 'database', 'webhook', 'api'
+    description: Optional[str] = Field(None, json_schema_extra={"example": "Dispara al insertar una nueva fila"})
+    required_fields: List[str] = Field(..., json_schema_extra={"example": ["connection_id", "table_name", "time_field"]})
 
 class EventDefinitionCreate(EventDefinitionBase):
     pass

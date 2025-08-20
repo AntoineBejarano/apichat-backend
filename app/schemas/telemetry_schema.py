@@ -5,7 +5,7 @@ Este archivo contiene todos los esquemas Pydantic para el sistema de telemetría
 avanzado que mide el impacto UX y proporciona métricas detalladas de performance.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
@@ -48,7 +48,8 @@ class ConversationMetricsBase(BaseModel):
     # Métricas de tokens y costos
     tokens_in: int = Field(..., ge=0, description="Tokens de entrada")
     tokens_out: int = Field(..., ge=0, description="Tokens de salida")
-    estimated_cost_usd: Optional[Decimal] = Field(None, ge=0, description="Costo estimado en USD")
+    # estimated_cost_usd es una columna generada automáticamente por PostgreSQL
+    # No se debe incluir en la creación
     
     # Métricas de performance
     latency_total_ms: Decimal = Field(..., ge=0, description="Latencia total en milisegundos")
@@ -92,14 +93,16 @@ class ConversationMetricsBase(BaseModel):
     user_risk_tolerance: Optional[str] = Field(None, description="Tolerancia al riesgo del usuario")
     user_language: Optional[str] = Field(None, max_length=10, description="Idioma preferido del usuario")
 
-    @validator('completed_at')
-    def validate_completed_after_started(cls, v, values):
+    @field_validator('completed_at')
+    @classmethod
+    def validate_completed_after_started(cls, v, info):
         """Valida que completed_at sea posterior a started_at."""
-        if 'started_at' in values and v <= values['started_at']:
+        if info.data and 'started_at' in info.data and v <= info.data['started_at']:
             raise ValueError('completed_at debe ser posterior a started_at')
         return v
 
-    @validator('cache_hit_ratio')
+    @field_validator('cache_hit_ratio')
+    @classmethod
     def validate_cache_hit_ratio(cls, v):
         """Valida que el ratio de cache esté entre 0 y 1."""
         if v < 0 or v > 1:
@@ -116,7 +119,8 @@ class ConversationMetricsUpdate(BaseModel):
     """Esquema para actualizar métricas de conversación."""
     tokens_in: Optional[int] = Field(None, ge=0)
     tokens_out: Optional[int] = Field(None, ge=0)
-    estimated_cost_usd: Optional[Decimal] = Field(None, ge=0)
+    # estimated_cost_usd es una columna generada automáticamente por PostgreSQL
+    # No se debe incluir en las actualizaciones
     latency_total_ms: Optional[Decimal] = Field(None, ge=0)
     cache_hit_ratio: Optional[Decimal] = Field(None, ge=0, le=1)
     steps_executed: Optional[int] = Field(None, ge=0)
@@ -135,8 +139,7 @@ class ConversationMetricsResponse(ConversationMetricsBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # 🎯 Esquemas para métricas de pasos
@@ -156,10 +159,11 @@ class StepMetricsBase(BaseModel):
     started_at: datetime = Field(..., description="Momento de inicio del paso")
     completed_at: datetime = Field(..., description="Momento de finalización del paso")
 
-    @validator('completed_at')
-    def validate_completed_after_started(cls, v, values):
+    @field_validator('completed_at')
+    @classmethod
+    def validate_completed_after_started(cls, v, info):
         """Valida que completed_at sea posterior a started_at."""
-        if 'started_at' in values and v <= values['started_at']:
+        if info.data and 'started_at' in info.data and v <= info.data['started_at']:
             raise ValueError('completed_at debe ser posterior a started_at')
         return v
 
@@ -177,8 +181,7 @@ class StepMetricsResponse(StepMetricsBase):
     total_operations: int = Field(..., description="Total de operaciones realizadas")
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # 🎯 Esquemas para métricas de cache
@@ -208,8 +211,7 @@ class CacheMetricsResponse(CacheMetricsBase):
     size_kb: Optional[float] = Field(None, description="Tamaño en KB")
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # 🎯 Esquemas para métricas de errores
@@ -239,8 +241,7 @@ class ErrorMetricsResponse(ErrorMetricsBase):
     conversation_metrics_id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # 🎯 Esquemas para métricas agregadas
@@ -272,10 +273,11 @@ class AggregatedMetricsBase(BaseModel):
     most_accessed_apps: Optional[Dict[str, Any]] = Field(None, description="Aplicaciones más accedidas")
     most_used_functions: Optional[Dict[str, Any]] = Field(None, description="Funciones más utilizadas")
 
-    @validator('period_end')
-    def validate_period_end_after_start(cls, v, values):
+    @field_validator('period_end')
+    @classmethod
+    def validate_period_end_after_start(cls, v, info):
         """Valida que period_end sea posterior a period_start."""
-        if 'period_start' in values and v <= values['period_start']:
+        if info.data and 'period_start' in info.data and v <= info.data['period_start']:
             raise ValueError('period_end debe ser posterior a period_start')
         return v
 
@@ -294,8 +296,7 @@ class AggregatedMetricsResponse(AggregatedMetricsBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # 🎯 Esquemas para respuestas de telemetría
@@ -345,10 +346,11 @@ class TelemetryExportRequest(BaseModel):
     include_details: bool = Field(True, description="Incluir métricas detalladas")
     filters: Optional[Dict[str, Any]] = Field(None, description="Filtros adicionales")
 
-    @validator('end_date')
-    def validate_end_date_after_start(cls, v, values):
+    @field_validator('end_date')
+    @classmethod
+    def validate_end_date_after_start(cls, v, info):
         """Valida que end_date sea posterior a start_date."""
-        if 'start_date' in values and v <= values['start_date']:
+        if info.data and 'start_date' in info.data and v <= info.data['start_date']:
             raise ValueError('end_date debe ser posterior a start_date')
         return v
 

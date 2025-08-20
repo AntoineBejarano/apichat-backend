@@ -3,6 +3,7 @@
 import os
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
 load_dotenv()
 
@@ -70,8 +71,7 @@ class Settings(BaseSettings):
     RETRY_BACKOFF_FACTOR: float = float(os.getenv("RETRY_BACKOFF_FACTOR", "2.0"))  # Factor de backoff exponencial
     RETRY_DELAY_SECONDS: float = float(os.getenv("RETRY_DELAY_SECONDS", "1.0"))  # Delay inicial entre reintentos
 
-    class Config:
-        case_sensitive = True
+    model_config = ConfigDict(case_sensitive=True)
 
 
 settings = Settings()

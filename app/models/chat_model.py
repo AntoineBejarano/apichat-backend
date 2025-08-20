@@ -27,3 +27,4 @@ class Chat(Base):
     agent = relationship("Agent")
     database = relationship("DatabaseConnection")
     history = relationship("ChatHistory", back_populates="chat", cascade="all, delete-orphan")
+    llm_runs = relationship("LLMRun", back_populates="chat", cascade="all, delete-orphan")

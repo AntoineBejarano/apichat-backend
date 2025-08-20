@@ -43,6 +43,7 @@ class User(Base):
     token_usages = relationship("TokenUsage", back_populates="user", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
     chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
+    llm_runs = relationship("LLMRun", back_populates="user", cascade="all, delete-orphan")
     subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
     openapi_integrations = relationship("OpenAPIIntegration", back_populates="user", cascade="all, delete-orphan")
     proxies = relationship("Proxy", back_populates="user", cascade="all, delete-orphan")

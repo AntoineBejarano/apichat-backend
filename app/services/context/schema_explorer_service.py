@@ -19,6 +19,7 @@ from app.services.data.cache_service import CacheService
 from app.services.data.database_service import DatabaseService
 from app.core.config import settings
 from .detailed_schema_cache import DetailedSchemaCache, DatabaseSchema, TableInfo, ColumnInfo, ColumnType
+from .synonyms_config_service import SynonymsConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ class SchemaExplorerService:
         self.factory = factory  # 🔧 FIX: Inyectar ServiceFactory
         self.detailed_cache = DetailedSchemaCache()
         
+        # 🔧 FASE 8: Inicializar servicio de configuración de sinónimos
+        self.synonyms_service = SynonymsConfigService()
+        
         # Umbrales para Fast Schema Path (Fase 7) desde configuración
         self.CONF_FAST = settings.CONF_FAST
         self.CONF_AMBIGUOUS = settings.CONF_AMBIGUOUS
@@ -43,6 +47,7 @@ class SchemaExplorerService:
         self._lexical_indexes = {}  # {db_id: {term: [(table, column, score)]}}
         
         logger.info(f"[SchemaExplorerService] 🦄 Inicializado con Fast Schema Path (CONF_FAST={self.CONF_FAST})")
+        logger.info(f"[SchemaExplorerService] 🔧 FASE 8: Servicio de sinónimos configurado")
         if factory:
             logger.info(f"[SchemaExplorerService] ✅ ServiceFactory inyectado correctamente")
         else:
@@ -94,7 +99,14 @@ class SchemaExplorerService:
             
             if not all_matches:
                 logger.info("[SchemaExplorerService] ⚠️ No se encontraron matches en índices léxicos")
-                return None, 0.0, "fallback"
+                # 🔧 FASE 8: Intentar fallback inteligente con consultas de catálogo
+                catalog_fallback = self._try_catalog_fallback(query, db_ids)
+                if catalog_fallback:
+                    logger.info(f"[SchemaExplorerService] 🔧 FASE 8: Fallback de catálogo exitoso: {catalog_fallback['query_type']}")
+                    return catalog_fallback, 0.6, "catalog_fallback"  # Confianza media para fallback
+                else:
+                    logger.info("[SchemaExplorerService] 📉 No hay fallback de catálogo disponible, ir a LLM")
+                    return None, 0.0, "fallback"
             
             # 3. Calcular confianza y determinar tipo de respuesta
             # 🔧 FASE 8: Mejorar cálculo de confianza con más factores
@@ -158,6 +170,982 @@ class SchemaExplorerService:
         except Exception as e:
             logger.error(f"[SchemaExplorerService] ❌ Error en fast_lookup: {e}")
             return None, 0.0, "fallback"
+
+    def _try_catalog_fallback(self, query: str, db_ids: List[UUID]) -> Optional[Dict[str, Any]]:
+        """
+        🔧 FASE 8: Intenta generar una consulta de catálogo segura basada en la intención del usuario.
+        
+        Args:
+            query: Consulta original del usuario
+            db_ids: Lista de IDs de bases de datos
+            
+        Returns:
+            Dict con consulta de catálogo segura o None si no es posible
+        """
+        try:
+            logger.info(f"[SchemaExplorerService] 🔧 FASE 8: Intentando fallback de catálogo para: '{query}'")
+            
+            # Normalizar y analizar la consulta
+            normalized_query = self._normalize_query(query)
+            query_terms = self._extract_search_terms(normalized_query)
+            
+            # 🎯 DETECTAR INTENCIÓN ESPECÍFICA
+            intention = self._detect_user_intention(query, query_terms)
+            
+            # 🚀 OPTIMIZACIÓN: Respuestas directas desde caché para intenciones simples
+            if intention == "list_tables":
+                # Intención: Listar tablas disponibles - RESPUESTA DIRECTA DESDE CACHÉ
+                return self._generate_direct_cache_response(db_ids, "list_tables")
+                
+            elif intention == "explore_schema":
+                # Intención: Explorar esquema completo - RESPUESTA DIRECTA DESDE CACHÉ
+                return self._generate_direct_cache_response(db_ids, "explore_schema")
+                
+            elif intention == "get_table_stats":
+                # Intención: Estadísticas básicas - RESPUESTA DIRECTA DESDE CACHÉ
+                return self._generate_direct_cache_response(db_ids, "table_stats")
+                
+            elif intention == "find_specific_tables":
+                # Intención: Buscar tablas específicas por palabras clave
+                keywords = self._extract_safe_keywords(query_terms)
+                if keywords:
+                    return self._generate_safe_table_search_query(db_ids, keywords)
+                    
+            elif intention == "explore_table_structure":
+                # Intención: Explorar estructura de tabla específica
+                table_name = self._extract_table_name_from_query(query)
+                if table_name:
+                    return self._generate_safe_table_structure_query(db_ids, table_name)
+                    
+            elif intention == "find_relationships":
+                # Intención: Encontrar relaciones entre tablas
+                return self._generate_safe_relationships_query(db_ids)
+                
+            elif intention == "get_table_stats":
+                # Intención: Obtener estadísticas de tablas
+                return self._generate_safe_table_stats_query(db_ids)
+                
+            elif intention == "explore_schema":
+                # Intención: Explorar esquema completo
+                return self._generate_safe_schema_exploration_query(db_ids)
+            
+            # Si no se puede determinar la intención, usar consulta genérica de tablas
+            logger.info("[SchemaExplorerService] 🔧 FASE 8: Intención no determinada, usando fallback genérico")
+            return self._generate_safe_table_list_query(db_ids)
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error en fallback de catálogo: {e}")
+            return None
+
+    def _detect_user_intention(self, query: str, query_terms: List[str]) -> str:
+        """
+        🌍 FASE 8: Detecta la intención del usuario usando un protocolo genérico y MULTILINGÜE.
+        Basado en análisis semántico y patrones de lenguaje natural en múltiples idiomas.
+        """
+        query_lower = query.lower()
+        
+        # 🌍 PROTOCOLO MULTILINGÜE: Análisis de intención por patrones semánticos
+        
+        # 🧠 DETECCIÓN INTELIGENTE AVANZADA: Consultas sobre BD en general
+        # Si la consulta es sobre la base de datos (estructura, esquema, entidades)
+        # pero NO específicamente sobre tablas, entonces es list_tables
+        db_general_indicators = [
+            'base de datos', 'database', 'base de données', 'datenbank', 'database', 'banco de dados',
+            'estructura', 'structure', 'structure', 'struktur', 'struttura', 'estrutura',
+            'esquema', 'schema', 'schéma', 'schema', 'schema', 'esquema',
+            'entidad', 'entity', 'entité', 'entität', 'entità', 'entidade'
+        ]
+        
+        if any(indicator in query_lower for indicator in db_general_indicators):
+            # Si NO hay indicadores específicos de tablas, es list_tables
+            if not any(word in query_lower for word in ['tabla', 'table', 'tables', 'tablas']):
+                return "list_tables"
+        
+        # 1. INTENCIÓN: Explorar estructura de base de datos (PRIORIDAD MEDIA)
+        # Solo si NO hay indicadores de listado de tablas
+        structure_indicators = [
+            # Español
+            'estructura', 'columna', 'campo', 'definicion', 'definición',
+            # English
+            'structure', 'column', 'field', 'definition',
+            # Français
+            'structure', 'colonne', 'champ', 'définition',
+            # Deutsch
+            'struktur', 'spalte', 'feld', 'definition',
+            # Italiano
+            'struttura', 'colonna', 'campo', 'definizione',
+            # Português
+            'estrutura', 'coluna', 'campo', 'definição'
+        ]
+        if any(indicator in query_lower for indicator in structure_indicators):
+            # Si también hay indicadores de tablas, priorizar list_tables
+            if any(word in query_lower for word in ['tabla', 'table', 'tables', 'tablas']):
+                return "list_tables"
+            return "explore_table_structure"
+        
+        # 2. INTENCIÓN: Encontrar relaciones entre entidades
+        relationship_indicators = [
+            # Español
+            'relacion', 'relación', 'foreign', 'key', 'conexion', 'conexión', 'vinculo', 'vínculo', 'link',
+            # English
+            'relationship', 'foreign', 'key', 'connection', 'link',
+            # Français
+            'relation', 'étrangère', 'clé', 'connexion', 'lien',
+            # Deutsch
+            'beziehung', 'fremd', 'schlüssel', 'verbindung', 'verknüpfung',
+            # Italiano
+            'relazione', 'straniera', 'chiave', 'connessione', 'collegamento',
+            # Português
+            'relação', 'estrangeira', 'chave', 'conexão', 'ligação'
+        ]
+        if any(indicator in query_lower for indicator in relationship_indicators):
+            return "find_relationships"
+        
+        # 3. INTENCIÓN: Obtener métricas y estadísticas
+        stats_indicators = [
+            # Español
+            'estadistica', 'estadística', 'tamaño', 'cantidad', 'numero', 'número', 'metrica', 'métrica',
+            # English
+            'stats', 'statistics', 'size', 'count', 'number', 'metric',
+            # Français
+            'statistique', 'taille', 'compte', 'nombre', 'métrique',
+            # Deutsch
+            'statistik', 'größe', 'anzahl', 'zahl', 'metrik',
+            # Italiano
+            'statistica', 'dimensione', 'conteggio', 'numero', 'metrica',
+            # Português
+            'estatística', 'tamanho', 'contagem', 'número', 'métrica'
+        ]
+        if any(indicator in query_lower for indicator in stats_indicators):
+            return "get_table_stats"
+        
+        # 5. INTENCIÓN: Listado general de entidades disponibles (PRIORIDAD ALTA)
+        list_indicators = [
+            # Español
+            'tabla', 'tablas', 'lista', 'listado', 'todo', 'todas', 'disponible', 'disponibles',
+            # English
+            'table', 'tables', 'list', 'all', 'available',
+            # Français
+            'table', 'tables', 'liste', 'tout', 'disponible',
+            # Deutsch
+            'tabelle', 'tabellen', 'liste', 'alle', 'verfügbar',
+            # Italiano
+            'tabella', 'tabelle', 'lista', 'tutto', 'disponibile',
+            # Português
+            'tabela', 'tabelas', 'lista', 'tudo', 'disponível'
+        ]
+        if any(indicator in query_lower for indicator in list_indicators):
+            return "list_tables"
+        
+        # 4. INTENCIÓN: Búsqueda específica por contexto semántico (PRIORIDAD BAJA)
+        # Solo palabras que claramente indican búsqueda específica, NO palabras genéricas
+        search_indicators = [
+            # Español
+            'donde', 'buscar', 'encontrar', 'cual', 'cuál',
+            # English
+            'where', 'search', 'find', 'which',
+            # Français
+            'où', 'rechercher', 'trouver', 'quel', 'quelle',
+            # Deutsch
+            'wo', 'suchen', 'finden', 'welche',
+            # Italiano
+            'dove', 'cercare', 'trovare', 'quale',
+            # Português
+            'onde', 'procurar', 'encontrar', 'qual'
+        ]
+        if any(indicator in query_lower for indicator in search_indicators):
+            return "find_specific_tables"
+        
+        # 6. INTENCIÓN: Explorar esquema completo (PRIORIDAD MEDIA)
+        # Solo si NO hay indicadores de listado de tablas
+        schema_indicators = [
+            # Español
+            'esquema', 'base de datos', 'modelo', 'diseño', 'diseño',
+            # English
+            'schema', 'database', 'model', 'design',
+            # Français
+            'schéma', 'base de données', 'modèle', 'conception',
+            # Deutsch
+            'schema', 'datenbank', 'modell', 'entwurf',
+            # Italiano
+            'schema', 'database', 'modello', 'progetto',
+            # Português
+            'esquema', 'banco de dados', 'modelo', 'design'
+        ]
+        if any(indicator in query_lower for indicator in schema_indicators):
+            # Si también hay indicadores de tablas, priorizar list_tables
+            if any(word in query_lower for word in ['tabla', 'table', 'tables', 'tablas']):
+                return "list_tables"
+            return "explore_schema"
+        
+        # 🌍 DETECCIÓN MULTILINGÜE AVANZADA: Patrones específicos por idioma
+        advanced_intention = self._detect_language_and_intention(query_lower)
+        if advanced_intention:
+            return advanced_intention
+        
+        # 🎯 DETECCIÓN INTELIGENTE: Si no hay match específico, analizar el contexto
+        # "qué tablas hay" = list_tables, no find_specific_tables
+        if any(word in query_lower for word in ['qué', 'que', 'what', 'quelles', 'welche', 'quali', 'quais']):
+            if any(word in query_lower for word in ['tabla', 'table', 'tables', 'tablas']):
+                return "list_tables"
+            if any(word in query_lower for word in ['hay', 'tiene', 'are', 'there', 'y a-t-il', 'gibt es', 'ci sono', 'existem']):
+                return "list_tables"
+        
+        # Por defecto: Listar tablas (más útil para usuarios)
+        return "list_tables"
+
+    def _detect_language_and_intention(self, query_lower: str) -> Optional[str]:
+        """
+        🌍 Detecta el idioma y la intención usando patrones específicos por idioma.
+        """
+        # 🇺🇸 ENGLISH PATTERNS
+        english_patterns = {
+            "list_tables": [
+                "what tables", "show tables", "list tables", "all tables", "available tables",
+                "what's in the database", "what's in my database", "database contents",
+                "tables list", "table names", "database structure"
+            ],
+            "explore_schema": [
+                "database schema", "database structure", "database design", "database model",
+                "how is the database structured", "database layout", "database organization"
+            ],
+            "get_table_stats": [
+                "how many tables", "table count", "database size", "database statistics",
+                "table statistics", "database metrics", "how big is the database"
+            ]
+        }
+        
+        # 🇪🇸 SPANISH PATTERNS
+        spanish_patterns = {
+            "list_tables": [
+                "qué tablas hay", "qué tablas tiene", "muestra las tablas", "lista de tablas",
+                "todas las tablas", "tablas disponibles", "qué hay en la base de datos",
+                "contenido de la base de datos", "estructura de la base de datos"
+            ],
+            "explore_schema": [
+                "esquema de la base de datos", "estructura de la base de datos", "diseño de la base de datos",
+                "cómo está estructurada la base de datos", "organización de la base de datos"
+            ],
+            "get_table_stats": [
+                "cuántas tablas hay", "número de tablas", "tamaño de la base de datos",
+                "estadísticas de la base de datos", "métricas de la base de datos"
+            ]
+        }
+        
+        # 🇫🇷 FRENCH PATTERNS
+        french_patterns = {
+            "list_tables": [
+                "quelles tables", "montrer les tables", "liste des tables", "toutes les tables",
+                "tables disponibles", "que contient la base de données", "contenu de la base de données"
+            ],
+            "explore_schema": [
+                "schéma de la base de données", "structure de la base de données",
+                "comment est structurée la base de données"
+            ],
+            "get_table_stats": [
+                "combien de tables", "nombre de tables", "taille de la base de données",
+                "statistiques de la base de données"
+            ]
+        }
+        
+        # 🇩🇪 GERMAN PATTERNS
+        german_patterns = {
+            "list_tables": [
+                "welche tabellen", "tabellen anzeigen", "tabellen liste", "alle tabellen",
+                "verfügbare tabellen", "was ist in der datenbank", "datenbank inhalt"
+            ],
+            "explore_schema": [
+                "datenbank schema", "datenbank struktur", "wie ist die datenbank strukturiert"
+            ],
+            "get_table_stats": [
+                "wie viele tabellen", "anzahl der tabellen", "datenbank größe",
+                "datenbank statistiken"
+            ]
+        }
+        
+        # 🇮🇹 ITALIAN PATTERNS
+        italian_patterns = {
+            "list_tables": [
+                "quali tabelle", "mostra le tabelle", "lista delle tabelle", "tutte le tabelle",
+                "tabelle disponibili", "cosa c'è nel database", "contenuto del database"
+            ],
+            "explore_schema": [
+                "schema del database", "struttura del database", "come è strutturato il database"
+            ],
+            "get_table_stats": [
+                "quante tabelle", "numero di tabelle", "dimensione del database",
+                "statistiche del database"
+            ]
+        }
+        
+        # 🇵🇹 PORTUGUESE PATTERNS
+        portuguese_patterns = {
+            "list_tables": [
+                "quais tabelas", "mostrar tabelas", "lista de tabelas", "todas as tabelas",
+                "tabelas disponíveis", "o que há na base de dados", "conteúdo da base de dados"
+            ],
+            "explore_schema": [
+                "esquema da base de dados", "estrutura da base de dados",
+                "como está estruturada a base de dados"
+            ],
+            "get_table_stats": [
+                "quantas tabelas", "número de tabelas", "tamanho da base de dados",
+                "estatísticas da base de dados"
+            ]
+        }
+        
+        # 🔍 BUSCAR EN TODOS LOS IDIOMAS
+        all_patterns = {
+            **english_patterns,
+            **spanish_patterns,
+            **french_patterns,
+            **german_patterns,
+            **italian_patterns,
+            **portuguese_patterns
+        }
+        
+        for intention, patterns in all_patterns.items():
+            if any(pattern in query_lower for pattern in patterns):
+                logger.info(f"[SchemaExplorerService] 🌍 Intención detectada en múltiples idiomas: {intention}")
+                return intention
+        
+        return None
+
+    def _extract_safe_keywords(self, query_terms: List[str]) -> List[str]:
+        """
+        Extrae palabras clave seguras para búsqueda de tablas.
+        Solo permite palabras alfanuméricas y guiones bajos.
+        """
+        safe_keywords = []
+        for term in query_terms:
+            # Solo palabras seguras: alfanuméricas + guiones bajos
+            if re.match(r'^[a-zA-Z0-9_]+$', term) and len(term) >= 3:
+                safe_keywords.append(term.lower())
+        return safe_keywords[:5]  # Máximo 5 palabras clave
+
+    def _extract_table_name_from_query(self, query: str) -> Optional[str]:
+        """
+        Extrae el nombre de una tabla específica de la consulta.
+        Solo permite nombres de tabla seguros.
+        """
+        # Buscar patrones como "tabla usuarios", "table users", etc.
+        patterns = [
+            r'tabla\s+([a-zA-Z0-9_]+)',
+            r'table\s+([a-zA-Z0-9_]+)',
+            r'([a-zA-Z0-9_]+)\s+table',
+            r'([a-zA-Z0-9_]+)\s+tabla'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, query.lower())
+            if match:
+                table_name = match.group(1)
+                # Verificar que sea un nombre de tabla seguro
+                if re.match(r'^[a-zA-Z0-9_]+$', table_name) and len(table_name) >= 2:
+                    return table_name
+        return None
+
+    def _generate_safe_table_list_query(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        Genera consulta segura para listar todas las tablas disponibles.
+        """
+        return {
+            "type": "catalog_query",
+            "query_type": "list_tables",
+            "sql": """
+                SELECT 
+                    table_name,
+                    table_type,
+                    table_schema
+                FROM information_schema.tables 
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                ORDER BY table_name 
+                LIMIT 50
+            """.strip(),
+            "description": "Lista todas las tablas disponibles en la base de datos",
+            "safe": True,
+            "source": "catalog_fallback"
+        }
+
+    def _generate_safe_table_search_query(self, db_ids: List[UUID], keywords: List[str]) -> Dict[str, Any]:
+        """
+        🔧 FASE 8: Genera consulta segura para buscar tablas usando un protocolo genérico y configurable.
+        Usa patrones predefinidos y análisis semántico, NO interpolación de texto del usuario.
+        """
+        # 🛡️ SEGURIDAD: Solo patrones predefinidos, sin interpolación
+        normalized_keywords = [kw.lower().strip() for kw in keywords]
+        
+        # 🎯 PROTOCOLO GENÉRICO: Sistema de patrones semánticos configurable
+        semantic_patterns = self._get_semantic_search_patterns()
+        
+        # Buscar el patrón semántico más apropiado
+        best_pattern = self._find_best_semantic_pattern(normalized_keywords, semantic_patterns)
+        
+        if best_pattern:
+            return {
+                "type": "catalog_query",
+                "query_type": f"search_{best_pattern['category']}",
+                "sql": best_pattern['sql'],
+                "description": best_pattern['description'],
+                "safe": True,
+                "source": "catalog_fallback",
+                "semantic_category": best_pattern['category'],
+                "confidence_score": best_pattern['confidence']
+            }
+        else:
+            # Fallback genérico inteligente: búsqueda por similitud de nombres
+            return self._generate_smart_generic_search_query(normalized_keywords)
+
+    def _get_semantic_search_patterns(self) -> List[Dict[str, Any]]:
+        """
+        🔧 FASE 8: Define patrones semánticos genéricos para búsquedas de catálogo.
+        Sistema completamente configurable y extensible.
+        """
+        return [
+            # 🏢 PATRÓN: Entidades de negocio
+            {
+                "category": "business_entities",
+                "keywords": ['user', 'usuario', 'cliente', 'customer', 'empresa', 'company', 'negocio', 'business'],
+                "sql": """
+                    SELECT 
+                        table_name,
+                        table_type,
+                        table_schema
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                        AND (
+                            table_name ILIKE '%user%' OR table_name ILIKE '%usuario%'
+                            OR table_name ILIKE '%client%' OR table_name ILIKE '%cliente%'
+                            OR table_name ILIKE '%company%' OR table_name ILIKE '%empresa%'
+                            OR table_name ILIKE '%business%' OR table_name ILIKE '%negocio%'
+                        )
+                    ORDER BY table_name 
+                    LIMIT 25
+                """.strip(),
+                "description": "Entidades principales de negocio (usuarios, clientes, empresas)",
+                "confidence": 0.9
+            },
+            
+            # 📧 PATRÓN: Comunicación y notificaciones
+            {
+                "category": "communication",
+                "keywords": ['email', 'correo', 'message', 'mensaje', 'notification', 'notificacion', 'invitation', 'invitacion'],
+                "sql": """
+                    SELECT 
+                        table_name,
+                        table_type,
+                        table_schema
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                        AND (
+                            table_name ILIKE '%email%' OR table_name ILIKE '%correo%'
+                            OR table_name ILIKE '%message%' OR table_name ILIKE '%mensaje%'
+                            OR table_name ILIKE '%notification%' OR table_name ILIKE '%notificacion%'
+                            OR table_name ILIKE '%invitation%' OR table_name ILIKE '%invitacion%'
+                        )
+                    ORDER BY table_name 
+                    LIMIT 25
+                """.strip(),
+                "description": "Sistemas de comunicación y notificaciones",
+                "confidence": 0.85
+            },
+            
+            # 👥 PATRÓN: Grupos y comunidades
+            {
+                "category": "groups_communities",
+                "keywords": ['group', 'grupo', 'club', 'community', 'comunidad', 'team', 'equipo', 'member', 'miembro'],
+                "sql": """
+                    SELECT 
+                        table_name,
+                        table_type,
+                        table_schema
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                        AND (
+                            table_name ILIKE '%group%' OR table_name ILIKE '%grupo%'
+                            OR table_name ILIKE '%club%' OR table_name ILIKE '%community%'
+                            OR table_name ILIKE '%comunidad%' OR table_name ILIKE '%team%'
+                            OR table_name ILIKE '%equipo%' OR table_name ILIKE '%member%'
+                        )
+                    ORDER BY table_name 
+                    LIMIT 25
+                """.strip(),
+                "description": "Grupos, comunidades y equipos",
+                "confidence": 0.85
+            },
+            
+            # 📊 PATRÓN: Datos y contenido
+            {
+                "category": "data_content",
+                "keywords": ['data', 'dato', 'content', 'contenido', 'file', 'archivo', 'document', 'documento', 'media'],
+                "sql": """
+                    SELECT 
+                        table_name,
+                        table_type,
+                        table_schema
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                        AND (
+                            table_name ILIKE '%data%' OR table_name ILIKE '%dato%'
+                            OR table_name ILIKE '%content%' OR table_name ILIKE '%contenido%'
+                            OR table_name ILIKE '%file%' OR table_name ILIKE '%archivo%'
+                            OR table_name ILIKE '%document%' OR table_name ILIKE '%documento%'
+                        )
+                    ORDER BY table_name 
+                    LIMIT 25
+                """.strip(),
+                "description": "Datos, contenido y archivos",
+                "confidence": 0.8
+            },
+            
+            # 🔐 PATRÓN: Seguridad y autenticación
+            {
+                "category": "security_auth",
+                "keywords": ['auth', 'authentication', 'autenticacion', 'permission', 'permiso', 'role', 'rol', 'security', 'seguridad'],
+                "sql": """
+                    SELECT 
+                        table_name,
+                        table_type,
+                        table_schema
+                    FROM information_schema.tables 
+                    WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                        AND (
+                            table_name ILIKE '%auth%' OR table_name ILIKE '%autenticacion%'
+                            OR table_name ILIKE '%permission%' OR table_name ILIKE '%permiso%'
+                            OR table_name ILIKE '%role%' OR table_name ILIKE '%rol%'
+                            OR table_name ILIKE '%security%' OR table_name ILIKE '%seguridad%'
+                        )
+                    ORDER BY table_name 
+                    LIMIT 25
+                """.strip(),
+                "description": "Sistemas de seguridad y autenticación",
+                "confidence": 0.8
+            }
+        ]
+
+    def _find_best_semantic_pattern(self, keywords: List[str], patterns: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        🔧 FASE 8: Encuentra el patrón semántico más apropiado basado en palabras clave.
+        Usa scoring inteligente para seleccionar la mejor coincidencia.
+        """
+        best_pattern = None
+        best_score = 0.0
+        
+        for pattern in patterns:
+            # Calcular score de coincidencia
+            pattern_keywords = pattern['keywords']
+            matches = sum(1 for kw in keywords if any(pk in kw for pk in pattern_keywords))
+            
+            if matches > 0:
+                # Score basado en número de coincidencias y confianza del patrón
+                score = (matches / len(keywords)) * pattern['confidence']
+                
+                if score > best_score:
+                    best_score = score
+                    best_pattern = pattern
+        
+        # Solo devolver si el score es suficientemente alto
+        return best_pattern if best_score >= 0.3 else None
+
+    def _generate_smart_generic_search_query(self, keywords: List[str]) -> Dict[str, Any]:
+        """
+        🔧 FASE 8: Genera búsqueda genérica inteligente cuando no hay patrones semánticos específicos.
+        Usa análisis de similitud y patrones de nombres comunes.
+        """
+        # Crear consulta genérica que busque por similitud de nombres
+        # SIN interpolación del texto del usuario
+        return {
+            "type": "catalog_query",
+            "query_type": "smart_generic_search",
+            "sql": """
+                SELECT 
+                    table_name,
+                    table_type,
+                    table_schema
+                FROM information_schema.tables 
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                    AND (
+                        table_name ILIKE '%user%' OR table_name ILIKE '%data%'
+                        OR table_name ILIKE '%info%' OR table_name ILIKE '%log%'
+                        OR table_name ILIKE '%config%' OR table_name ILIKE '%setting%'
+                    )
+                ORDER BY table_name 
+                LIMIT 30
+            """.strip(),
+            "description": "Búsqueda genérica inteligente en el catálogo",
+            "safe": True,
+            "source": "catalog_fallback",
+            "semantic_category": "generic",
+            "confidence_score": 0.5
+        }
+
+    def _generate_safe_table_structure_query(self, db_ids: List[UUID], table_name: str) -> Dict[str, Any]:
+        """
+        Genera consulta segura para explorar estructura de una tabla específica.
+        """
+        return {
+            "type": "catalog_query",
+            "query_type": "table_structure",
+            "sql": f"""
+                SELECT 
+                    column_name,
+                    data_type,
+                    is_nullable,
+                    column_default,
+                    ordinal_position
+                FROM information_schema.columns 
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                    AND table_name = '{table_name}'
+                ORDER BY ordinal_position
+            """.strip(),
+            "description": f"Estructura de la tabla {table_name}",
+            "safe": True,
+            "source": "catalog_fallback",
+            "target_table": table_name
+        }
+
+    def _generate_safe_relationships_query(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        Genera consulta segura para encontrar relaciones entre tablas.
+        """
+        return {
+            "type": "catalog_query",
+            "query_type": "table_relationships",
+            "sql": """
+                SELECT 
+                    kcu.table_name,
+                    kcu.column_name,
+                    kcu.referenced_table_name,
+                    kcu.referenced_column_name,
+                    tc.constraint_name
+                FROM information_schema.key_column_usage kcu
+                JOIN information_schema.table_constraints tc 
+                    ON kcu.constraint_name = tc.constraint_name
+                WHERE kcu.referenced_table_name IS NOT NULL
+                    AND tc.constraint_type = 'FOREIGN KEY'
+                    AND kcu.table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                ORDER BY kcu.table_name, kcu.ordinal_position
+                LIMIT 50
+            """.strip(),
+            "description": "Relaciones entre tablas (foreign keys)",
+            "safe": True,
+            "source": "catalog_fallback"
+        }
+
+    def _generate_safe_table_stats_query(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        🔧 FASE 8: Genera consulta segura para obtener estadísticas de tablas.
+        """
+        return {
+            "type": "catalog_query",
+            "query_type": "table_stats",
+            "sql": """
+                SELECT 
+                    table_name,
+                    table_type,
+                    table_schema
+                FROM information_schema.tables 
+                WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                    AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                LIMIT 30
+            """.strip(),
+            "description": "Estadísticas básicas de las tablas",
+            "safe": True,
+            "source": "catalog_fallback"
+        }
+
+    def _generate_safe_schema_exploration_query(self, db_ids: List[UUID]) -> Dict[str, Any]:
+        """
+        🔧 FASE 8: Genera consulta segura para explorar el esquema completo de la base de datos.
+        """
+        return {
+            "type": "catalog_query",
+            "query_type": "schema_exploration",
+            "sql": """
+                SELECT 
+                    t.table_name,
+                    t.table_type,
+                    t.table_schema,
+                    COUNT(c.column_name) as column_count,
+                    COUNT(CASE WHEN c.primary_key = 'YES' THEN 1 END) as primary_keys,
+                    COUNT(CASE WHEN c.foreign_key = 'YES' THEN 1 END) as foreign_keys
+                FROM information_schema.tables t
+                LEFT JOIN information_schema.columns c ON t.table_name = c.table_name 
+                    AND t.table_schema = c.table_schema
+                WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog', 'mysql', 'performance_schema', 'sys')
+                GROUP BY t.table_name, t.table_type, t.table_schema
+                ORDER BY t.table_name
+                LIMIT 40
+            """.strip(),
+            "description": "Exploración completa del esquema de la base de datos",
+            "safe": True,
+            "source": "catalog_fallback"
+        }
+
+    def _generate_direct_cache_response(self, db_ids: List[UUID], response_type: str) -> Dict[str, Any]:
+        """
+        🚀 OPTIMIZACIÓN: Genera respuestas directas desde caché para intenciones simples.
+        Evita generar planes y usar LLM para consultas básicas que ya tenemos en caché.
+        
+        Args:
+            db_ids: Lista de IDs de bases de datos
+            response_type: Tipo de respuesta a generar
+            
+        Returns:
+            Dict con respuesta directa desde caché
+        """
+        try:
+            logger.info(f"[SchemaExplorerService] 🚀 Generando respuesta directa desde caché: {response_type}")
+            
+            # Obtener esquema desde caché (ya lo tenemos)
+            schema_data = self._get_schema_from_cache(db_ids[0]) if db_ids else None
+            
+            if not schema_data:
+                logger.warning("[SchemaExplorerService] ⚠️ FASE 3: No hay esquema en caché, devolviendo mensaje útil")
+                return {
+                    "type": "missing_schema_response",
+                    "response_type": "missing_schema",
+                    "content": "⚠️ No tengo acceso al esquema de tu base de datos. ¿Quieres cargarlo primero?\n\n**Opciones disponibles:**\n• Recargar esquema de la base de datos\n• Seleccionar una base de datos específica\n• Probar con una tabla específica",
+                    "metadata": {
+                        "total_tables": 0,
+                        "source": "missing_schema",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": False,
+                        "requires_schema_load": True
+                    },
+                    "safe": True,
+                    "source": "missing_schema_fallback",
+                    "status": "missing_schema"
+                }
+            
+            tables = schema_data.get('tables', [])
+            total_tables = len(tables)
+            
+            if response_type == "list_tables":
+                # Respuesta directa: Lista de tablas disponibles
+                table_names = [table.get('name', '') for table in tables if table.get('name')]
+                table_names = [name for name in table_names if name]  # Filtrar nombres vacíos
+                
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "list_tables",
+                    "content": f"Tu base de datos tiene {total_tables} tablas disponibles:\n\n" + \
+                              "\n".join([f"• {name}" for name in sorted(table_names)]),
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "source": "cache",
+                        "response_time_ms": 0,  # Respuesta instantánea
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            elif response_type == "explore_schema":
+                # Respuesta directa: Exploración del esquema
+                table_summary = []
+                for table in tables[:20]:  # Limitar a 20 tablas para respuesta rápida
+                    name = table.get('name', '')
+                    columns = table.get('columns', [])
+                    column_count = len(columns)
+                    
+                    # Identificar columnas clave
+                    id_columns = [col.get('name', '') for col in columns if 'id' in col.get('name', '').lower()]
+                    primary_keys = [col.get('name', '') for col in columns if col.get('is_primary_key')]
+                    
+                    summary = f"• **{name}** ({column_count} columnas)"
+                    if primary_keys:
+                        summary += f" - PK: {', '.join(primary_keys)}"
+                    if id_columns:
+                        summary += f" - IDs: {', '.join(id_columns[:3])}"
+                    
+                    table_summary.append(summary)
+                
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "explore_schema",
+                    "content": f"**Esquema de tu base de datos** ({total_tables} tablas):\n\n" + \
+                              "\n".join(table_summary) + \
+                              f"\n\n*Mostrando primeras 20 tablas. Total: {total_tables} tablas disponibles.*",
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "tables_shown": min(20, total_tables),
+                        "source": "cache",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            elif response_type == "table_stats":
+                # Respuesta directa: Estadísticas básicas
+                table_types = {}
+                total_columns = 0
+                
+                for table in tables:
+                    table_type = table.get('type', 'unknown')
+                    table_types[table_type] = table_types.get(table_type, 0) + 1
+                    total_columns += len(table.get('columns', []))
+                
+                stats_content = f"**Estadísticas de tu base de datos:**\n\n" + \
+                               f"• **Total de tablas:** {total_tables}\n" + \
+                               f"• **Total de columnas:** {total_columns}\n" + \
+                               f"• **Promedio de columnas por tabla:** {total_columns/total_tables:.1f}\n\n" + \
+                               f"• **Tipos de tablas:**\n"
+                
+                for table_type, count in sorted(table_types.items()):
+                    stats_content += f"• {table_type}: {count} tablas\n"
+                
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "table_stats",
+                    "content": stats_content,
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "total_columns": total_columns,
+                        "table_types": table_types,
+                        "source": "cache",
+                        "response_type": "table_stats",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            elif response_type == "find_specific_tables":
+                # Respuesta directa: Búsqueda específica (equivalente a list_tables)
+                table_names = [table.get('name', '') for table in tables if table.get('name')]
+                table_names = [name for name in table_names if name]  # Filtrar nombres vacíos
+                
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "find_specific_tables",
+                    "content": f"**Tablas disponibles en tu base de datos:**\n\n" + \
+                              "\n".join([f"• {name}" for name in sorted(table_names)]) + \
+                              f"\n\n*Total: {total_tables} tablas disponibles para explorar.*",
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "source": "cache",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            elif response_type == "explore_table_structure":
+                # Respuesta directa: Explorar estructura de tablas
+                table_summary = []
+                for table in tables[:15]:  # Limitar a 15 tablas para respuesta rápida
+                    name = table.get('name', '')
+                    columns = table.get('columns', [])
+                    column_count = len(columns)
+                    
+                    # Identificar columnas clave
+                    id_columns = [col.get('name', '') for col in columns if 'id' in col.get('name', '').lower()]
+                    primary_keys = [col.get('name', '') for col in columns if col.get('is_primary_key')]
+                    
+                    summary = f"• **{name}** ({column_count} columnas)"
+                    if primary_keys:
+                        summary += f" - PK: {', '.join(primary_keys)}"
+                    if id_columns:
+                        summary += f" - IDs: {', '.join(id_columns[:3])}"
+                    
+                    table_summary.append(summary)
+                
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "explore_table_structure",
+                    "content": f"**Estructura de tu base de datos** ({total_tables} tablas):\n\n" + \
+                              "\n".join(table_summary) + \
+                              f"\n\n*Mostrando primeras 15 tablas. Total: {total_tables} tablas disponibles.*",
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "tables_shown": min(15, total_tables),
+                        "source": "cache",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            elif response_type == "find_relationships":
+                # Respuesta directa: Información sobre relaciones
+                response = {
+                    "type": "direct_cache_response",
+                    "response_type": "find_relationships",
+                    "content": f"**Información sobre relaciones en tu base de datos:**\n\n" + \
+                              f"Tu base de datos tiene {total_tables} tablas. Para explorar las relaciones entre ellas, " + \
+                              f"puedes usar consultas específicas sobre claves foráneas y restricciones.\n\n" + \
+                              f"**Tablas disponibles para análisis de relaciones:**\n" + \
+                              "\n".join([f"• {table.get('name', '')}" for table in tables[:10]]) + \
+                              f"\n\n*Total: {total_tables} tablas. Usa consultas específicas para explorar relaciones.*",
+                    "metadata": {
+                        "total_tables": total_tables,
+                        "tables_shown": min(10, total_tables),
+                        "source": "cache",
+                        "response_time_ms": 0,
+                        "no_llm_required": True,
+                        "cache_hit": True
+                    },
+                    "safe": True,
+                    "source": "direct_cache"
+                }
+                
+            else:
+                logger.warning(f"[SchemaExplorerService] ⚠️ Tipo de respuesta no soportado: {response_type}")
+                return None
+            
+            logger.info(f"[SchemaExplorerService] 🚀 Respuesta directa desde caché generada: {response_type}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error generando respuesta directa desde caché: {e}")
+            # Fallback a consulta SQL si hay error
+            return self._generate_safe_table_list_query(db_ids)
+
+    def _get_schema_from_cache(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el esquema desde caché si está disponible.
+        """
+        try:
+            # 🚀 OPTIMIZACIÓN: Usar el esquema que ya tenemos en el índice léxico
+            if db_id in self._lexical_indexes:
+                lexical_data = self._lexical_indexes[db_id]
+                if 'tables' in lexical_data:
+                    logger.info(f"[SchemaExplorerService] ✅ Esquema obtenido desde índice léxico para DB {db_id}")
+                    return {
+                        'tables': lexical_data['tables'],
+                        'source': 'lexical_index',
+                        'total_tables': len(lexical_data['tables'])
+                    }
+            
+            # Fallback: Intentar obtener desde caché L1 (memoria)
+            cache_key = f"schema:{db_id}"
+            cached_schema = self.cache_service.get(cache_key)
+            
+            if cached_schema:
+                logger.info(f"[SchemaExplorerService] ✅ Esquema obtenido desde caché L1 para DB {db_id}")
+                return cached_schema
+            
+            # Si no está en caché L1, intentar obtener desde DetailedSchemaCache
+            # (esto ya se hace en el método principal, pero por si acaso)
+            logger.info(f"[SchemaExplorerService] ⚠️ Esquema no encontrado en caché L1 para DB {db_id}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"[SchemaExplorerService] ❌ Error obteniendo esquema desde caché: {e}")
+            return None
     
     def get_compact_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
         """
@@ -222,51 +1210,109 @@ class SchemaExplorerService:
             return None
     
     def _normalize_query(self, query: str) -> str:
-        """Normalizar query para búsqueda léxica"""
-        # Convertir a minúsculas y remover caracteres especiales
-        normalized = query.lower()
-        normalized = re.sub(r'[^\w\s]', ' ', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        return normalized
+        """
+        🔧 FASE 1: Normalizar query para búsqueda léxica multilenguaje y genérica.
+        """
+        try:
+            # Convertir a minúsculas y remover caracteres especiales
+            normalized = query.lower()
+            normalized = re.sub(r'[^\w\s]', ' ', normalized)
+            normalized = re.sub(r'\s+', ' ', normalized).strip()
+            
+            # 🔧 FASE 8: Detección de idioma y normalización usando el servicio de sinónimos
+            # Detectar si es español basado en palabras comunes
+            spanish_indicators = ['qué', 'dónde', 'cuándo', 'cómo', 'cuánto', 'cuánta', 'tabla', 'tablas', 'esquema', 'campo', 'campos']
+            is_spanish = any(indicator in normalized for indicator in spanish_indicators)
+            
+            if is_spanish:
+                # Usar el servicio de sinónimos para traducciones español-inglés
+                try:
+                    for word in normalized.split():
+                        translation = self.synonyms_service.get_translation(word, "es", "en")
+                        if translation:
+                            normalized = normalized.replace(word, translation)
+                    
+                    logger.debug(f"[SchemaExplorerService] 🔧 FASE 8: Query normalizada usando servicio de sinónimos: '{query}' -> '{normalized}'")
+                except Exception as e:
+                    logger.warning(f"[SchemaExplorerService] ⚠️ Error en traducción automática: {e}")
+                    # Fallback a traducciones básicas si falla el servicio
+                    basic_translations = {
+                        'tabla': 'table', 'tablas': 'tables', 'esquema': 'schema',
+                        'campo': 'field', 'campos': 'fields', 'columna': 'column',
+                        'columnas': 'columns', 'registro': 'record', 'registros': 'records'
+                    }
+                    for spanish, english in basic_translations.items():
+                        normalized = normalized.replace(spanish, english)
+            
+            return normalized
+            
+        except Exception as e:
+            logger.warning(f"[SchemaExplorerService] ⚠️ Error en normalización de query: {e}, usando query original")
+            return query.lower()
     
     def _extract_search_terms(self, normalized_query: str) -> List[str]:
         """
-        Extrae términos de búsqueda relevantes de la query normalizada.
-        Mejorado para Fase 8 con más sinónimos y términos relacionados.
+        🔧 FASE 1: Extrae términos de búsqueda relevantes de la query normalizada.
+        Mejorado para ser multilenguaje y genérico.
         """
-        # 🔧 FASE 8: Expandir sinónimos y términos relacionados
-        schema_keywords = {
-            # Palabras comunes de esquema
-            'donde', 'where', 'esta', 'is', 'find', 'buscar', 'search',
-            'email', 'user', 'usuario', 'id', 'name', 'nombre', 'date', 'fecha',
-            # 🔧 FASE 8: Sinónimos adicionales
-            'campo', 'field', 'columna', 'column', 'tabla', 'table',
-            'registro', 'record', 'dato', 'data', 'fila', 'row',
-            'encontrar', 'localizar', 'ubicar', 'situar', 'posicionar',
-            'mostrar', 'listar', 'obtener', 'traer', 'extraer',
-            # 🔧 FASE 8: Términos de negocio comunes
-            'cliente', 'customer', 'producto', 'product', 'venta', 'sale',
-            'pedido', 'order', 'factura', 'invoice', 'pago', 'payment',
-            'empleado', 'employee', 'departamento', 'department', 'categoria', 'category'
-        }
-        
-        # Filtrar palabras comunes y muy cortas
-        words = normalized_query.split()
-        terms = [word for word in words if len(word) >= 3 and word not in schema_keywords]
-        
-        # 🔧 FASE 8: Si no hay términos específicos, usar palabras más largas
-        if not terms:
-            terms = [word for word in words if len(word) >= 4]
-        
-        # 🔧 FASE 8: Añadir términos relacionados si la query es muy corta
-        if len(terms) < 2 and len(normalized_query) > 10:
-            # Buscar palabras clave que podrían estar relacionadas
-            for word in words:
-                if len(word) >= 4 and word not in terms:
-                    terms.append(word)
-                    break
-        
-        return terms[:5]  # Máximo 5 términos
+        try:
+            # 🔧 FASE 8: Palabras comunes a filtrar usando el servicio de sinónimos
+            try:
+                # Obtener palabras comunes desde el servicio de sinónimos
+                common_words = set()
+                
+                # Añadir palabras básicas que siempre se filtran
+                basic_common = {
+                    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                    'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o', 'pero',
+                    'en', 'sobre', 'a', 'para', 'con', 'sin', 'por', 'entre'
+                }
+                common_words.update(basic_common)
+                
+                # Añadir palabras comunes de sinónimos (solo las que son muy genéricas)
+                generic_synonyms = ['donde', 'esta', 'estan', 'buscar', 'busco', 'quiero', 'necesito', 'puedo',
+                                   'ver', 'mostrar', 'listar', 'obtener', 'traer', 'extraer',
+                                   'encontrar', 'localizar', 'ubicar', 'situar', 'posicionar']
+                common_words.update(generic_synonyms)
+                
+            except Exception as e:
+                logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo palabras comunes: {e}")
+                # Fallback a lista básica
+                common_words = {
+                    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                    'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o', 'pero',
+                    'en', 'sobre', 'a', 'para', 'con', 'sin', 'por', 'entre'
+                }
+            
+            # Filtrar palabras comunes y muy cortas
+            words = normalized_query.split()
+            terms = [word for word in words if len(word) >= 3 and word not in common_words]
+            
+            # 🔧 FASE 1: Si no hay términos específicos, usar palabras más largas
+            if not terms:
+                terms = [word for word in words if len(word) >= 4]
+            
+            # 🔧 FASE 1: Añadir términos relacionados si la query es muy corta
+            if len(terms) < 2 and len(normalized_query) > 10:
+                # Buscar palabras clave que podrían estar relacionadas
+                for word in words:
+                    if len(word) >= 4 and word not in terms and word not in common_words:
+                        terms.append(word)
+                        break
+            
+            # 🔧 FASE 1: Asegurar que tenemos al menos algunos términos útiles
+            if not terms and len(normalized_query) > 5:
+                # Usar palabras más largas incluso si son comunes
+                terms = [word for word in words if len(word) >= 4][:3]
+            
+            logger.debug(f"[SchemaExplorerService] 🔧 FASE 1: Términos extraídos: {terms}")
+            return terms[:5]  # Máximo 5 términos
+            
+        except Exception as e:
+            logger.warning(f"[SchemaExplorerService] ⚠️ Error extrayendo términos de búsqueda: {e}")
+            # Fallback: usar palabras básicas
+            words = normalized_query.split()
+            return [word for word in words if len(word) >= 3][:3]
     
     def _build_lexical_index(self, db_id: UUID) -> None:
         """Construye índice léxico para una base de datos específica"""
@@ -443,46 +1489,46 @@ class SchemaExplorerService:
     
     def _get_synonyms(self, term: str) -> List[str]:
         """
-        🔧 FASE 8: Obtener sinónimos de un término.
+        🔧 FASE 8: Obtener sinónimos de un término usando el servicio de configuración.
         """
-        synonyms_map = {
-            # Sinónimos de campos comunes
-            'email': ['correo', 'mail', 'e-mail', 'electronic_mail'],
-            'user': ['usuario', 'usuario_id', 'user_id'],
-            'name': ['nombre', 'nombres', 'apellido', 'apellidos'],
-            'date': ['fecha', 'fecha_creacion', 'created_at', 'timestamp'],
-            'id': ['identificador', 'primary_key', 'pk'],
-            'phone': ['telefono', 'phone_number', 'celular', 'mobile'],
-            'address': ['direccion', 'domicilio', 'ubicacion'],
-            'price': ['precio', 'costo', 'valor', 'amount'],
-            'status': ['estado', 'situacion', 'condicion'],
-            'type': ['tipo', 'categoria', 'clasificacion'],
-            'description': ['descripcion', 'detalle', 'comentario', 'nota'],
-            'created': ['creado', 'fecha_creacion', 'created_at'],
-            'updated': ['actualizado', 'modificado', 'updated_at', 'modified_at'],
-            'active': ['activo', 'habilitado', 'enabled', 'visible'],
-            'deleted': ['eliminado', 'borrado', 'deleted_at', 'removed']
-        }
-        
-        term_lower = term.lower()
-        return synonyms_map.get(term_lower, [])
+        try:
+            # Usar el servicio de sinónimos para obtener todos los sinónimos disponibles
+            all_synonyms = self.synonyms_service.get_all_synonyms_for_term(term)
+            
+            if all_synonyms:
+                logger.debug(f"[SchemaExplorerService] 🔧 FASE 8: Encontrados {len(all_synonyms)} sinónimos para '{term}': {all_synonyms}")
+                return all_synonyms
+            else:
+                logger.debug(f"[SchemaExplorerService] 🔧 FASE 8: No se encontraron sinónimos para '{term}'")
+                return []
+                
+        except Exception as e:
+            logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo sinónimos para '{term}': {e}")
+            return []
     
     def _get_related_terms(self, term: str, term_type: str) -> List[str]:
         """
-        🔧 FASE 8: Obtener términos relacionados de un término.
+        🔧 FASE 8: Obtener términos relacionados de un término usando el servicio de configuración.
         """
-        related_terms_map = {
-            # Términos relacionados por tipo
-            'table': ['tabla', 'entidad', 'modelo', 'collection'],
-            'column': ['columna', 'campo', 'atributo', 'propiedad'],
-            'field': ['campo', 'columna', 'atributo', 'propiedad'],
-            'record': ['registro', 'fila', 'tupla', 'documento'],
-            'row': ['fila', 'registro', 'tupla', 'entrada'],
-            'data': ['dato', 'informacion', 'contenido', 'valor']
-        }
-        
-        term_lower = term.lower()
-        return related_terms_map.get(term_lower, [])
+        try:
+            # Usar el servicio de sinónimos para obtener términos relacionados
+            # Buscar en sinónimos de tablas y campos
+            table_synonyms = self.synonyms_service.get_table_synonyms(term)
+            field_synonyms = self.synonyms_service.get_field_synonyms(term)
+            
+            # Combinar y remover duplicados
+            all_related = list(set(table_synonyms + field_synonyms))
+            
+            if all_related:
+                logger.debug(f"[SchemaExplorerService] 🔧 FASE 8: Encontrados {len(all_related)} términos relacionados para '{term}': {all_related}")
+                return all_related
+            else:
+                logger.debug(f"[SchemaExplorerService] 🔧 FASE 8: No se encontraron términos relacionados para '{term}'")
+                return []
+                
+        except Exception as e:
+            logger.warning(f"[SchemaExplorerService] ⚠️ Error obteniendo términos relacionados para '{term}': {e}")
+            return []
     
     def _generate_trigrams(self, text: str) -> List[str]:
         """Generar trigrams para búsqueda fuzzy"""
