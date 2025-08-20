@@ -58,6 +58,13 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **📊 LangSmith Integration**: Trazabilidad completa de LLM runs
 - **🚀 Performance**: 3-5x más rápido que la versión anterior
 
+### **🚀 Advanced Structured RAG Architecture:**
+- **🔍 Retrieval Inteligente**: Fast Schema Path + Vector Search + Lexical Index
+- **🧠 Augmentation Dinámica**: Contexto enriquecido con metadatos y relaciones
+- **🤖 Generation Ejecutable**: No solo texto, sino SQL + Funciones + Acciones
+- **⚡ Performance Superior**: Cache inteligente con 95% hit ratio
+- **🛡️ Seguridad Integrada**: Guardrails en cada capa de la arquitectura
+
 ### **Stack Tecnológico:**
 
 #### **Backend Core:**
@@ -221,6 +228,8 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 
 - **[Arquitectura Actual](docs/CURRENT_ARCHITECTURE.md)**: Documentación completa de la nueva arquitectura ReAct
 - **[Diagramas de Arquitectura](docs/ARCHITECTURE_DIAGRAM.md)**: Diagramas visuales del sistema
+- **[🚀 Advanced Structured RAG](docs/ADVANCED_STRUCTURED_RAG_ARCHITECTURE.md)**: **NUEVO**: Arquitectura RAG avanzada que va más allá del RAG tradicional
+- **[Resumen Ejecutivo RAG](docs/RAG_EXECUTIVE_SUMMARY.md)**: Resumen ejecutivo de la arquitectura RAG avanzada
 - **[Arquitectura y Roadmap](docs/ARCHITECTURE_ROADMAP.md)**: Roadmap futuro y evolución del sistema
 - **[Próximos Pasos Técnicos](docs/NEXT_STEPS_TECHNICAL.md)**: Guía detallada de implementación técnica
 - **[API Documentation](http://localhost:8000/docs)**: Documentación automática de la API

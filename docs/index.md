@@ -112,6 +112,7 @@ curl -X POST http://localhost:8000/chat/send \
 - [Arquitectura Actual](CURRENT_ARCHITECTURE.md) - Documentación completa de ReAct Orchestrator
 - [Diagramas Visuales](ARCHITECTURE_DIAGRAM.md) - Diagramas de la nueva arquitectura
 - [Resumen Ejecutivo](EXECUTIVE_SUMMARY_2024.md) - Estado actual post-migración
+- **[🚀 Advanced Structured RAG](ADVANCED_STRUCTURED_RAG_ARCHITECTURE.md)** - **NUEVO**: Arquitectura RAG avanzada que va más allá del RAG tradicional
 
 ### **Para Desarrolladores**
 - [🏗️ Arquitectura](ARCHITECTURE_ROADMAP.md) - Roadmap y evolución del sistema
