@@ -81,7 +81,7 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 
 ### **🧠 Smart AI System Architecture:**
 - **🔄 SmartRephraseService**: Normalización inteligente de consultas con mini-LLM
-- **🎯 IntentRouterService**: Clasificación automática en 8 tipos de intenciones
+- **🎯 IntentRouterService**: Clasificación automática en 6 tipos de intenciones optimizados
 - **🚀 SmartAIOrchestrator**: Coordinación unificada de rephrase + clasificación
 - **💾 Cache Multi-nivel**: Memoria local + Redis persistente con TTL
 - **🔄 Batch Processing**: Procesamiento paralelo para múltiples consultas
@@ -89,6 +89,14 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **🧠 SmartAINode**: Nodo integrado en ExplorationGraph para pre-procesamiento inteligente
 - **📊 Estado Enriquecido**: Campos adicionales para resultados del Smart AI
 - **🔄 Workflow Optimizado**: Flujo con pre-procesamiento inteligente antes de la inferencia
+
+#### **🎯 Tipos de Intención Soportados:**
+- **🔍 DB_QUERY**: Consultas de base de datos (SELECT, COUNT, etc.)
+- **🚀 API_FUNCTION**: APIs + MCP + Funciones (unificado y optimizado)
+- **💬 CHAT_GENERAL**: Conversación general y preguntas conceptuales
+- **📊 SCHEMA_ANALYSIS**: Análisis de estructura y esquemas de BD
+- **⚙️ SYSTEM_COMMAND**: Comandos de configuración y estado del sistema
+- **❓ UNKNOWN**: Intención no determinada o ambigua
 
 ### **Stack Tecnológico:**
 
