@@ -41,7 +41,7 @@ PROMPT_APPS_HEADER = "### Aplicaciones disponibles"
 MAX_INPUT_TOKENS = 8000  # Presupuesto sugerido para input
 MAX_OUTPUT_TOKENS = 2048  # Cap de output tokens
 MAX_HISTORY_TURNS = 6     # Máximo de turnos de historial (reducido de 8 a 6)
-MAX_SCHEMA_CHARS = 3000   # Máximo de caracteres de schema (reducido de 400 a 3000)
+MAX_SCHEMA_CHARS = 8000   # Aumentado para mantener contexto completo
 TOP_K_DBS = 2             # Top-K bases de datos
 TOP_K_APPS = 2            # Top-K aplicaciones
 
@@ -55,45 +55,59 @@ def _json_default(obj):
         return str(obj)
     return str(obj)
 
-PLANNER_SYSTEM_PROMPT_PREFIX=(
-"Actúa como un asistente que decide entre responder directamente o generar un plan JSON con herramientas (`api_function`,`db_query`,`mcp_tool`).\n"
-"Pequeña charla o mensajes triviales: responde breve en el idioma del usuario, sin plan.\n"
-"Si la petición puede resolverse SOLO con el esquema/descritores ya proporcionados (p.ej., listar tablas/columnas, explicar relaciones, qué campos existen): responde directamente sin plan ni consultas.\n"
-"Si requiere acceder a datos o ejecutar acciones: di primero \"Estoy generando tu plan, dame un segundo...\" y luego devuelve solo la llamada de función `return_plan` con el JSON del plan.\n"
-"Reglas de variables/placeholders:\n"
-"- La `assistant_response` del plan debe usar exclusivamente placeholders {{nombre_variable}}; no pegues datos crudos.\n"
-"- Usa solo variables cuyo nombre coincida con un `store_as` de tus acciones.\n"
-"- Puedes usar {{variable_formatted}} solo si el plan crea la base {{variable}} con `store_as`.\n"
-"- Prohíbese inventar nombres de variables.\n"
-"Multi-intención: cubre todas las preguntas del usuario en una sola `assistant_response` (unificada) y añade todas las acciones necesarias para producir cada placeholder usado.\n"
-"SQL seguro:\n"
-"- Usa solo tablas/columnas presentes en el esquema proporcionado. Si no aparecen, no las uses.\n"
-"- NUNCA uses SELECT *. Proyecta columnas útiles y evita columnas de texto largo/binarias.\n"
-"- SIEMPRE añade LIMIT (<=20) a vistas/previas y, si existe, `ORDER BY created_at DESC` o `id DESC`.\n"
-"- Búsquedas: LIKE/ILIKE según dialecto, evita comparaciones exactas frágiles.\n"
-"Respuestas y tamaño:\n"
-"- La `assistant_response` no debe incluir filas crudas ni tuplas; usa placeholders (p.ej., {{result_formatted}}) y texto explicativo.\n"
-"- SIEMPRE indica que se muestra una vista previa si hay límite.\n"
-"- Para consultas de exploración (\"qué tablas tiene mi DB\"): responde directamente sin plan, listando tablas y confirmando existencia.\n"
-"Sin resultados/esquema:\n"
-"- Si una consulta devuelve 0 filas, indícalo claramente en `assistant_response` y no uses placeholders de datos.\n"
-"- Si el esquema no está disponible para algo que lo requiere, pide aclaración o indica la limitación.\n"
-"IDs y contexto:\n"
-"- Usa únicamente los `db_ids`/recursos entregados en el contexto; no inventes IDs.\n"
-"Validación previa al `return_plan` (hazla mentalmente antes de responder):\n"
-"- Construye la `assistant_response` final, extrae todos los {{placeholders}} y verifica que cada uno tiene una acción que produce su `store_as` (o su base si es *_formatted).\n"
-"- Si detectas algún placeholder sin acción base, ajusta el plan y vuelve a comprobar.\n"
-"Formato de salida del plan:\n"
-"- Un único plan con todas las acciones necesarias, y una única `assistant_response` con todos los placeholders necesarios.\n"
-"- No incluyas datos a gran escala en `assistant_response`; los datos van en variables y se mostrarán mediante {{variable_formatted}}.\n"
-"IMPORTANTE: Para consultas de exploración de base de datos, responde directamente sin generar plan.\n"
+REACT_AGENT_SYSTEM_PROMPT=(
+"Eres un agente ReAct (Reasoning + Acting) especializado en bases de datos y APIs. Tu objetivo es ANALIZAR la consulta del usuario y decidir la mejor estrategia.\n\n"
+"🎯 REGLAS DE DECISIÓN:\n"
+"1. EXPLORACIÓN DE ESQUEMA (responder directamente):\n"
+"   - \"¿Qué tablas tiene mi DB?\" → Lista las tablas del esquema\n"
+"   - \"¿Qué columnas tiene la tabla X?\" → Describe la estructura\n"
+"   - \"¿Cómo se relacionan las tablas?\" → Explica las relaciones del esquema\n\n"
+"2. EXPLORACIÓN DE DATOS (generar plan de ejecución):\n"
+"   - \"¿Qué hay en la tabla X?\" → Genera plan para consultar datos\n"
+"   - \"Muéstrame las invitaciones de clubs\" → Genera plan para obtener datos reales\n"
+"   - \"¿Cuántos usuarios hay?\" → Genera plan para contar registros\n"
+"   - \"Busca clubs en Madrid\" → Genera plan para filtrar datos\n\n"
+"3. ACCIONES COMPLEJAS (generar plan de ejecución):\n"
+"   - Cualquier consulta que requiera FILTRAR, BUSCAR, CONTAR, AGRUPAR datos\n"
+"   - Consultas que combinen múltiples tablas\n"
+"   - Operaciones que requieran lógica de negocio\n\n"
+"🔧 CUANDO GENERAR PLAN:\n"
+"- SIEMPRE que se requiera acceder a DATOS REALES (no solo esquema)\n"
+"- SIEMPRE que se necesite FILTRAR, BUSCAR o ANALIZAR contenido\n"
+"- SIEMPRE que se requiera EJECUTAR consultas SQL o llamadas a API\n\n"
+"📋 FORMATO DEL PLAN:\n"
+"- Usa `db_query` para consultas SQL\n"
+"- Usa `api_function` para llamadas a funciones\n"
+"- Usa `mcp_tool` para herramientas externas\n"
+"- Cada acción debe tener `store_as` para guardar resultados\n"
+"- La `assistant_response` debe usar placeholders {{variable}} para referenciar datos\n\n"
+"🛡️ SEGURIDAD SQL:\n"
+"- SOLO usa tablas/columnas del esquema proporcionado\n"
+"- NUNCA uses SELECT * (proyecta columnas específicas)\n"
+"- SIEMPRE añade LIMIT (≤20) para consultas de exploración\n"
+"- Usa ORDER BY created_at DESC o id DESC cuando sea apropiado\n\n"
+"💡 EJEMPLOS:\n"
+"- Usuario: \"¿Qué tablas tiene mi DB?\" → Respuesta directa (esquema)\n"
+"- Usuario: \"Muéstrame las invitaciones de clubs\" → Plan con db_query\n"
+"- Usuario: \"¿Cuántos usuarios hay?\" → Plan con db_query\n"
+"- Usuario: \"Busca clubs en Madrid\" → Plan con db_query\n\n"
+"🎯 RECUERDA: Si la consulta requiere DATOS REALES, GENERA UN PLAN. Si solo requiere ESQUEMA, RESPONDE DIRECTAMENTE.\n\n"
+"🚨 REGLA CRÍTICA: SIEMPRE usa la función `return_plan` para generar planes.\n"
+"NUNCA escribas JSON directamente en el contenido del mensaje.\n"
+"SOLO function_call con return_plan es válido.\n"
 ) 
 
 PROMPT_SUFFIX=(
 "---\n"
-"Devuelve SIEMPRE la llamada de función `return_plan` con un JSON que cumpla con este esquema:\n"
-f"{json.dumps(PlanModel.model_json_schema(), default=_json_default, indent=2)}\n"
-"Sin texto adicional fuera del JSON."
+"🚨 INSTRUCCIÓN OBLIGATORIA:\n"
+"SIEMPRE usa la función `return_plan` para responder.\n"
+"NUNCA escribas JSON directamente en el contenido del mensaje.\n"
+"NUNCA escribas texto explicativo sin usar la función.\n\n"
+"📋 ESQUEMA REQUERIDO para return_plan:\n"
+f"{json.dumps(PlanModel.model_json_schema(), default=_json_default, indent=2)}\n\n"
+"✅ EJEMPLO CORRECTO: Usar function_call con return_plan\n"
+"❌ EJEMPLO INCORRECTO: Escribir JSON en el contenido\n"
+"🔒 OBLIGATORIO: Solo function_call, nada más."
 )
 
 # ──────────────────────────────────────────────────────
@@ -214,7 +228,7 @@ class OpenAIService:
                 cache_service = self.factory.get_detailed_schema_cache_service()
                 schemas = []
                 for db_id in db_ids:
-                    cache_entry = cache_service.get_schema_cache(self.factory.user.id, db_id)
+                    cache_entry = await cache_service.get_schema_cache(self.factory.user.id, db_id)
                     if cache_entry and cache_entry.compact:
                         schemas.append(f"-- DATABASE {db_id} --\n{cache_entry.compact}")
                 
@@ -294,7 +308,7 @@ class OpenAIService:
         payload = {
             "model": self.model,
             "functions": [self.RETURN_PLAN_FUNC],
-            "function_call": "auto",
+            "function_call": {"name": "return_plan"},  # 🔒 FORZAR uso de la función
             "temperature": settings.OPENAI_TEMPERATURE,
             "messages": messages,
             "max_tokens": MAX_OUTPUT_TOKENS,  # Usar constante de control de tokens
@@ -700,7 +714,7 @@ class OpenAIService:
         app_descriptors_compact: Optional[str] = None,
     ) -> str:
 
-        parts: List[str] = [PLANNER_SYSTEM_PROMPT_PREFIX.strip()]
+        parts: List[str] = [REACT_AGENT_SYSTEM_PROMPT.strip()]
 
         # Extraer dialecto del schema (si viene anotado)
         dialect = _extract_dialect(db_schema)
@@ -717,11 +731,26 @@ class OpenAIService:
         except Exception as e:
             logger.warning("⚠️ No se pudo obtener prompt de agente: %s", e)
 
-        # Esquema SQL (limitado para optimizar)
+        # Esquema SQL (optimizado inteligentemente)
         if db_schema:
-            # ⚡ OPTIMIZACIÓN: Limitar tamaño del schema
-            truncated_schema = db_schema[:MAX_SCHEMA_CHARS]  # Reducido de 600 a 400
-            parts.append(f"{PROMPT_SQL_HEADER}\n{truncated_schema}")
+            # 🎯 OPTIMIZACIÓN INTELIGENTE: Priorizar tablas relevantes para la consulta
+            try:
+                # 🔧 Obtener el mensaje del usuario del contexto actual
+                user_message = ""
+                if hasattr(self, '_current_user_message'):
+                    user_message = self._current_user_message
+                elif hasattr(self, '_last_user_message'):
+                    user_message = self._last_user_message
+                
+                # 🧹 SIEMPRE limpiar el schema, incluso sin user_message
+                optimized_schema = self._optimize_schema_for_query(db_schema, user_message)
+                parts.append(f"{PROMPT_SQL_HEADER}\n{optimized_schema}")
+                logger.info(f"[OpenAIService] 🎯 Schema optimizado y LIMPIO aplicado: {len(db_schema)} → {len(optimized_schema)} caracteres")
+            except Exception as e:
+                logger.warning(f"[OpenAIService] ⚠️ Error en optimización de schema, usando truncado básico: {e}")
+                # Fallback al método anterior
+                truncated_schema = db_schema[:MAX_SCHEMA_CHARS]
+                parts.append(f"{PROMPT_SQL_HEADER}\n{truncated_schema}")
 
         # Funciones disponibles (limitado)
         if functions:
@@ -748,20 +777,45 @@ class OpenAIService:
 
     def _is_database_exploration_query(self, user_message: str) -> bool:
         """
-        Detecta si el mensaje del usuario es una consulta de exploración de base de datos.
+        Detecta si el mensaje del usuario es SOLO exploración de esquema.
         Estas consultas se responden directamente sin generar un plan.
+        
+        IMPORTANTE: Si la consulta también requiere datos reales, NO es solo exploración.
         """
-        exploration_keywords = [
+        # Palabras clave que indican SOLO exploración de esquema
+        pure_exploration_keywords = [
             "qué tablas", "que tablas", "tablas que", "tablas disponibles",
             "qué tablas tiene", "que tablas tiene", "tablas de mi", "tablas en mi",
             "estructura de", "esquema de", "schema de", "columnas de",
             "qué columnas", "que columnas", "campos de", "campos disponibles",
             "describe", "muestra", "listar", "enumerar", "cuáles son",
-            "cuáles tablas", "cuales tablas", "qué hay en", "que hay en"
+            "cuáles tablas", "cuales tablas", "cómo se relacionan", "como se relacionan",
+            "relaciones entre", "relación entre", "conectan", "conecta"
+        ]
+        
+        # Palabras clave que indican que se requieren DATOS REALES
+        data_requirement_keywords = [
+            "dónde puedo ver", "donde puedo ver", "muéstrame", "muestrame", "dame",
+            "obtén", "obten", "consulta", "busca", "encuentra", "cuántos", "cuantos",
+            "cuántas", "cuantas", "qué hay", "que hay", "datos de", "información de",
+            "registros de", "filas de", "resultados de", "invitaciones", "clubs",
+            "usuarios", "contenido", "valores", "ejemplos"
         ]
         
         user_lower = user_message.lower()
-        return any(keyword in user_lower for keyword in exploration_keywords)
+        
+        # Si contiene palabras de exploración PURA (sin datos)
+        has_pure_exploration = any(keyword in user_lower for keyword in pure_exploration_keywords)
+        
+        # Si contiene palabras que requieren datos reales
+        requires_data = any(keyword in user_lower for keyword in data_requirement_keywords)
+        
+        # Es solo exploración si NO requiere datos reales
+        is_pure_exploration = has_pure_exploration and not requires_data
+        
+        logger.info(f"[OpenAIService] 🔍 Análisis de consulta: pure_exploration={has_pure_exploration}, requires_data={requires_data}, is_pure_exploration={is_pure_exploration}")
+        
+        return is_pure_exploration
 
     def _should_force_plan(self, user_message: str, db_schema: Optional[str], available_functions: List[Function]) -> bool:
         """
@@ -1120,6 +1174,259 @@ class OpenAIService:
         except Exception as e:
             logger.warning(f"[OpenAIService] ⚠️ Error estimando tokens del contexto: {e}")
             return 0
+
+    def _optimize_schema_for_query(self, db_schema: str, user_message: str = "") -> str:
+        """
+        Optimiza el esquema de la base de datos basándose en la relevancia de la consulta del usuario.
+        LIMPIA información innecesaria y prioriza tablas relevantes.
+        
+        Args:
+            db_schema: Esquema completo de la base de datos
+            user_message: Mensaje del usuario para determinar relevancia (opcional)
+            
+        Returns:
+            Esquema optimizado y limpio que prioriza las tablas más relevantes
+        """
+        try:
+            if not db_schema:
+                return db_schema
+            
+            # 🧹 SIEMPRE limpiar el schema, incluso sin user_message
+            logger.info(f"[OpenAIService] 🧹 Limpiando schema de {len(db_schema)} caracteres")
+            
+            # Extraer palabras clave de la consulta del usuario
+            user_lower = user_message.lower()
+            
+            # Definir categorías de tablas y sus palabras clave
+            table_categories = {
+                "clubs": ["club", "clubs", "invitación", "invitaciones", "membership", "miembro"],
+                "users": ["usuario", "usuarios", "user", "users", "persona", "gente"],
+                "content": ["blog", "post", "artículo", "contenido", "publicación"],
+                "location": ["ciudad", "cities", "país", "country", "ubicación", "dirección"],
+                "commerce": ["producto", "product", "venta", "sale", "categoría", "category"],
+                "communication": ["mensaje", "message", "contacto", "contact", "email"],
+                "system": ["configuración", "setting", "config", "rol", "role", "permiso"]
+            }
+            
+            # Analizar el esquema para extraer información de tablas
+            lines = db_schema.split('\n')
+            table_info = {}
+            current_table = None
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('📋') and 'cols' in line:
+                    # Nueva tabla encontrada
+                    table_name = line.split('📋')[1].split('(')[0].strip()
+                    current_table = table_name
+                    table_info[table_name] = {
+                        'lines': [],
+                        'relevance_score': 0,
+                        'category': 'other'
+                    }
+                elif current_table and line:
+                    table_info[current_table]['lines'].append(line)
+            
+            # Calcular puntuación de relevancia para cada tabla
+            for table_name, info in table_info.items():
+                table_lower = table_name.lower()
+                
+                # 🔍 Si hay user_message, calcular relevancia
+                if user_message:
+                    # Verificar si la tabla coincide con categorías relevantes
+                    for category, keywords in table_categories.items():
+                        if any(keyword in user_lower for keyword in keywords):
+                            # Si la consulta menciona palabras clave de esta categoría
+                            if any(keyword in table_lower for keyword in keywords):
+                                info['relevance_score'] += 10  # Alta relevancia
+                                info['category'] = category
+                            else:
+                                info['relevance_score'] += 5   # Relevancia media
+                    
+                    # Bonus por coincidencias exactas en el nombre de la tabla
+                    for keyword in user_lower.split():
+                        if keyword in table_lower:
+                            info['relevance_score'] += 3
+                    
+                    # Bonus por tablas que contienen palabras clave importantes
+                    if any(word in table_lower for word in ['invitation', 'request', 'club', 'user']):
+                        info['relevance_score'] += 2
+                else:
+                    # 🧹 Sin user_message, priorizar tablas comunes por defecto
+                    if any(word in table_lower for word in ['invitation', 'request', 'club', 'user']):
+                        info['relevance_score'] += 5
+                    elif any(word in table_lower for word in ['amenity', 'city', 'country']):
+                        info['relevance_score'] += 3
+            
+            # Ordenar tablas por relevancia
+            sorted_tables = sorted(table_info.items(), key=lambda x: x[1]['relevance_score'], reverse=True)
+            
+            # Construir esquema optimizado y LIMPIO
+            optimized_schema_lines = []
+            total_chars = 0
+            max_chars = MAX_SCHEMA_CHARS
+            
+            # Agregar encabezado
+            header = "-- DATABASE SCHEMA (OPTIMIZADO Y LIMPIO) --"
+            optimized_schema_lines.append(header)
+            total_chars += len(header)
+            
+            # Agregar tablas por orden de relevancia
+            for table_name, info in sorted_tables:
+                if total_chars >= max_chars:
+                    break
+                
+                # 🧹 LIMPIAR y optimizar la información de la tabla
+                cleaned_table_lines = self._clean_table_schema(table_name, info['lines'])
+                
+                # Agregar tabla limpia
+                table_lines = [f"\n📋 {table_name} ({len(cleaned_table_lines)} cols)"]
+                table_lines.extend(cleaned_table_lines)
+                
+                # Verificar si cabe en el límite
+                table_content = '\n'.join(table_lines)
+                if total_chars + len(table_content) <= max_chars:
+                    optimized_schema_lines.extend(table_lines)
+                    total_chars += len(table_content)
+                else:
+                    # Agregar solo el nombre de la tabla si no cabe todo
+                    optimized_schema_lines.append(f"\n📋 {table_name} (información truncada)")
+                    break
+            
+            # Agregar resumen de optimización
+            summary = f"\n\n-- OPTIMIZACIÓN: {len(optimized_schema_lines)} líneas, {total_chars} caracteres --"
+            summary += f"\n-- Tablas más relevantes: {', '.join([t[0] for t in sorted_tables[:5]])} --"
+            
+            optimized_schema = '\n'.join(optimized_schema_lines) + summary
+            
+            logger.info(f"[OpenAIService] 🎯 Schema optimizado y LIMPIO: {len(db_schema)} → {len(optimized_schema)} caracteres")
+            logger.info(f"[OpenAIService] 🎯 Tablas prioritarias: {', '.join([t[0] for t in sorted_tables[:3]])}")
+            
+            return optimized_schema
+            
+        except Exception as e:
+            logger.warning(f"[OpenAIService] ⚠️ Error optimizando schema: {e}")
+            return db_schema
+
+    def _clean_table_schema(self, table_name: str, column_lines: List[str]) -> List[str]:
+        """
+        🧹 LIMPIA la información de columnas eliminando datos innecesarios.
+        
+        Args:
+            table_name: Nombre de la tabla
+            column_lines: Líneas con información de columnas
+            
+        Returns:
+            Lista de líneas limpias con solo información esencial
+        """
+        cleaned_lines = []
+        
+        for line in column_lines:
+            if not line.strip():
+                continue
+                
+            # 🎯 PATRÓN: "• column_name: type NOT NULL" → "• column_name: type"
+            if line.startswith('•') and ':' in line:
+                parts = line.split(':')
+                if len(parts) == 2:
+                    column_name = parts[0].replace('•', '').strip()
+                    type_info = parts[1].strip()
+                    
+                    # 🧹 LIMPIAR tipo de datos
+                    cleaned_type = self._clean_column_type(type_info)
+                    
+                    # 🧹 ELIMINAR "NOT NULL" redundante
+                    if 'NOT NULL' in cleaned_type:
+                        cleaned_type = cleaned_type.replace('NOT NULL', '').strip()
+                    
+                    # 🧹 ELIMINAR información de restricciones innecesaria
+                    if 'PRIMARY KEY' in cleaned_type:
+                        cleaned_type = cleaned_type.replace('PRIMARY KEY', '').strip()
+                    if 'UNIQUE' in cleaned_type:
+                        cleaned_type = cleaned_type.replace('UNIQUE', '').strip()
+                    
+                    # 🧹 ELIMINAR espacios extra y comas
+                    cleaned_type = cleaned_type.replace('  ', ' ').strip()
+                    if cleaned_type.endswith(','):
+                        cleaned_type = cleaned_type[:-1]
+                    
+                    # 🎯 SOLO incluir columnas con información útil
+                    if cleaned_type and not self._is_useless_column(column_name, cleaned_type):
+                        cleaned_line = f"  • {column_name}: {cleaned_type}"
+                        cleaned_lines.append(cleaned_line)
+        
+        return cleaned_lines
+
+    def _clean_column_type(self, type_info: str) -> str:
+        """
+        🧹 LIMPIA y simplifica los tipos de datos de columnas.
+        
+        Args:
+            type_info: Información del tipo de columna
+            
+        Returns:
+            Tipo de dato limpio y simplificado
+        """
+        # 🧹 Simplificar tipos verbosos
+        type_mappings = {
+            'character varying': 'varchar',
+            'character': 'char',
+            'timestamp without time zone': 'timestamp',
+            'timestamp with time zone': 'timestamptz',
+            'numeric': 'decimal',
+            'double precision': 'float8',
+            'real': 'float4',
+            'integer': 'int',
+            'bigint': 'int8',
+            'smallint': 'int2'
+        }
+        
+        cleaned_type = type_info
+        for verbose_type, simple_type in type_mappings.items():
+            if verbose_type in cleaned_type:
+                cleaned_type = cleaned_type.replace(verbose_type, simple_type)
+        
+        return cleaned_type
+
+    def _is_useless_column(self, column_name: str, column_type: str) -> bool:
+        """
+        🚫 Determina si una columna es inútil para el contexto del AI.
+        
+        Args:
+            column_name: Nombre de la columna
+            column_type: Tipo de la columna
+            
+        Returns:
+            True si la columna no aporta valor al AI
+        """
+        # 🚫 Columnas que no aportan valor al AI
+        useless_patterns = [
+            'created_at', 'updated_at', 'deleted_at', 'modified_at',
+            'created_by', 'updated_by', 'deleted_by', 'modified_by',
+            'version', 'revision', 'checksum', 'hash',
+            'metadata', 'config', 'settings', 'options',
+            'flags', 'status', 'state', 'active'
+        ]
+        
+        # 🚫 Tipos de datos que no aportan valor
+        useless_types = [
+            'blob', 'bytea', 'binary', 'longblob',
+            'geometry', 'geography', 'point', 'polygon'
+        ]
+        
+        # 🚫 Verificar patrones inútiles
+        column_lower = column_name.lower()
+        for pattern in useless_patterns:
+            if pattern in column_lower:
+                return True
+        
+        # 🚫 Verificar tipos inútiles
+        type_lower = column_type.lower()
+        for useless_type in useless_types:
+            if useless_type in type_lower:
+                return True
+        
+        return False
 
     def _check_token_bucket(self) -> bool:
         """Verifica si hay tokens disponibles en el bucket"""

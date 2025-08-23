@@ -5,6 +5,7 @@ from sqlalchemy.engine import create_engine
 import asyncio
 from datetime import datetime, timezone
 import time
+import re # Added for extract_tables_from_sql
 
 from langchain_experimental.sql import SQLDatabaseChain
 from langchain_community.utilities import SQLDatabase
@@ -69,6 +70,120 @@ class LangchainService:
             return False
             
         return True
+
+    def extract_tables_from_sql(self, sql: str) -> List[str]:
+        """
+        🔧 FASE 1: Extrae nombres de tablas mencionadas en una consulta SQL.
+        
+        Args:
+            sql: Consulta SQL a analizar
+            
+        Returns:
+            Lista de nombres de tablas mencionadas
+        """
+        if not sql:
+            return []
+        
+        tables = []
+        sql_upper = sql.upper()
+        
+        # Buscar patrones comunes de tablas en SQL
+        # FROM table_name
+        from_pattern = r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        from_matches = re.findall(from_pattern, sql_upper)
+        tables.extend(from_matches)
+        
+        # JOIN table_name
+        join_pattern = r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        join_matches = re.findall(join_pattern, sql_upper)
+        tables.extend(join_matches)
+        
+        # UPDATE table_name (aunque no debería aparecer en SELECTs)
+        update_pattern = r'UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        update_matches = re.findall(update_pattern, sql_upper)
+        tables.extend(update_matches)
+        
+        # INSERT INTO table_name (aunque no debería aparecer en SELECTs)
+        insert_pattern = r'INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        insert_matches = re.findall(insert_pattern, sql_upper)
+        tables.extend(insert_matches)
+        
+        # Eliminar duplicados y convertir a minúsculas
+        unique_tables = list(set([table.lower() for table in tables]))
+        
+        logger.debug(f"[LangchainService] 🔍 Tablas extraídas del SQL: {unique_tables}")
+        return unique_tables
+
+    def validate_tables_exist(self, sql: str, available_tables: List[str]) -> Dict[str, Any]:
+        """
+        🔧 FASE 1: Valida que las tablas mencionadas en el SQL existan en la base de datos.
+        
+        Args:
+            sql: Consulta SQL a validar
+            available_tables: Lista de tablas disponibles en la base de datos
+            
+        Returns:
+            Dict con resultado de validación y sugerencias
+        """
+        if not sql or not available_tables:
+            return {
+                "valid": False,
+                "missing_tables": [],
+                "suggestions": [],
+                "error": "SQL o tablas disponibles no proporcionados"
+            }
+        
+        # Extraer tablas del SQL
+        mentioned_tables = self.extract_tables_from_sql(sql)
+        
+        if not mentioned_tables:
+            return {
+                "valid": True,
+                "missing_tables": [],
+                "suggestions": [],
+                "message": "No se detectaron tablas en la consulta SQL"
+            }
+        
+        # Verificar qué tablas faltan
+        available_tables_lower = [table.lower() for table in available_tables]
+        missing_tables = [table for table in mentioned_tables if table not in available_tables_lower]
+        
+        if missing_tables:
+            # Generar sugerencias de tablas similares
+            suggestions = []
+            for missing_table in missing_tables:
+                # Buscar tablas que contengan palabras similares
+                similar_tables = []
+                for available_table in available_tables:
+                    # Si la tabla faltante contiene palabras que están en la tabla disponible
+                    missing_words = missing_table.split('_')
+                    available_words = available_table.lower().split('_')
+                    
+                    # Calcular similitud simple
+                    common_words = set(missing_words) & set(available_words)
+                    if len(common_words) > 0:
+                        similar_tables.append(available_table)
+                
+                if similar_tables:
+                    suggestions.append({
+                        "missing_table": missing_table,
+                        "similar_tables": similar_tables[:3]  # Máximo 3 sugerencias
+                    })
+            
+            return {
+                "valid": False,
+                "missing_tables": missing_tables,
+                "suggestions": suggestions,
+                "error": f"Tablas no encontradas: {', '.join(missing_tables)}",
+                "available_tables": available_tables
+            }
+        
+        return {
+            "valid": True,
+            "missing_tables": [],
+            "suggestions": [],
+            "message": "Todas las tablas mencionadas existen en la base de datos"
+        }
 
     def build_connection_string(self, db: DatabaseConnection) -> str:
         return f"{db.db_type}://{db.username}:{db.password}@{db.host}:{db.port}/{db.database}"
@@ -227,6 +342,47 @@ class LangchainService:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             
+            # 🔧 FASE 1: Validar que las tablas mencionadas existan en la base de datos
+            if table_schema:
+                try:
+                    # Extraer nombres de tablas del esquema
+                    available_tables = self._extract_available_tables_from_schema(table_schema)
+                    
+                    if available_tables:
+                        # Validar que las tablas del SQL existan
+                        table_validation = self.validate_tables_exist(sql, available_tables)
+                        
+                        if not table_validation["valid"]:
+                            logger.warning(f"[LangchainService] ⚠️ FASE 1: Tablas no encontradas en SQL: {table_validation['missing_tables']}")
+                            
+                            # Generar SQL alternativo con tablas existentes
+                            fallback_sql = self._generate_fallback_sql_with_available_tables(
+                                question, available_tables, table_validation["suggestions"]
+                            )
+                            
+                            if fallback_sql:
+                                logger.info(f"[LangchainService] 🔧 FASE 1: SQL alternativo generado con tablas existentes")
+                                sql = fallback_sql
+                            else:
+                                return {
+                                    "sql": "",
+                                    "error": f"Tablas no encontradas: {', '.join(table_validation['missing_tables'])}",
+                                    "missing_tables": table_validation["missing_tables"],
+                                    "suggestions": table_validation["suggestions"],
+                                    "available_tables": available_tables,
+                                    "question": question,
+                                    "database_id": str(db_id),
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                }
+                        else:
+                            logger.info(f"[LangchainService] ✅ FASE 1: Todas las tablas validadas correctamente")
+                    else:
+                        logger.warning(f"[LangchainService] ⚠️ FASE 1: No se pudieron extraer tablas del esquema")
+                        
+                except Exception as e:
+                    logger.warning(f"[LangchainService] ⚠️ FASE 1: Error validando tablas: {e}")
+                    # Continuar sin validación de tablas si hay error
+            
             # 🔧 FASE 6: Asegurar LIMIT en SELECTs
             if sql_upper.startswith('SELECT') and 'LIMIT' not in sql_upper:
                 sql = f"{sql.rstrip(';')} LIMIT 100;"
@@ -236,16 +392,22 @@ class LangchainService:
             response_time_ms = int((time.time() - start_time) * 1000)
             
             # 🔧 FASE 6: Tracking de LLM run en base de datos
-            await self._track_llm_run(
-                question=question,
-                response=sql,
-                database_id=db_id,
-                table_schema=table_schema,
-                response_time_ms=response_time_ms,
-                status="success",
-                sql_validated=True,
-                sql_generated=sql
-            )
+            # 🔧 NUEVO: Obtener chat_id del factory si está disponible
+            chat_id = getattr(self.factory, 'current_chat_id', None)
+            if chat_id:
+                await self._track_llm_run(
+                    question=question,
+                    response=sql,
+                    database_id=db_id,
+                    table_schema=table_schema,
+                    response_time_ms=response_time_ms,
+                    chat_id=chat_id,
+                    status="success",
+                    sql_validated=True,
+                    sql_generated=sql
+                )
+            else:
+                logger.warning("[LangchainService] ⚠️ No se pudo obtener chat_id para tracking de LLM run")
             
             # 🔧 FASE 6: Respuesta estandarizada
             return {
@@ -265,17 +427,23 @@ class LangchainService:
             response_time_ms = int((time.time() - start_time) * 1000)
             
             # 🔧 FASE 6: Tracking de LLM run en base de datos (con error)
-            await self._track_llm_run(
-                question=question,
-                response=f"Error: {str(e)}",
-                database_id=db_id,
-                table_schema=table_schema,
-                response_time_ms=response_time_ms,
-                status="error",
-                error_message=str(e),
-                sql_validated=False,
-                sql_generated=None
-            )
+            # 🔧 NUEVO: Obtener chat_id del factory si está disponible
+            chat_id = getattr(self.factory, 'current_chat_id', None)
+            if chat_id:
+                await self._track_llm_run(
+                    question=question,
+                    response=f"Error: {str(e)}",
+                    database_id=db_id,
+                    table_schema=table_schema,
+                    response_time_ms=response_time_ms,
+                    chat_id=chat_id,
+                    status="error",
+                    error_message=str(e),
+                    sql_validated=False,
+                    sql_generated=None
+                )
+            else:
+                logger.warning("[LangchainService] ⚠️ No se pudo obtener chat_id para tracking de LLM run (error)")
             
             # 🔧 FASE 1: Fallback SQL genérico y seguro
             fallback_sql = self._generate_fallback_sql(question, db_id)
@@ -348,6 +516,113 @@ class LangchainService:
         
         return fallback_sql.strip()
 
+    def _extract_available_tables_from_schema(self, schema_text: str) -> List[str]:
+        """
+        🔧 FASE 1: Extrae nombres de tablas mencionadas en un texto de esquema.
+        
+        Args:
+            schema_text: Texto que contiene el esquema de la base de datos.
+            
+        Returns:
+            Lista de nombres de tablas mencionadas.
+        """
+        if not schema_text:
+            return []
+        
+        tables = []
+        schema_upper = schema_text.upper()
+        
+        # Buscar patrones comunes de tablas en el texto del esquema
+        # CREATE TABLE table_name
+        create_table_pattern = r'CREATE\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        create_table_matches = re.findall(create_table_pattern, schema_upper)
+        tables.extend(create_table_matches)
+        
+        # ALTER TABLE table_name
+        alter_table_pattern = r'ALTER\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        alter_table_matches = re.findall(alter_table_pattern, schema_upper)
+        tables.extend(alter_table_matches)
+        
+        # DROP TABLE table_name
+        drop_table_pattern = r'DROP\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        drop_table_matches = re.findall(drop_table_pattern, schema_upper)
+        tables.extend(drop_table_matches)
+        
+        # Eliminar duplicados y convertir a minúsculas
+        unique_tables = list(set([table.lower() for table in tables]))
+        
+        logger.debug(f"[LangchainService] 🔍 Tablas extraídas del esquema: {unique_tables}")
+        return unique_tables
+
+    def _generate_fallback_sql_with_available_tables(self, question: str, available_tables: List[str], suggestions: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        🔧 FASE 1: Genera un SQL de fallback que usa tablas existentes, incluyendo sugerencias.
+        
+        Args:
+            question: Pregunta original del usuario.
+            available_tables: Lista de tablas que sí existen.
+            suggestions: Sugerencias de tablas similares si faltan.
+            
+        Returns:
+            SQL de fallback o None si no se puede generar.
+        """
+        # 🔧 FASE 1: Usar servicio de detección de idioma para mejorar la consulta
+        enhanced_query_info = self.language_service.enhance_query_for_schema_search(question)
+        enhanced_question = enhanced_query_info['enhanced_query']
+        detected_language = enhanced_query_info['detected_language']
+        
+        logger.info(f"[LangchainService] 🔧 FASE 1: Idioma detectado: {detected_language}, consulta mejorada: '{enhanced_question[:50]}...'")
+        
+        # Detectar si la pregunta es sobre esquema/tablas usando búsqueda difusa
+        schema_keywords = [
+            'tabla', 'table', 'esquema', 'schema', 'estructura', 'structure', 
+            'columnas', 'columns', 'database', 'base de datos', 'datos', 'data'
+        ]
+        
+        # Usar búsqueda difusa para determinar el tipo de consulta
+        fuzzy_results = self.language_service.fuzzy_search(enhanced_question, schema_keywords, threshold=60.0)
+        is_schema_question = len(fuzzy_results) > 0 and fuzzy_results[0][1] > 60.0
+        
+        if is_schema_question:
+            # SQL genérico para listar tablas (funciona en cualquier DB estándar)
+            fallback_sql = """
+            SELECT 
+                table_schema,
+                table_name,
+                table_type,
+                table_rows,
+                table_comment
+            FROM information_schema.tables 
+            WHERE table_type = 'BASE TABLE'
+                AND table_schema NOT IN ('pg_catalog', 'information_schema', 'mysql', 'performance_schema')
+            ORDER BY table_schema, table_name
+            LIMIT 50;
+            """
+            logger.info(f"[LangchainService] 🔧 FASE 1: Usando fallback SQL para esquema (idioma: {detected_language}): {fallback_sql[:100]}...")
+        else:
+            # SQL genérico para explorar datos
+            fallback_sql = """
+            SELECT 
+                table_name,
+                column_name,
+                data_type,
+                is_nullable,
+                column_default,
+                column_comment
+            FROM information_schema.columns 
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'mysql', 'performance_schema')
+            ORDER BY table_name, ordinal_position
+            LIMIT 100;
+            """
+            logger.info(f"[LangchainService] 🔧 FASE 1: Usando fallback SQL para exploración (idioma: {detected_language}): {fallback_sql[:100]}...")
+        
+        # Si las tablas mencionadas en la pregunta no están en las disponibles,
+        # intentar generar un SQL que use las tablas disponibles.
+        # Esto es un poco más complejo y puede requerir un análisis más profundo
+        # de la pregunta y las tablas disponibles.
+        # Por ahora, simplemente retornamos el SQL genérico.
+        return fallback_sql.strip()
+
     def get_function_retriever(self) -> "LangchainService.FunctionRetriever":
         functions: List[Function] = self.factory.get_function_service().list_all_for_user()
         return self.FunctionRetriever(functions)
@@ -417,6 +692,7 @@ class LangchainService:
         database_id: UUID,
         table_schema: Optional[str],
         response_time_ms: int,
+        chat_id: Optional[UUID] = None,
         status: str = "success",
         error_message: Optional[str] = None,
         sql_validated: Optional[bool] = None,
@@ -443,19 +719,23 @@ class LangchainService:
                 logger.warning("[LangchainService] ⚠️ LLM runs service no disponible")
                 return
             
-            # Obtener información del usuario y chat actual
+            # Obtener información del usuario
             user_id = getattr(self.factory.user, 'id', None)
-            chat_id = getattr(self.factory, 'current_chat_id', None)
             
             if not user_id:
                 logger.warning("[LangchainService] ⚠️ No se pudo obtener user_id para tracking")
+                return
+            
+            # Usar chat_id pasado como parámetro o crear uno por defecto
+            if not chat_id:
+                logger.warning("[LangchainService] ⚠️ No se proporcionó chat_id para tracking")
                 return
             
             # Crear datos del LLM run
             from app.schemas.llm_runs_schema import LLMRunCreate
             
             llm_run_data = LLMRunCreate(
-                chat_id=chat_id or UUID('00000000-0000-0000-0000-000000000000'),  # UUID por defecto si no hay chat
+                chat_id=chat_id,
                 user_id=user_id,
                 model_name=self.llm.model_name,
                 provider="openai",

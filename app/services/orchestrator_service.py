@@ -39,6 +39,12 @@ from app.core.config import settings
 # Importar ReAct Orchestrator simplificado
 from app.services.react_orchestrator import ReActOrchestrator
 
+# Importar ChatHistoryManager
+from app.services.orchestrator.chat_history_manager import ChatHistoryManager
+
+# Importar AgentManager
+from app.services.orchestrator.agent_manager import AgentManager
+
 from app.utils.response_normalizer import normalize_assistant_response, validate_response_structure  # 🔧 FASE 10: Importar normalización
 from app.services.ai.fallback_response_service import FallbackResponseService  # 🔧 FASE 11: Importar servicio de fallback
 
@@ -97,6 +103,22 @@ class OrchestratorService:
         
         # 🆕 WEBSOCKET EMITTER para eventos en tiempo real
         self.ws_emitter: Optional[WebSocketEmitter] = factory.get_ws_emitter()
+        
+        # 🆕 CHAT HISTORY MANAGER para manejo de historial
+        self.chat_history_manager = ChatHistoryManager(factory)
+        
+        # 🆕 AGENT MANAGER para manejo de agentes
+        self.agent_manager = AgentManager(factory)
+        
+        # 🔧 TEMPORAL: Inicializar servicios faltantes como None para evitar errores
+        self.iterative_rag_handler = None
+        self.schema_validator = None
+        self.response_formatter = None
+        self.app_function_manager = None
+        self.schema_manager = None
+        self.graph_runner = None
+        self.response_processor = None
+        self.token_budget = None
         
         # 🎯 FASE 13: SERVICIO DE TELEMETRÍA AVANZADO
         self.telemetry_service = factory.get_advanced_telemetry_service()
@@ -176,15 +198,17 @@ class OrchestratorService:
             # 🎯 FASE 13: TRACKING DE TELEMETRÍA (si está disponible)
             if hasattr(self, 'telemetry_service') and self.telemetry_service:
                 try:
-                    self.telemetry_service.track_conversation_metrics(
-                        conversation_id=str(uuid4()),
-                        user_id=self.user_id,
-                        chat_id=chat_id,
-                        mode="explorer" if explorer else "guided",
-                        total_tokens=react_response.get("iterations", 0) * 100,  # Estimación
-                        execution_time_ms=react_response.get("response_time_ms", 0),
-                        success=True,
+                    # 🔧 FIX: Usar track_event en lugar de track_conversation_metrics
+                    self.telemetry_service.track_event(
+                        event_name="conversation_completed",
                         metadata={
+                            "conversation_id": str(uuid4()),
+                            "user_id": str(self.user_id),
+                            "chat_id": str(chat_id),
+                            "mode": "explorer" if explorer else "guided",
+                            "total_tokens": react_response.get("iterations", 0) * 100,  # Estimación
+                            "execution_time_ms": react_response.get("response_time_ms", 0),
+                            "success": True,
                             "method": "react_hybrid",
                             "iterations": react_response.get("iterations", 0),
                             "source": react_response.get("source", "react_orchestrator")
@@ -388,21 +412,29 @@ class OrchestratorService:
         logger.info(f"[OrchestratorService] 🔄 Delegando RAG iterativo al módulo especializado")
         
         # 🔄 REFACTORIZADO: Usar módulo especializado IterativeRAGHandler
-        return await self.iterative_rag_handler.run_iterative_rag(
-            chat_id=chat_id,
-            message=message,
-            db_ids=db_ids,
-            app_ids=app_ids,
-            context_loader=self.context_loader,
-            graph_runner=self.graph_runner,
-            explorer=explorer,
-            max_iterations=max_iterations
-        )
+        if self.iterative_rag_handler:
+            return await self.iterative_rag_handler.run_iterative_rag(
+                chat_id=chat_id,
+                message=message,
+                db_ids=db_ids,
+                app_ids=app_ids,
+                context_loader=self.context_loader,
+                graph_runner=self.graph_runner,
+                explorer=explorer,
+                max_iterations=max_iterations
+            )
+        else:
+            logger.warning("[OrchestratorService] ⚠️ iterative_rag_handler no disponible")
+            return {"error": "IterativeRAGHandler no disponible"}
 
     def _validate_compact_schemas(self, compact_schemas: Dict, db_ids: List) -> bool:
         """Validar que hay compact_schemas válidos para las DBs solicitadas"""
         # 🔄 REFACTORIZADO: Usar módulo especializado SchemaValidator
-        return self.schema_validator.validate_compact_schemas(compact_schemas, db_ids)
+        if self.schema_validator:
+            return self.schema_validator.validate_compact_schemas(compact_schemas, db_ids)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ schema_validator no disponible")
+            return compact_schemas
 
     async def _generate_final_answer(
         self, 
@@ -416,14 +448,22 @@ class OrchestratorService:
         logger.info("[OrchestratorService] 📝 Delegando generación de respuesta final al módulo especializado")
         
         # 🔄 REFACTORIZADO: Usar módulo especializado IterativeRAGHandler
-        return await self.iterative_rag_handler._generate_final_answer(
-            question, accumulated_results, context
-        )
+        if self.iterative_rag_handler:
+            return await self.iterative_rag_handler._generate_final_answer(
+                question, accumulated_results, context
+            )
+        else:
+            logger.warning("[OrchestratorService] ⚠️ iterative_rag_handler no disponible")
+            return {"error": "IterativeRAGHandler no disponible"}
 
     def _format_results_for_final_answer(self, results: Dict[str, Any]) -> str:
         """Formatea los resultados acumulados para la respuesta final"""
         # 🔄 REFACTORIZADO: Usar módulo especializado ResponseFormatter
-        return self.response_formatter.format_results_for_final_answer(results)
+        if self.response_formatter:
+            return self.response_formatter.format_results_for_final_answer(results)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ response_formatter no disponible")
+            return str(results)
 
     # ===================================================
     #  ASYNC HELPERS (con sesiones separadas)
@@ -458,7 +498,10 @@ class OrchestratorService:
     @profile_function("store_user_message")
     async def _store_user_message_async(self, chat_id: UUID, message: ChatMessage):
         """Almacenar mensaje del usuario usando ChatHistoryManager"""
-        await self.chat_history_manager.store_user_message_async(chat_id, message)
+        if self.chat_history_manager:
+            await self.chat_history_manager.store_user_message_async(chat_id, message)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
 
     @monitor_performance("save_assistant_message")
     @profile_function("save_assistant_message")
@@ -470,9 +513,12 @@ class OrchestratorService:
         executed_strategy_id: Optional[UUID] = None,
     ):
         """Guardar mensaje del asistente usando ChatHistoryManager"""
-        await self.chat_history_manager.save_assistant_message_async(
-            chat_id, content, token_count, executed_strategy_id
-        )
+        if self.chat_history_manager:
+            await self.chat_history_manager.save_assistant_message_async(
+                chat_id, content, token_count, executed_strategy_id
+            )
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
 
     @monitor_performance("load_context_parallel")
     @profile_function("load_context_parallel")
@@ -600,7 +646,10 @@ class OrchestratorService:
             # 1. Historial usando ChatHistoryManager
             if "history" in context:
                 history = context["history"]
-                total_chars += self.chat_history_manager.estimate_history_tokens(history)
+                if self.chat_history_manager:
+                    total_chars += self.chat_history_manager.estimate_history_tokens(history)
+                else:
+                    logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible para estimación de tokens")
             
             # 2. Esquemas de base de datos
             if "compact_schemas" in context:
@@ -617,7 +666,10 @@ class OrchestratorService:
                 apps = context.get("apps", [])
                 functions = context.get("functions", [])
                 mcp_tools = context.get("mcp_tools", {})
-                total_chars += self.app_function_manager.estimate_app_function_tokens(apps, functions, mcp_tools)
+                if self.app_function_manager:
+                    total_chars += self.app_function_manager.estimate_app_function_tokens(apps, functions, mcp_tools)
+                else:
+                    logger.warning("[OrchestratorService] ⚠️ app_function_manager no disponible para estimación de tokens")
             
             # Estimación aproximada: 1 token ≈ 4 caracteres
             estimated_tokens = total_chars // 4
@@ -638,7 +690,11 @@ class OrchestratorService:
         functions = context.get('functions', [])
         mcp_tools = context.get('mcp_tools', {})
         
-        return self.app_function_manager.create_lite_payload(apps, functions, mcp_tools)
+        if self.app_function_manager:
+            return self.app_function_manager.create_lite_payload(apps, functions, mcp_tools)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ app_function_manager no disponible")
+            return {"error": "AppFunctionManager no disponible"}
 
     async def _optimize_context_with_ai(
         self, 
@@ -676,9 +732,13 @@ class OrchestratorService:
                     )
                     
                     # 2. Optimizar esquema basado en resultados de búsqueda
-                    optimized_schema = self._optimize_schema_with_search_results(
-                        database_schemas[db_id], search_results
-                    )
+                    if self.schema_manager:
+                        optimized_schema = self._optimize_schema_with_search_results(
+                            database_schemas[db_id], search_results
+                        )
+                    else:
+                        logger.warning("[OrchestratorService] ⚠️ schema_manager no disponible para optimización")
+                        optimized_schema = database_schemas[db_id]
                     
                     # 3. Optimizar prompt para la query específica
                     optimized_prompt = prompt_engineering.optimize_prompt_for_query(
@@ -712,7 +772,11 @@ class OrchestratorService:
         search_results: List[Any]
     ) -> Dict[str, Any]:
         """Optimizar esquema con resultados de búsqueda usando SchemaManager"""
-        return self.schema_manager.optimize_schema_with_search_results(schema, search_results)
+        if self.schema_manager:
+            return self.schema_manager.optimize_schema_with_search_results(schema, search_results)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ schema_manager no disponible")
+            return schema
 
     @monitor_performance("load_database_schemas")
     @profile_function("load_database_schemas")
@@ -726,15 +790,27 @@ class OrchestratorService:
             - 'compact_schemas': Dict[UUID, str] - Esquemas compactos para LLM
             - 'cache_status': Dict[UUID, str] - Estado del cache por DB
         """
-        return await self.schema_manager.load_database_schemas_async(db_ids)
+        if self.schema_manager:
+            return await self.schema_manager.load_database_schemas_async(db_ids)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ schema_manager no disponible")
+            return {'schemas': {}, 'compact_schemas': {}, 'cache_status': {}}
     
     def _introspect_minimal_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
         """Introspección mínima de esquema usando SchemaManager"""
-        return self.schema_manager._introspect_minimal_schema(db_id)
+        if self.schema_manager:
+            return self.schema_manager._introspect_minimal_schema(db_id)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ schema_manager no disponible")
+            return None
 
     def _convert_snapshot_to_legacy(self, snapshot_tables: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convertir snapshot a formato legacy usando SchemaManager"""
-        return self.schema_manager._convert_snapshot_to_legacy(snapshot_tables)
+        if self.schema_manager:
+            return self.schema_manager._convert_snapshot_to_legacy(snapshot_tables)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ schema_manager no disponible")
+            return []
 
     @monitor_performance("load_agent_prompt")
     @profile_function("load_agent_prompt")
@@ -769,25 +845,41 @@ class OrchestratorService:
     @profile_function("load_history")
     async def _load_history_async(self, chat_id: UUID) -> List[Dict[str, Any]]:
         """Cargar historial del chat usando ChatHistoryManager"""
-        return await self.chat_history_manager.load_history_async(chat_id)
+        if self.chat_history_manager:
+            return await self.chat_history_manager.load_history_async(chat_id)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
+            return []
 
     @monitor_performance("load_apps")
     @profile_function("load_apps")
     async def _load_apps_async(self, app_ids: List[UUID]) -> List[Dict[str, Any]]:
         """Cargar aplicaciones usando AppFunctionManager"""
-        return await self.app_function_manager.load_apps_async(app_ids)
+        if self.app_function_manager:
+            return await self.app_function_manager.load_apps_async(app_ids)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ app_function_manager no disponible")
+            return []
 
     @monitor_performance("load_functions")
     @profile_function("load_functions")
     async def _load_functions_async(self) -> List[Dict[str, Any]]:
         """Cargar funciones disponibles usando AppFunctionManager"""
-        return await self.app_function_manager.load_functions_async()
+        if self.app_function_manager:
+            return await self.app_function_manager.load_functions_async()
+        else:
+            logger.warning("[OrchestratorService] ⚠️ app_function_manager no disponible")
+            return []
 
     @monitor_performance("load_mcp_tools")
     @profile_function("load_mcp_tools")
     async def _load_mcp_tools_async(self) -> Dict[str, Any]:
         """Cargar herramientas MCP disponibles usando AppFunctionManager"""
-        return await self.app_function_manager.load_mcp_tools_async()
+        if self.app_function_manager:
+            return await self.app_function_manager.load_mcp_tools_async()
+        else:
+            logger.warning("[OrchestratorService] ⚠️ app_function_manager no disponible")
+            return {}
 
     # ===================================================
     #  MÉTODOS DE CONTROL DE TOKENS MEJORADOS
@@ -823,11 +915,15 @@ class OrchestratorService:
         # Trimming de historial usando ChatHistoryManager
         if 'chat_history' in trimmed_context:
             history = trimmed_context['chat_history']
-            estimated_tokens = self.chat_history_manager.estimate_history_tokens(history)
-            if estimated_tokens > self.MAX_HISTORY_CHARS:
-                # Aplicar trimming inteligente
-                trimmed_context['chat_history'] = self.chat_history_manager._apply_intelligent_history_trimming(history)
-                logger.info(f"[OrchestratorService] 🔒 Token budget: historial optimizado de {estimated_tokens} a {self.MAX_HISTORY_CHARS} chars")
+            if self.chat_history_manager:
+                estimated_tokens = self.chat_history_manager.estimate_history_tokens(history)
+                if estimated_tokens > self.MAX_HISTORY_CHARS:
+                    # Aplicar trimming inteligente
+                    trimmed_context['chat_history'] = self.chat_history_manager._apply_intelligent_history_trimming(history)
+                    logger.info(f"[OrchestratorService] 🔒 Token budget: historial optimizado de {estimated_tokens} a {self.MAX_HISTORY_CHARS} chars")
+            else:
+                logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible para trimming de historial")
+                estimated_tokens = 0
         
         # Trimming de esquemas usando SchemaManager
         if 'database_schemas' in trimmed_context:
@@ -959,13 +1055,21 @@ class OrchestratorService:
             
             # Intentar ejecutar con contexto mínimo
             try:
-                execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, minimal_context)
-                execution_results = self.graph_runner.normalize_graph_output(execution_results)
+                if self.graph_runner:
+                    execution_results = await self.graph_runner.run_graph(explorer, chat_id, message.content, minimal_context)
+                    execution_results = self.graph_runner.normalize_graph_output(execution_results)
+                else:
+                    logger.warning("[OrchestratorService] ⚠️ graph_runner no disponible")
+                    execution_results = {"error": "GraphRunner no disponible"}
                 
                 # Procesar respuesta
-                processed_response = await self.response_processor.process_response(
-                    execution_results, minimal_context, message.content
-                )
+                if self.response_processor:
+                    processed_response = await self.response_processor.process_response(
+                        execution_results, minimal_context, message.content
+                    )
+                else:
+                    logger.warning("[OrchestratorService] ⚠️ response_processor no disponible")
+                    processed_response = execution_results
                 
                 return {
                     "assistant_response": processed_response.get("response", "Lo siento, estoy experimentando problemas técnicos. Por favor, intenta nuevamente."),
@@ -996,8 +1100,8 @@ class OrchestratorService:
     #  HELPERS (mantienen la funcionalidad original)
     # ===================================================
     def _select_graph_runner(self, explorer: bool):
-        from app.services.graphs.exploration_graph import ExplorationGraph
-        from app.services.graphs.guided_graph import GuidedGraph
+        from app.services.execution.graphs.exploration_graph import ExplorationGraph
+        from app.services.execution.graphs.guided_graph import GuidedGraph
         GraphClass = ExplorationGraph if explorer else GuidedGraph
         logger.info("[OrchestratorService] Using graph: %s", GraphClass.__name__)
         return GraphClass(self.factory)
@@ -1057,7 +1161,10 @@ class OrchestratorService:
 
     def _store_user_message(self, chat_id: UUID, message: ChatMessage) -> None:
         """Almacenar mensaje del usuario usando ChatHistoryManager"""
-        asyncio.create_task(self.chat_history_manager.store_user_message_async(chat_id, message))
+        if self.chat_history_manager:
+            asyncio.create_task(self.chat_history_manager.store_user_message_async(chat_id, message))
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
 
     def _save_assistant_message(
         self,
@@ -1067,17 +1174,27 @@ class OrchestratorService:
         executed_strategy_id: Optional[UUID] = None,
     ) -> None:
         """Guardar mensaje del asistente usando ChatHistoryManager"""
-        asyncio.create_task(self.chat_history_manager.save_assistant_message_async(
-            chat_id, content, token_count, executed_strategy_id
-        ))
+        if self.chat_history_manager:
+            asyncio.create_task(self.chat_history_manager.save_assistant_message_async(
+                chat_id, content, token_count, executed_strategy_id
+            ))
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
 
     def _load_history_with_session(self, chat_id: UUID) -> List[Any]:
         """Cargar historial con sesión usando ChatHistoryManager"""
-        return self.chat_history_manager._load_history_with_session(chat_id)
+        if self.chat_history_manager:
+            return self.chat_history_manager._load_history_with_session(chat_id)
+        else:
+            logger.warning("[OrchestratorService] ⚠️ chat_history_manager no disponible")
+            return []
 
     def _load_agent_prompt(self, agent_id: Optional[UUID]) -> str:
         """Cargar prompt del agente usando AgentManager"""
         if not agent_id:
+            return ""
+        if not self.agent_manager:
+            logger.warning("[OrchestratorService] ⚠️ agent_manager no disponible")
             return ""
         try:
             return self.agent_manager.get_agent_prompt(agent_id)
@@ -1088,7 +1205,11 @@ class OrchestratorService:
     def _check_usage_limit(self) -> None:
         """Verificar límites de uso usando UsageService"""
         try:
-            self.factory.get_usage_service().check_limit()
+            usage_service = self.factory.get_usage_service()
+            if usage_service:
+                usage_service.check_limit()
+            else:
+                logger.warning("[OrchestratorService] ⚠️ usage_service no disponible")
         except Exception as e:
             logger.warning(f"[OrchestratorService] Usage limit check failed: {e}")
 
@@ -1162,11 +1283,15 @@ class OrchestratorService:
             
             # 🔧 FASE 11: Si no hay respuesta válida, usar servicio de fallback
             logger.warning(f"[OrchestratorService] 🔧 FASE 11: No hay respuesta válida, usando servicio de fallback")
-            fallback_response = self.fallback_service.generate_fallback_response(
-                execution_results=execution_results,
-                user_message="",  # Se pasará desde el método que llama
-                context=None
-            )
+            if self.fallback_service:
+                fallback_response = self.fallback_service.generate_fallback_response(
+                    execution_results=execution_results,
+                    user_message="",  # Se pasará desde el método que llama
+                    context=None
+                )
+            else:
+                logger.warning("[OrchestratorService] ⚠️ fallback_service no disponible")
+                fallback_response = "Lo siento, no pude procesar tu solicitud. Por favor, intenta nuevamente."
             return fallback_response
             
         except Exception as e:
@@ -1191,7 +1316,11 @@ class OrchestratorService:
     async def emit_status_typing(self, is_typing: bool = True) -> bool:
         """Emite evento de estado de escritura (stub)."""
         if self.ws_emitter:
-            return await self.ws_emitter.emit_status_typing(is_typing)
+            if self.ws_emitter:
+                return await self.ws_emitter.emit_status_typing(is_typing)
+            else:
+                logger.warning("[OrchestratorService] ⚠️ ws_emitter no disponible")
+                return False
         return False
     
     async def emit_status_progress(
@@ -1203,7 +1332,11 @@ class OrchestratorService:
     ) -> bool:
         """Emite evento de progreso (stub)."""
         if self.ws_emitter:
-            return await self.ws_emitter.emit_status_progress(step, total_steps, message, percentage)
+            if self.ws_emitter:
+                return await self.ws_emitter.emit_status_progress(step, total_steps, message, percentage)
+            else:
+                logger.warning("[OrchestratorService] ⚠️ ws_emitter no disponible")
+                return False
         return False
     
     async def emit_decision_request(
@@ -1230,7 +1363,11 @@ class OrchestratorService:
     ) -> bool:
         """Emite resultado parcial (stub)."""
         if self.ws_emitter:
-            return await self.ws_emitter.emit_result_partial(step, data, preview)
+            if self.ws_emitter:
+                return await self.ws_emitter.emit_result_partial(step, data, preview)
+            else:
+                logger.warning("[OrchestratorService] ⚠️ ws_emitter no disponible")
+                return False
         return False
     
     async def emit_result_final(
@@ -1242,7 +1379,11 @@ class OrchestratorService:
     ) -> bool:
         """Emite resultado final (stub)."""
         if self.ws_emitter:
-            return await self.ws_emitter.emit_result_final(summary, data, next_actions, usage_stats)
+            if self.ws_emitter:
+                return await self.ws_emitter.emit_result_final(summary, data, next_actions, usage_stats)
+            else:
+                logger.warning("[OrchestratorService] ⚠️ ws_emitter no disponible")
+                return False
         return False
     
     async def emit_notice_info(
@@ -1253,7 +1394,11 @@ class OrchestratorService:
     ) -> bool:
         """Emite notificación informativa (stub)."""
         if self.ws_emitter:
-            return await self.ws_emitter.emit_notice_info(message, level, actions)
+            if self.ws_emitter:
+                return await self.ws_emitter.emit_notice_info(message, level, actions)
+            else:
+                logger.warning("[OrchestratorService] ⚠️ ws_emitter no disponible")
+                return False
         return False
     
     async def emit_error_user_facing(

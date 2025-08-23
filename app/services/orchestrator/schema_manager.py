@@ -65,8 +65,22 @@ class SchemaManager:
     async def _load_cached_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
         """Carga esquema desde cache si está disponible"""
         try:
-            # Aquí implementarías la lógica de cache
-            # Por ahora retornamos None para forzar carga desde DB
+            # 🔧 IMPLEMENTADO: Usar DetailedSchemaCacheService
+            if hasattr(self.factory, 'get_detailed_schema_cache_service') and hasattr(self.factory, 'user'):
+                cache_service = self.factory.get_detailed_schema_cache_service()
+                if cache_service and self.factory.user:
+                    schema_response = await cache_service.get_schema_cache(self.factory.user.id, db_id)
+                    if schema_response:
+                        logger.info(f"[SchemaManager] ✅ Esquema cargado desde cache para DB {db_id}")
+                        # Convertir a formato esperado
+                        return {
+                            "compact": schema_response.compact,
+                            "tables": schema_response.snapshot.tables if hasattr(schema_response.snapshot, 'tables') else {},
+                            "table_count": schema_response.table_count,
+                            "source": "cache"
+                        }
+            
+            logger.debug(f"[SchemaManager] ℹ️ No hay cache disponible para DB {db_id}")
             return None
         except Exception as e:
             logger.warning(f"Error cargando cache para DB {db_id}: {e}")

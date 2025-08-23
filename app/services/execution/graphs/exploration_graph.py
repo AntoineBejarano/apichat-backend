@@ -1,538 +1,780 @@
-from typing import Dict, Any, List, Optional, TypedDict
-from uuid import UUID
-from datetime import datetime, timezone
-
-from langgraph.graph import StateGraph
-from app.core.service_factory import ServiceFactory
-from app.schemas.chat_schema import ChatMessage
-from app.schemas.plan_schema import PlanModel
-from app.models.app_model import App
-from app.models.database_model import DatabaseConnection
-from app.models.function_model import Function
-from langchain_community.utilities.sql_database import SQLDatabase
-
+import asyncio
 import logging
 import time
+from typing import Dict, Any, List, Optional
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from .state.exploration_state import ExplorationState
+
+from .nodes.resource_inference import ResourceInferenceNode
+from .nodes.planning_node import PlanningNode
+from .nodes.execution_node import ExecutionNode
+from .nodes.schema_optimization_node import SchemaOptimizationNode
+from .nodes.schema_optimization_node_v3 import SchemaOptimizationNodeV3
+from .nodes.smart_ai_node import SmartAINode  # 🧠 NUEVO: Smart AI Node
+from .cache.optimized_schema_cache import OptimizedSchemaCache
+from ...data.redis_cache_service import RedisCacheService
+from ...data.connection_pool_service import ConnectionPoolService
+from ...data.persistent_service_cache import PersistentServiceCache
 
 logger = logging.getLogger(__name__)
 
 
-# ──────────────────────────────────────────────────────
-#   Estado compartido del grafo
-# ──────────────────────────────────────────────────────
-class ExplorationState(TypedDict, total=False):
-    chat_id: str
-    message: ChatMessage
-    history: List[Dict[str, Any]]
-
-    # Recursos inferidos
-    db_ids: List[str]
-    db_conns: List[SQLDatabase]  # 🔧 Instancias SQL, no registros ORM
-    db_dialect: Optional[str]
-    apps: List[App]
-    functions: List[Function]
-    proxy_id: Optional[str]
-    
-    # Nuevos campos para modo explore mejorado
-    compact_schemas: Dict[str, str]  # {db_id: compact_schema}
-    cache_status: Optional[Dict[str, str]]  # Para debugging
-
-    # Salidas posibles
-    plan: PlanModel
-    assistant_response: str
-    error: str
-
-
-# ──────────────────────────────────────────────────────
-#   Grafo Exploration
-# ──────────────────────────────────────────────────────
 class ExplorationGraph:
-    def __init__(self, factory: ServiceFactory, max_schema_chars: int = 80000):
+    """ExplorationGraph optimizado con ejecución paralela y lazy loading"""
+    
+    def __init__(self, factory=None):
+        # Guardar referencia al factory
         self.factory = factory
-        self.max_schema_chars = max_schema_chars  # Configurable schema size limit
-
-    async def run(self, context: ExplorationState) -> ExplorationState:
-        builder = StateGraph(ExplorationState)
-
-        # ── Nodo 1: inferir BDs, apps y funciones (NUEVO MODO EXPLORE) ───────────────────────────────
-        async def infer_resources(state: ExplorationState) -> ExplorationState:
-            message: ChatMessage = state["message"]
+        
+        # Inicializar caches y servicios críticos en paralelo
+        self._init_critical_services()
+        
+        # Inicializar nodos (lazy loading)
+        self._nodes_initialized = False
+        self._nodes = {}
+        
+        # Cache de esquemas optimizados
+        self.optimized_schema_cache = OptimizedSchemaCache()
+        
+        # Nota: schema_optimization_node se inicializará en lazy loading con factory
+        
+        # Métricas de rendimiento
+        self.performance_metrics = {}
+        
+        # Configuración de optimizaciones por fases
+        self._phase3_enabled = False  # FASE 3: Schema Processing optimizado
+        
+        # 🧠 Smart AI System habilitado por defecto
+        self._smart_ai_enabled = True
+        
+        logger.info("[ExplorationGraph] 🚀 Inicialización completada con Smart AI System")
+    
+    def _create_schema_optimization_node(self):
+        """Crea el nodo de optimización según la configuración de fases"""
+        if self._phase3_enabled:
+            logger.info("[ExplorationGraph] 🚀 Creando Schema Optimization Node FASE 3")
+            node = SchemaOptimizationNodeV3(
+                factory=self.factory,
+                schema_cache=self.schema_cache,
+                optimized_schema_cache=self.optimized_schema_cache,
+                service_cache=self.service_cache
+            )
             
-            # 🔧 Si ya vienen db_ids/apps en el state, respetarlos y salir
-            if state.get("db_ids") or state.get("apps"):
-                logger.info("[ExplorationGraph] 📥 Recursos ya proporcionados en state, saltando inferencia")
-                return state
+            # Configurar Redis cache si está disponible
+            if hasattr(self, 'redis_cache') and self.redis_cache:
+                node.set_redis_cache(self.redis_cache)
+                logger.info("[ExplorationGraph] 🔗 Redis cache configurado para FASE 3")
             
-            logger.info("[ExplorationGraph] 🎯 Iniciando selección automática por descripciones")
-            
-            # a) Usar DescriptionSelectorService para seleccionar candidatos
-            try:
-                selector = self.factory.get_description_selector_service()
-                picks = selector.select(message.content, top_k=2, threshold=0.55)
-                
-                db_candidates = picks.get("db_candidates", [])
-                app_candidates = picks.get("app_candidates", [])
-                
-                # 🔧 Ordenar candidatos por score descendente para orden estable
-                db_candidates.sort(key=lambda x: x[1], reverse=True)
-                app_candidates.sort(key=lambda x: x[1], reverse=True)
-                
-                # 🔧 Corte explícito tras ordenar para asegurar top-k
-                TOP_K_LIMIT = 2  # Configurable limit
-                db_candidates = db_candidates[:TOP_K_LIMIT]
-                app_candidates = app_candidates[:TOP_K_LIMIT]
-                
-                logger.info(f"[ExplorationGraph] 📋 Candidatos (top-{TOP_K_LIMIT}): {len(db_candidates)} DBs, {len(app_candidates)} apps")
-                if db_candidates:
-                    logger.info(f"[ExplorationGraph] 🗄️ Top DB scores: {[(db_id[:8], f'{score:.3f}') for db_id, score in db_candidates[:3]]}")
-                if app_candidates:
-                    logger.info(f"[ExplorationGraph] 📱 Top App scores: {[(app_id, f'{score:.3f}') for app_id, score in app_candidates[:3]]}")
-                
-            except Exception as e:
-                logger.exception(f"[ExplorationGraph] ❌ Error en selección automática: {e}")
-                db_candidates, app_candidates = [], []
-            
-            # b) Preparar db_ids y hacer warm-up de schemas
-            db_ids: List[str] = []
-            db_conns: List[SQLDatabase] = []
-            db_dialect: Optional[str] = None
-            compact_schemas: Dict[str, str] = {}
-            cache_status: Dict[str, str] = {}
-            
-            database_service = self.factory.get_database_service()
-            cache_service = self.factory.get_detailed_schema_cache_service()
-            
-            for db_id_str, score in db_candidates:
-                try:
-                    db_id_uuid = UUID(db_id_str)
-                    
-                    # c) Hacer warm-up del schema
-                    logger.info(f"[ExplorationGraph] 🔥 Warm-up schema para DB {db_id_str[:8]}... (score: {score:.3f})")
-                    
-                    # Obtener cache existente
-                    cache_entry = cache_service.get_schema_cache(self.factory.user.id, db_id_uuid)
-                    
-                    # Verificar que tengamos esquemas compactos válidos
-                    if cache_entry and cache_entry.compact:
-                        # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
-                        if isinstance(cache_entry.compact, str) and cache_entry.compact.strip():
-                            compact_schema = cache_entry.compact
-                            logger.info(f"[ExplorationGraph] ✅ Esquema compacto válido para DB {db_id_str}")
-                        elif isinstance(cache_entry.compact, dict) and cache_entry.compact.get("compact"):
-                            # Si es un dict, extraer el campo compact
-                            compact_schema = cache_entry.compact.get("compact")
-                            if isinstance(compact_schema, str) and compact_schema.strip():
-                                logger.info(f"[ExplorationGraph] ✅ Esquema compacto válido para DB {db_id_str} (desde dict)")
-                            else:
-                                compact_schema = None
-                        else:
-                            compact_schema = None
-                    else:
-                        compact_schema = None
-                    
-                    if compact_schema:
-                        # Schema válido - incluir esta DB
-                        db_ids.append(db_id_str)
-                        compact_schemas[db_id_str] = compact_schema
-                        # cache_status ya está marcado arriba
-                        
-                        # d) Cargar instancia SQL (no registro ORM)
-                        try:
-                            sql_instance = database_service.get_sql_instance(db_id_uuid)
-                            if sql_instance:
-                                db_conns.append(sql_instance)
-                                
-                                # e) Inferir dialecto del primero (best-effort) - usando API pública
-                                if not db_dialect:
-                                    try:
-                                        # Usar método público del database service
-                                        db_dialect = database_service.get_dialect_name(db_id_uuid)
-                                        
-                                        if db_dialect:
-                                            logger.info(f"[ExplorationGraph] 🧪 Dialecto inferido: {db_dialect}")
-                                        else:
-                                            # Fallback seguro
-                                            db_dialect = "postgresql"
-                                            logger.info(f"[ExplorationGraph] 🧪 Dialecto por defecto: {db_dialect}")
-                                    except Exception as de:
-                                        logger.debug(f"[ExplorationGraph] No se pudo inferir dialecto: {de}")
-                                        db_dialect = "postgresql"  # Safe default
-                        except Exception as ce:
-                            logger.warning(f"[ExplorationGraph] ⚠️ Error cargando instancia SQL DB {db_id_str[:8]}: {ce}")
-                        
-                        logger.info(f"[ExplorationGraph] ✅ DB {db_id_str[:8]} ready (schema: {len(compact_schema)} chars)")
-                    # Si llegamos aquí sin compact_schema válido, ya está marcado en cache_status
-                        
-                except Exception as e:
-                    logger.exception(f"[ExplorationGraph] ❌ Error procesando DB {db_id_str[:8]}: {e}")
-                    cache_status[db_id_str] = "processing_error"
-            
-            # f) Cargar apps y functions de candidatos
-            apps: List[App] = []
-            functions: List[Function] = []
-            proxy_id: Optional[str] = None
-            
-            app_service = self.factory.get_app_service()
-            function_service = self.factory.get_function_service()
-            
-            for app_id_str, score in app_candidates:
-                try:
-                    # Convertir app_id a UUID (apps.id es UUID)
-                    try:
-                        app_id = UUID(app_id_str) if isinstance(app_id_str, str) else app_id_str
-                    except ValueError:
-                        logger.warning(f"[ExplorationGraph] ⚠️ Invalid app_id UUID format: {app_id_str}")
-                        continue
-                    
-                    app = app_service.get_by_id(app_id)
-                    if app:
-                        apps.append(app)
-                        
-                        # Cargar functions de esta app
-                        app_functions = function_service.get_by_app(app.id)
-                        functions.extend(app_functions)
-                        
-                        # Conservar proxy_id si aplica
-                        if app.proxy_id and not proxy_id:
-                            proxy_id = app.proxy_id
-                        
-                        logger.info(f"[ExplorationGraph] ✅ App {app.name} loaded (score: {score:.3f}, functions: {len(app_functions)})")
-                        
-                except Exception as e:
-                    logger.warning(f"[ExplorationGraph] ⚠️ Error cargando app {app_id_str[:8]}: {e}")
-            
-            # g) Log resumen
-            logger.info(f"[ExplorationGraph] 🎯 Selección completada: {len(db_ids)} DBs, {len(apps)} apps, {len(functions)} functions")
-            
-            if compact_schemas:
-                total_chars = sum(len(schema) for schema in compact_schemas.values())
-                logger.info(f"[ExplorationGraph] 📋 Schemas listos: {total_chars} chars total")
-            
-            # 🔧 FIX: Asegurar que db_ids sean siempre strings para consistencia con compact_schemas
-            # compact_schemas usa string keys, así que db_ids deben ser strings también
-            normalized_db_ids = [str(db_id) for db_id in db_ids]
-            
-            return {
-                **state,
-                "db_ids": normalized_db_ids,  # 🔧 Siempre strings para consistencia
-                "db_conns": db_conns,
-                "db_dialect": db_dialect,
-                "apps": apps,
-                "functions": functions,
-                "proxy_id": proxy_id,
-                "compact_schemas": compact_schemas,
-                "cache_status": cache_status,
-            }
-
-        # ── Nodo 2: llamar a OpenAI y decidir ───────────────────────────────────
-        async def plan_or_reply(state: ExplorationState) -> ExplorationState:
-            try:
-                logger.info("[ExplorationGraph] 🧠 Calling OpenAI with cache validation...")
-
-                # 🔧 NUEVO FLUJO: Usar compact_schemas del contexto (ya warm)
-                compact_schemas = state.get("compact_schemas", {})
-                cache_status = state.get("cache_status", {})
-                
-                # 🎯 FASE 8: Emitir propuesta de recursos si tenemos candidatos buenos
-                user_message = state["message"].content
-                db_ids = state.get("db_ids", [])
-                apps = state.get("apps", [])
-                
-                # Solo emitir propuesta si tenemos recursos y el mensaje sugiere una tarea específica
-                if db_ids and apps and self._should_propose_resources(user_message):
-                    try:
-                        # Obtener ResourceSelectorService
-                        resource_selector = self.factory.get_resource_selector_service()
-                        
-                        # Preparar datos para el selector
-                        all_dbs = []
-                        for db_id in db_ids:
-                            db_info = {
-                                'id': str(db_id),
-                                'name': f"Database {db_id[:8]}",
-                                'description': f"Database connection {db_id[:8]}",
-                                'table_count': 0,  # Se puede mejorar obteniendo metadata real
-                                'size_mb': 0,
-                                'last_updated': None,
-                                'is_readonly': True,
-                                'has_comments': False,
-                                'has_constraints': False,
-                                'has_indexes': False
-                            }
-                            all_dbs.append(db_info)
-                        
-                        all_apps = []
-                        for app in apps:
-                            app_info = {
-                                'id': str(app.id),
-                                'name': app.name,
-                                'description': app.description or f"Application {app.name}",
-                                'api_count': len(app.functions) if hasattr(app, 'functions') else 0,
-                                'last_updated': app.updated_at.isoformat() if hasattr(app, 'updated_at') else None,
-                                'requires_auth': True,
-                                'has_rate_limiting': True,
-                                'has_openapi_spec': True,
-                                'has_examples': False,
-                                'has_descriptions': True
-                            }
-                            all_apps.append(app_info)
-                        
-                        # Generar propuestas
-                        proposals = await resource_selector.propose_for_explorer(user_message, all_dbs, all_apps)
-                        
-                        if proposals:
-                            # Emitir propuesta de recursos
-                            proposal_id = f"proposal_{state['chat_id']}_{int(time.time())}"
-                            
-                            # Formatear opciones para la UI
-                            formatted_options = []
-                            for i, proposal in enumerate(proposals, 1):
-                                option = {
-                                    "id": f"guided_option_{i}",
-                                    "label": f"Opción {i}: {proposal['database']['name']} + {proposal['application']['name']}",
-                                    "description": f"Score: {proposal['combined_score']:.2f} - {', '.join(proposal['selection_reasons'][:3])}",
-                                    "action": f"guided_option_{i}",
-                                    "data": {
-                                        "database_id": proposal['database']['id'],
-                                        "application_id": proposal['application']['id'],
-                                        "combined_score": proposal['combined_score'],
-                                        "reasons": proposal['selection_reasons']
-                                    }
-                                }
-                                formatted_options.append(option)
-                            
-                            # Añadir opciones adicionales
-                            formatted_options.extend([
-                                {
-                                    "id": "see_more",
-                                    "label": "Ver más opciones",
-                                    "description": "Explorar más combinaciones de recursos",
-                                    "action": "see_more"
-                                },
-                                {
-                                    "id": "explore_only",
-                                    "label": "Solo explorar",
-                                    "description": "Continuar en modo Explorer sin cambiar a Guided",
-                                    "action": "explore_only"
-                                }
-                            ])
-                            
-                            # Emitir evento de propuesta
-                            await self.factory.get_orchestrator_service().emit_resource_proposal(
-                                proposal_id=proposal_id,
-                                title="¿Te gustaría usar el modo Guided?",
-                                description=f"He encontrado algunas combinaciones de recursos que podrían ser útiles para: '{user_message[:100]}...'",
-                                options=formatted_options,
-                                user_message=user_message,
-                                timeout_seconds=60,
-                                default_action="explore_only"
-                            )
-                            
-                            logger.info(f"[ExplorationGraph] 🎯 Propuesta de recursos emitida: {len(proposals)} opciones")
-                            
-                            # Continuar con la ejecución normal (el usuario puede responder después)
-                    
-                    except Exception as e:
-                        logger.warning(f"[ExplorationGraph] ⚠️ Error generando propuesta de recursos: {e}")
-                        # Continuar sin propuesta
-                
-                # Construir schema compacto combinado para el LLM
-                db_schema = None
-                if compact_schemas:
-                    # Combinar todos los schemas compactos
-                    schema_parts = []
-                    for db_id, compact_schema in compact_schemas.items():
-                        # 🔒 COMPATIBILIDAD: Verificar que sea string antes de usar .strip()
-                        if compact_schema:
-                            if isinstance(compact_schema, str) and compact_schema.strip():
-                                schema_parts.append(f"-- DATABASE {db_id} --")
-                                schema_parts.append(compact_schema)
-                                schema_parts.append("")
-                            elif isinstance(compact_schema, dict) and compact_schema.get("compact"):
-                                # Si es un dict, extraer el campo compact
-                                compact_value = compact_schema.get("compact")
-                                if isinstance(compact_value, str) and compact_value.strip():
-                                    schema_parts.append(f"-- DATABASE {db_id} --")
-                                    schema_parts.append(compact_value)
-                                    schema_parts.append("")
-                    
-                    if schema_parts:
-                        db_schema = "\n".join(schema_parts)
-                        
-                        # 🔧 Límite de tamaño del prompt para evitar tokens excesivos
-                        # Configurable: 80k chars (~20K tokens) para schemas grandes
-                        MAX_SCHEMA_CHARS = self.max_schema_chars
-                        if len(db_schema) > MAX_SCHEMA_CHARS:
-                            logger.warning(f"[ExplorationGraph] ⚠️ Schema muy grande ({len(db_schema)} chars), truncando a {MAX_SCHEMA_CHARS}")
-                            db_schema = db_schema[:MAX_SCHEMA_CHARS] + "\n-- [SCHEMA TRUNCATED DUE TO SIZE] --"
-                        
-                        logger.info(f"[ExplorationGraph] ✅ Schema compacto listo: {len(compact_schemas)} DBs, {len(db_schema)} chars")
-                        
-                        # Log de cache status para debugging - conteo coherente
-                        hits = sum(1 for status in cache_status.values() if status == "cache_hit")
-                        misses_created = sum(1 for status in cache_status.values() if status == "cache_miss_created")
-                        misses_failed = sum(1 for status in cache_status.values() if status == "cache_miss_failed")
-                        errors = sum(1 for status in cache_status.values() if status == "processing_error")
-                        
-                        logger.info(f"[ExplorationGraph] 📊 Cache status: {hits} hits, {misses_created} created, {misses_failed} failed, {errors} errors")
-                    else:
-                        logger.warning("[ExplorationGraph] ⚠️ Compact schemas vacíos")
-                else:
-                    # Sin compact_schemas disponible - dejar que el modelo responda sin esquema
-                    db_schema = None
-                    logger.warning("[ExplorationGraph] ⚠️ No compact_schemas disponible - continuando sin schema")
-
-                # Consultar AI con schema compacto garantizado
-                logger.info(f"[ExplorationGraph] 🤖 Consultando AI con schema compacto ({len(db_schema) if db_schema else 0} chars)")
-                result = await self.factory.get_openai_service().plan_actions(
-                    chat_id=state["chat_id"],
-                    user_message=state["message"],
-                    db_schema=db_schema,  # Schema compacto optimizado para LLM
-                    available_functions=state.get("functions", []),
-                    available_mcp_tools=None,
-                    history=state.get("history", []),
-                    db_ids=[db_id if isinstance(db_id, UUID) else UUID(str(db_id)) for db_id in compact_schemas.keys()] if compact_schemas else [],  # Asegurar UUID
-                    use_enriched_context=False,  # Ya manejamos el contexto aquí
-                )
-
-                # — Plan con acciones
-                if result.get("actions"):
-                    plan = PlanModel.model_validate(result)
-                    logger.info("[ExplorationGraph] ✅ Plan generado (%d acciones)", len(plan.actions))
-                    return {**state, "plan": plan}
-
-                # — Respuesta simple
-                if result.get("assistant_response"):
-                    logger.info("[ExplorationGraph] ✅ Respuesta simple generada")
-                    return {**state, "assistant_response": result["assistant_response"]}
-
-                # — Fallback
-                logger.warning("[ExplorationGraph] ⚠️ Modelo no devolvió contenido")
-                return {**state, "assistant_response": "Disculpa, no he entendido tu mensaje."}
-
-            except Exception as e:
-                logger.exception("[ExplorationGraph] ❌ Error generando plan/respuesta")
-                return {
-                    **state,
-                    "error": str(e),
-                    "assistant_response": "Ha ocurrido un error interno. Inténtalo de nuevo.",
-                }
-
-        # ── Construcción del grafo ──────────────────────────────────────────────
-        builder.add_node("infer_resources", infer_resources)
-        builder.add_node("plan_or_reply", plan_or_reply)
-
-        builder.set_entry_point("infer_resources")
-        builder.add_edge("infer_resources", "plan_or_reply")
-        builder.set_finish_point("plan_or_reply")
-
-        graph = builder.compile()
-        return await graph.ainvoke(context)
-
-    def _introspect_database_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
-        """Introspección directa de schema de base de datos"""
+            return node
+        else:
+            logger.info("[ExplorationGraph] 📋 Creando Schema Optimization Node tradicional")
+            return SchemaOptimizationNode(
+                factory=self.factory,
+                schema_cache=self.schema_cache,
+                optimized_schema_cache=self.optimized_schema_cache,
+                service_cache=self.service_cache
+            )
+    
+    def enable_phase3_optimizations(self, enabled: bool = True):
+        """Habilita/deshabilita optimizaciones de FASE 3"""
+        self._phase3_enabled = enabled
+        
+        # Si ya están inicializados los nodos, reinicializar el nodo de optimización
+        if self._nodes_initialized and 'schema_optimization' in self._nodes:
+            logger.info(f"[ExplorationGraph] 🔄 Reconfigurando Schema Optimization para FASE 3: {enabled}")
+            self._nodes['schema_optimization'] = self._create_schema_optimization_node()
+        
+        logger.info(f"[ExplorationGraph] ⚙️ FASE 3 Schema Processing: {'HABILITADA' if enabled else 'DESHABILITADA'}")
+    
+    def get_phase3_stats(self) -> Dict[str, Any]:
+        """Obtiene estadísticas de FASE 3 si está habilitada"""
+        if not self._phase3_enabled or 'schema_optimization' not in self._nodes:
+            return {"phase3_enabled": False}
+        
+        node = self._nodes['schema_optimization']
+        if hasattr(node, 'get_optimization_stats'):
+            return node.get_optimization_stats()
+        
+        return {"phase3_enabled": True, "stats_available": False}
+    
+    def _init_critical_services(self):
+        """Inicializa servicios críticos en paralelo"""
+        logger.info("[ExplorationGraph] 🔧 Inicializando servicios críticos...")
+        
+        # Inicializar servicios críticos de forma lazy (se inicializarán cuando se necesiten)
+        self._services_initialized = False
+        
+        # Inicializar caches básicos
         try:
-            database_service = self.factory.get_database_service()
-            sql_instance = database_service.get_sql_instance(db_id)
+            from .cache.schema_cache import SchemaCache
+            from ...data.persistent_service_cache import PersistentServiceCache
+            self.schema_cache = SchemaCache()
+            self.service_cache = PersistentServiceCache()
+        except ImportError as e:
+            logger.warning(f"[ExplorationGraph] ⚠️ No se pudieron inicializar algunos caches: {e}")
+            self.schema_cache = None
+            self.service_cache = None
+    
+    async def _init_services_async(self):
+        """Inicializa servicios críticos de forma asíncrona"""
+        try:
+            # Inicializar servicios en paralelo
+            tasks = [
+                self._init_redis_cache(),
+                self._init_connection_pool(),
+                self._init_service_cache()
+            ]
             
-            if not sql_instance:
-                return None
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Obtener información básica del schema
-            inspector = sql_instance.inspect()
-            tables = inspector.get_table_names()
+            # Verificar resultados
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"[ExplorationGraph] ❌ Error inicializando servicio {i}: {result}")
+                else:
+                    logger.info(f"[ExplorationGraph] ✅ Servicio {i} inicializado correctamente")
+                    
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error en inicialización asíncrona: {e}")
+    
+    async def _init_redis_cache(self):
+        """Inicializa Redis cache"""
+        try:
+            self.redis_cache = RedisCacheService()
+            logger.info("[ExplorationGraph] ✅ Redis cache inicializado")
+            return True
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error inicializando Redis: {e}")
+            return False
+    
+    async def _init_connection_pool(self):
+        """Inicializa pool de conexiones"""
+        try:
+            self.connection_pool = ConnectionPoolService()
             
-            schema_info = {
-                "tables": tables,
-                "table_count": len(tables),
-                "dialect": sql_instance.dialect.name,
-                "has_metadata": True
+            # 🔧 FASE 2: Inicializar DatabaseConnectionCache unificado
+            from .cache.database_connection_cache import get_database_connection_cache
+            self.db_connection_cache = get_database_connection_cache()
+            
+            # 🔧 FASE 2: Configurar el cache unificado con el pool
+            self.db_connection_cache.set_connection_pool_service(self.connection_pool)
+            
+            logger.info("[ExplorationGraph] ✅ Connection pool y DatabaseConnectionCache unificado inicializados")
+            return True
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error inicializando connection pool: {e}")
+            return False
+    
+    async def _init_service_cache(self):
+        """Inicializa cache de servicios"""
+        try:
+            self.service_cache = PersistentServiceCache()
+            logger.info("[ExplorationGraph] ✅ Service cache inicializado")
+            return True
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error inicializando service cache: {e}")
+            return False
+    
+    async def _ensure_services_initialized(self):
+        """Asegura que los servicios asíncronos estén inicializados"""
+        if not self._services_initialized:
+            logger.info("[ExplorationGraph] 🔧 Inicializando servicios asíncronos...")
+            await self._init_services_async()
+            self._services_initialized = True
+    
+    def _ensure_nodes_initialized(self):
+        """Asegura que los nodos estén inicializados (lazy loading)"""
+        if not self._nodes_initialized:
+            logger.info("[ExplorationGraph] 🔧 Inicializando nodos...")
+            
+            if not self.factory:
+                logger.error("[ExplorationGraph] ❌ Factory no disponible para inicializar nodos")
+                logger.error("[ExplorationGraph] ❌ Los nodos no se pueden inicializar sin factory")
+                return
+            
+            # Verificar que los caches estén disponibles
+            if not self.schema_cache or not self.service_cache:
+                logger.error("[ExplorationGraph] ❌ Caches no disponibles para inicializar nodos")
+                return
+            
+            # IMPORTANTE: Registrar factories ANTES de inicializar nodos
+            self._register_service_factories()
+            
+            # 🔧 NUEVO: Conectar Redis al SchemaCache con verificación robusta
+            if hasattr(self, 'redis_cache') and self.redis_cache:
+                # Intentar conectar Redis con retry
+                redis_connected = self._ensure_redis_connection()
+                if redis_connected:
+                    self.schema_cache.set_redis_cache(self.redis_cache)
+                    logger.info("[ExplorationGraph] 🔗 Redis conectado al SchemaCache para persistencia")
+                else:
+                    logger.warning("[ExplorationGraph] ⚠️ Redis no disponible - usando solo cache local")
+            else:
+                logger.warning("[ExplorationGraph] ⚠️ Redis cache no configurado - usando solo cache local")
+            
+            # Inicializar nodos solo cuando se necesiten
+            self._nodes = {
+                'smart_ai': SmartAINode(factory=self.factory),  # 🧠 NUEVO: Smart AI Node
+                'resource_inference': ResourceInferenceNode(
+                    factory=self.factory,
+                    schema_cache=self.schema_cache,
+                    service_cache=self.service_cache
+                ),
+                'planning': PlanningNode(factory=self.factory),
+                'execution': ExecutionNode(
+                    factory=self.factory,
+                    schema_cache=self.schema_cache,
+                    service_cache=self.service_cache
+                ),
+                'schema_optimization': self._create_schema_optimization_node()
             }
             
-            # Intentar obtener más metadatos si están disponibles
-            try:
-                # Obtener comentarios de tablas si están disponibles
-                table_comments = {}
-                for table in tables[:10]:  # Limitar a 10 tablas para evitar latencia
-                    try:
-                        comment = inspector.get_table_comment(table)
-                        if comment and comment.get('text'):
-                            table_comments[table] = comment['text']
-                    except:
-                        pass
-                
-                if table_comments:
-                    schema_info["table_comments"] = table_comments
-                    schema_info["has_comments"] = True
-                
-                # Obtener información de columnas para las primeras tablas
-                columns_info = {}
-                for table in tables[:5]:  # Limitar a 5 tablas
-                    try:
-                        columns = inspector.get_columns(table)
-                        columns_info[table] = [
-                            {
-                                "name": col["name"],
-                                "type": str(col["type"]),
-                                "nullable": col.get("nullable", True),
-                                "default": col.get("default"),
-                                "comment": col.get("comment")
-                            }
-                            for col in columns[:20]  # Limitar a 20 columnas por tabla
-                        ]
-                    except:
-                        pass
-                
-                if columns_info:
-                    schema_info["columns_info"] = columns_info
-                
-            except Exception as e:
-                logger.debug(f"[ExplorationGraph] ⚠️ No se pudieron obtener metadatos adicionales: {e}")
+            self._nodes_initialized = True
+            logger.info("[ExplorationGraph] ✅ Nodos inicializados")
+    
+    def _get_node(self, node_name: str):
+        """Obtiene un nodo específico (lazy loading)"""
+        self._ensure_nodes_initialized()
+        return self._nodes.get(node_name)
+    
+    def _register_service_factories(self):
+        """Registra las funciones factory para servicios en el cache"""
+        if not self.factory or not self.service_cache:
+            logger.warning("[ExplorationGraph] ⚠️ No se pueden registrar factories - factory o service_cache no disponible")
+            return
+        
+        try:
+            # Registrar factories para servicios principales
+            self.service_cache.register_service("database_service", self.factory.get_database_service)
+            self.service_cache.register_service("detailed_schema_cache_service", self.factory.get_detailed_schema_cache_service)
+            self.service_cache.register_service("app_service", self.factory.get_app_service)
+            self.service_cache.register_service("function_service", self.factory.get_function_service)
             
-            return schema_info
+            # Registrar factories para servicios de ejecución
+            self.service_cache.register_service("execution_engine_service", self.factory.get_execution_engine_service)
+            self.service_cache.register_service("openai_service", self.factory.get_openai_service)
+            
+            # Registrar factories para otros servicios que puedan necesitar los nodos
+            if hasattr(self.factory, 'get_schema_cache_service'):
+                self.service_cache.register_service("schema_cache_service", self.factory.get_schema_cache_service)
+            if hasattr(self.factory, 'get_redis_cache_service'):
+                self.service_cache.register_service("redis_cache_service", self.factory.get_redis_cache_service)
+            if hasattr(self.factory, 'get_connection_pool_service'):
+                self.service_cache.register_service("connection_pool_service", self.factory.get_connection_pool_service)
+            
+            logger.info("[ExplorationGraph] ✅ Factories de servicios registradas en cache")
+            logger.info(f"[ExplorationGraph] 🔍 Servicios registrados: {list(self.service_cache._services.keys())}")
             
         except Exception as e:
-            logger.error(f"[ExplorationGraph] ❌ Error introspeccionando schema de DB {db_id}: {e}")
-            return None
+            logger.error(f"[ExplorationGraph] ❌ Error registrando factories: {e}")
+            # Continuar sin fallar completamente
     
-    def _should_propose_resources(self, user_message: str) -> bool:
+    def _ensure_redis_connection(self) -> bool:
+        """Asegura que Redis esté conectado con retry y backoff"""
+        if not hasattr(self, 'redis_cache') or not self.redis_cache:
+            return False
+        
+        max_retries = 3
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Intentar una operación simple de Redis
+                if hasattr(self.redis_cache, 'ping'):
+                    # Si tiene método ping, usarlo
+                    ping_result = self.redis_cache.ping()
+                    if ping_result:
+                        logger.info(f"[ExplorationGraph] ✅ Redis conectado en intento {attempt + 1}")
+                        return True
+                else:
+                    # Fallback: intentar obtener estadísticas
+                    if hasattr(self.redis_cache, 'get_cache_stats'):
+                        stats = self.redis_cache.get_cache_stats()
+                        logger.info(f"[ExplorationGraph] ✅ Redis conectado en intento {attempt + 1} (via stats)")
+                        return True
+                
+                # Si llegamos aquí, la conexión falló
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Backoff exponencial
+                    logger.warning(f"[ExplorationGraph] ⚠️ Intento {attempt + 1} falló. Reintentando en {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"[ExplorationGraph] ❌ Redis no disponible después de {max_retries} intentos")
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"[ExplorationGraph] ⚠️ Error Redis intento {attempt + 1}: {e}. Reintentando en {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"[ExplorationGraph] ❌ Error final Redis: {e}")
+        
+        return False
+    
+    def _clean_state_for_serialization(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Limpia el estado para que sea serializable con msgpack"""
+        try:
+            clean_state = {}
+            
+            for key, value in state.items():
+                if self._is_serializable(value):
+                    clean_state[key] = value
+                else:
+                    # Reemplazar objetos no serializables con información básica
+                    clean_state[key] = self._convert_to_serializable(key, value)
+                    logger.debug(f"[ExplorationGraph] 🔧 Objeto no serializable convertido: {key} -> {type(value).__name__}")
+            
+            logger.info(f"[ExplorationGraph] ✅ Estado limpiado para serialización: {len(clean_state)} campos")
+            return clean_state
+            
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error limpiando estado: {e}")
+            # Retornar estado básico si falla la limpieza
+            return {
+                "chat_id": state.get("chat_id", "default"),
+                "message": state.get("message", {}),
+                "error": f"Error limpiando estado: {str(e)}"
+            }
+    
+    def _is_serializable(self, obj) -> bool:
+        """Verifica si un objeto es serializable con msgpack"""
+        try:
+            # Tipos básicos serializables
+            if obj is None or isinstance(obj, (str, int, float, bool)):
+                return True
+            
+            # Listas y diccionarios (recursivamente)
+            if isinstance(obj, list):
+                return all(self._is_serializable(item) for item in obj)
+            
+            if isinstance(obj, dict):
+                return all(
+                    isinstance(k, str) and self._is_serializable(v) 
+                    for k, v in obj.items()
+                )
+            
+            # Objetos específicos que sabemos que son serializables
+            if hasattr(obj, '__dict__'):
+                # Verificar si tiene método to_dict o similar
+                if hasattr(obj, 'to_dict'):
+                    return True
+                if hasattr(obj, 'dict'):
+                    return True
+            
+            return False
+            
+        except Exception:
+            return False
+    
+    def _convert_to_serializable(self, key: str, obj) -> Any:
+        """Convierte un objeto no serializable a uno serializable"""
+        try:
+            # Casos específicos conocidos
+            if key == "db_conns" and hasattr(obj, '__iter__'):
+                # Convertir conexiones de BD a información básica
+                return [{"type": "database_connection", "id": str(i)} for i, _ in enumerate(obj)]
+            
+            elif key == "db_conns" and hasattr(obj, 'engine'):
+                # SQLDatabase individual
+                return {"type": "sql_database", "has_engine": True}
+            
+            elif hasattr(obj, 'to_dict'):
+                # Objetos con método to_dict
+                return obj.to_dict()
+            
+            elif hasattr(obj, 'dict'):
+                # Objetos con método dict (Pydantic)
+                return obj.dict()
+            
+            elif hasattr(obj, '__dict__'):
+                # Objetos con atributos
+                return {
+                    "type": obj.__class__.__name__,
+                    "attributes": list(obj.__dict__.keys())
+                }
+            
+            else:
+                # Fallback genérico
+                return {"type": str(type(obj)), "value": str(obj)}
+                
+        except Exception as e:
+            logger.warning(f"[ExplorationGraph] ⚠️ Error convirtiendo {key}: {e}")
+            return {"type": "conversion_error", "error": str(e)}
+    
+    async def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Ejecuta el grafo con optimizaciones de rendimiento"""
+        start_time = time.time()
+        
+        try:
+            # Inicializar servicios asíncronos si no están listos
+            await self._ensure_services_initialized()
+            
+            # Inicializar nodos si no están listos
+            self._ensure_nodes_initialized()
+            
+            # Limpiar el estado para que sea serializable
+            clean_state = self._clean_state_for_serialization(state)
+            
+            # Crear grafo optimizado con Smart AI
+            workflow = self._create_workflow_with_smart_ai()
+            
+            # Configurar checkpointer con claves obligatorias
+            memory = MemorySaver()
+            config = {
+                "configurable": {
+                    "thread_id": f"exploration_{clean_state.get('chat_id', 'default')}",
+                    "checkpoint_ns": "exploration_workflow",
+                    "checkpoint_id": f"checkpoint_{clean_state.get('chat_id', 'default')}"
+                }
+            }
+            
+            app = workflow.compile(checkpointer=memory)
+            
+            # Ejecutar el grafo con configuración
+            result = await app.ainvoke(clean_state, config=config)
+            
+            # Calcular total de tokens al final
+            if result and 'performance_metrics' in result:
+                from .utils.performance_metrics import PerformanceMetrics
+                perf_metrics = PerformanceMetrics()
+                perf_metrics.token_metrics = result['performance_metrics'].get('tokens', {})
+                total_tokens = perf_metrics.calculate_total_tokens()
+                
+                # Actualizar el resultado con el total de tokens
+                result['performance_metrics']['tokens']['total_tokens'] = total_tokens
+                logger.info(f"[ExplorationGraph] 🎯 Total de tokens calculado: {total_tokens}")
+            
+            # Registrar métricas de rendimiento
+            execution_time = time.time() - start_time
+            self.performance_metrics['last_execution_time'] = execution_time
+            self.performance_metrics['total_executions'] = self.performance_metrics.get('total_executions', 0) + 1
+            
+            logger.info(f"[ExplorationGraph] ⚡ Ejecución completada en {execution_time:.2f}s")
+            
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"[ExplorationGraph] ❌ Error en ejecución ({execution_time:.2f}s): {e}")
+            raise
+    
+    def _create_optimized_workflow(self) -> StateGraph:
+        """Crea un workflow optimizado con ejecución paralela y Smart AI"""
+        workflow = StateGraph(ExplorationState)
+        
+        # 🧠 NUEVO: Nodo de pre-procesamiento inteligente
+        workflow.add_node("smart_ai_preprocessing", self._create_node_wrapper('smart_ai'))
+        
+        # Nodos existentes con wrappers que pasen performance_metrics
+        workflow.add_node("infer_resources", self._create_node_wrapper('resource_inference'))
+        workflow.add_node("optimize_schemas", self._create_node_wrapper('schema_optimization'))
+        workflow.add_node("plan_or_reply", self._create_node_wrapper('planning'))
+        workflow.add_node("execute_plan", self._create_node_wrapper('execution'))
+        
+        # 🚀 NUEVO FLUJO: Smart AI primero, luego flujo tradicional
+        workflow.set_entry_point("smart_ai_preprocessing")
+        workflow.add_edge("smart_ai_preprocessing", "infer_resources")
+        workflow.add_edge("infer_resources", "optimize_schemas")
+        workflow.add_edge("optimize_schemas", "plan_or_reply")
+        workflow.add_edge("plan_or_reply", "execute_plan")
+        workflow.add_edge("execute_plan", END)
+        
+        return workflow
+    
+    def _create_node_wrapper(self, node_name: str):
+        """Crea un wrapper para un nodo que pase performance_metrics"""
+        async def wrapper(state: ExplorationState):
+            logger.info(f"[ExplorationGraph] 🚀 Ejecutando nodo: {node_name}")
+            logger.info(f"[ExplorationGraph] 🔍 Estado recibido: {list(state.keys())}")
+            
+            node = self._get_node(node_name)
+            if node:
+                # Crear performance_metrics como dict serializable si no existe
+                if 'performance_metrics' not in state:
+                    state['performance_metrics'] = {
+                        'performance': {
+                            'init': 0.0,
+                            'react_think': 0.0,
+                            'schema_build': 0.0,
+                            'openai_plan': 0.0,
+                            'sql_exec': 0.0,
+                            'total': 0.0
+                        },
+                        'tokens': {
+                            'input_tokens': 0,
+                            'output_tokens': 0,
+                            'total_tokens': 0,
+                            'schema_tokens': 0,
+                            'prompt_tokens': 0,
+                            'response_tokens': 0
+                        }
+                    }
+                
+                # Crear wrapper de PerformanceMetrics para el nodo
+                from .utils.performance_metrics import PerformanceMetrics
+                perf_metrics = PerformanceMetrics()
+                perf_metrics.metrics = state['performance_metrics'].get('performance', {})
+                perf_metrics.token_metrics = state['performance_metrics'].get('tokens', {})
+                
+                # Ejecutar el nodo y await el resultado
+                try:
+                    logger.info(f"[ExplorationGraph] 🔧 Ejecutando {node_name}.run()...")
+                    result = await node.run(state, perf_metrics)
+                    logger.info(f"[ExplorationGraph] 🔧 {node_name}.run() completado, resultado: {type(result)}")
+                    
+                    # Calcular total de tokens
+                    perf_metrics.calculate_total_tokens()
+                    
+                    # Limpiar el resultado para que sea serializable
+                    clean_result = self._clean_state_for_serialization(result) if result else state
+                    
+                    # Actualizar el estado con las métricas del nodo
+                    if clean_result and 'performance_metrics' in clean_result:
+                        state['performance_metrics'] = clean_result['performance_metrics']
+                    else:
+                        # Actualizar métricas en el estado
+                        state['performance_metrics'] = perf_metrics.get_metrics()
+                    
+                    logger.info(f"[ExplorationGraph] ✅ Nodo {node_name} completado exitosamente")
+                    return clean_result
+                    
+                except Exception as e:
+                    logger.error(f"[ExplorationGraph] ❌ Error ejecutando nodo {node_name}: {e}")
+                    logger.exception(f"[ExplorationGraph] ❌ Stack trace completo:")
+                    # Retornar estado con error para que no falle el grafo
+                    state['error'] = f"Error en nodo {node_name}: {str(e)}"
+                    return state
+            else:
+                logger.error(f"[ExplorationGraph] ❌ Nodo {node_name} no encontrado")
+                return state
+        
+        # Agregar logging de debug
+        logger.info(f"[ExplorationGraph] 🔧 Wrapper creado para nodo: {node_name}")
+        return wrapper
+    
+    async def _optimize_schemas_wrapper(self, state: ExplorationState) -> ExplorationState:
+        """Wrapper para optimización de esquemas"""
+        return await self.schema_optimization_node.run(state, {})
+    
+    # Métodos públicos para compatibilidad
+    def get_optimized_schema(self, db_id: str) -> Optional[Dict[str, Any]]:
+        """Obtiene esquema optimizado del cache"""
+        return self.optimized_schema_cache.get_optimized_schema(db_id)
+    
+    def has_optimized_schema(self, db_id: str) -> bool:
+        """Verifica si existe esquema optimizado"""
+        return self.optimized_schema_cache.has_optimized_schema(db_id)
+    
+    def get_optimization_stats(self) -> Dict[str, Any]:
+        """Obtiene estadísticas de optimización"""
+        return self.optimized_schema_cache.get_stats()
+    
+    def warm_up_optimized_cache(self, db_ids: List[str]):
+        """Pre-calienta el cache de esquemas optimizados"""
+        for db_id in db_ids:
+            self.optimized_schema_cache.warm_up_cache(db_id)
+    
+    def clear_cache(self):
+        """Limpia todos los caches"""
+        if hasattr(self, 'optimized_schema_cache'):
+            self.optimized_schema_cache.clear_cache()
+        if hasattr(self, 'redis_cache'):
+            self.redis_cache.clear_cache()
+        if hasattr(self, 'service_cache'):
+            self.service_cache.clear_cache()
+        if hasattr(self, 'connection_pool'):
+            self.connection_pool.clear_pool()
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Obtiene estadísticas de todos los caches"""
+        stats = {}
+        
+        if hasattr(self, 'optimized_schema_cache'):
+            stats['optimized_schema'] = self.optimized_schema_cache.get_stats()
+        if hasattr(self, 'redis_cache'):
+            stats['redis'] = self.redis_cache.get_stats()
+        if hasattr(self, 'service_cache'):
+            stats['service'] = self.service_cache.get_cache_stats()
+        if hasattr(self, 'connection_pool'):
+            stats['connection_pool'] = self.connection_pool.get_pool_stats()
+        
+        return stats
+    
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Obtiene métricas de rendimiento"""
+        return self.performance_metrics.copy()
+    
+    def get_cache_status(self) -> Dict[str, any]:
+        """Obtiene el estado de todos los caches"""
+        status = {
+            "redis_available": hasattr(self, 'redis_cache') and self.redis_cache is not None,
+            "schema_cache_status": {},
+            "service_cache_status": {},
+            "database_connection_cache_status": {}
+        }
+        
+        # Estado del SchemaCache
+        if hasattr(self, 'schema_cache') and self.schema_cache:
+            status["schema_cache_status"] = self.schema_cache.get_cache_status()
+        
+        # Estado del ServiceCache
+        if hasattr(self, 'service_cache') and self.service_cache:
+            status["service_cache_status"] = {
+                "total_services": len(self.service_cache._services),
+                "registered_services": list(self.service_cache._services.keys())
+            }
+        
+        # Estado del DatabaseConnectionCache
+        if hasattr(self, 'db_connection_cache'):
+            status["database_connection_cache_status"] = self.db_connection_cache.get_cache_stats()
+        
+        return status
+    
+    def force_redis_reconnection(self) -> bool:
+        """Fuerza una nueva conexión a Redis"""
+        logger.info("[ExplorationGraph] 🔄 Forzando reconexión Redis...")
+        return self._ensure_redis_connection()
+
+    # 🧠 MÉTODOS PARA SMART AI SYSTEM
+    
+    def enable_smart_ai(self, enabled: bool = True):
         """
-        Determina si se debe proponer recursos basándose en el mensaje del usuario.
+        Habilita/deshabilita el Smart AI System.
         
         Args:
-            user_message: Mensaje del usuario
-            
-        Returns:
-            True si se debe proponer recursos, False en caso contrario
+            enabled: True para habilitar, False para deshabilitar
         """
-        message_lower = user_message.lower()
+        if not hasattr(self, '_smart_ai_enabled'):
+            self._smart_ai_enabled = True  # Por defecto habilitado
         
-        # Palabras clave que sugieren una tarea específica
-        task_keywords = [
-            "buscar", "encontrar", "obtener", "extraer", "consultar", "analizar",
-            "crear", "insertar", "actualizar", "modificar", "eliminar", "borrar",
-            "generar", "calcular", "resumir", "comparar", "filtrar", "ordenar",
-            "agrupar", "contar", "sumar", "promedio", "máximo", "mínimo",
-            "reporte", "dashboard", "exportar", "importar", "sincronizar"
-        ]
+        self._smart_ai_enabled = enabled
         
-        # Palabras clave que sugieren exploración general
-        exploration_keywords = [
-            "qué hay", "qué contiene", "muéstrame", "explora", "investiga",
-            "descubre", "revisa", "examina", "explora", "navega"
-        ]
+        if self._smart_ai_enabled:
+            logger.info("[ExplorationGraph] 🧠 Smart AI System HABILITADO")
+        else:
+            logger.info("[ExplorationGraph] 🧠 Smart AI System DESHABILITADO")
+    
+    def is_smart_ai_enabled(self) -> bool:
+        """
+        Verifica si el Smart AI System está habilitado.
         
-        # Si el mensaje contiene palabras de tarea específica, proponer recursos
-        if any(keyword in message_lower for keyword in task_keywords):
-            return True
+        Returns:
+            True si está habilitado, False en caso contrario
+        """
+        return getattr(self, '_smart_ai_enabled', True)
+    
+    def get_smart_ai_stats(self) -> Dict[str, Any]:
+        """
+        Obtiene estadísticas del Smart AI System.
         
-        # Si el mensaje es muy general o solo exploratorio, no proponer
-        if any(keyword in message_lower for keyword in exploration_keywords):
+        Returns:
+            Diccionario con estadísticas del Smart AI
+        """
+        try:
+            if not self.is_smart_ai_enabled():
+                return {"smart_ai_enabled": False}
+            
+            smart_ai_node = self._get_node('smart_ai')
+            if smart_ai_node and hasattr(smart_ai_node, 'get_smart_ai_stats'):
+                return smart_ai_node.get_smart_ai_stats()
+            
+            return {"smart_ai_enabled": True, "stats_available": False}
+            
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error obteniendo estadísticas Smart AI: {e}")
+            return {"smart_ai_enabled": True, "error": str(e)}
+    
+    async def warm_up_smart_ai_cache(self) -> bool:
+        """
+        Pre-calienta el cache del Smart AI System.
+        
+        Returns:
+            True si el warm-up fue exitoso
+        """
+        try:
+            if not self.is_smart_ai_enabled():
+                logger.info("[ExplorationGraph] 🧠 Smart AI System deshabilitado - saltando warm-up")
+                return False
+            
+            logger.info("[ExplorationGraph] 🔥 Iniciando warm-up del Smart AI cache...")
+            
+            smart_ai_node = self._get_node('smart_ai')
+            if smart_ai_node and hasattr(smart_ai_node, 'warm_up_cache'):
+                result = await smart_ai_node.warm_up_cache()
+                if result:
+                    logger.info("[ExplorationGraph] ✅ Warm-up del Smart AI cache completado")
+                else:
+                    logger.warning("[ExplorationGraph] ⚠️ Warm-up del Smart AI cache falló")
+                return result
+            
+            logger.warning("[ExplorationGraph] ⚠️ Smart AI Node no disponible para warm-up")
             return False
-        
-        # Si el mensaje es corto o muy general, no proponer
-        if len(user_message.split()) <= 3:
+            
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error en warm-up del Smart AI: {e}")
             return False
+    
+    def get_smart_ai_workflow_info(self) -> Dict[str, Any]:
+        """
+        Obtiene información del workflow del Smart AI System.
         
-        # Por defecto, proponer si el mensaje parece ser una pregunta o solicitud
-        return "?" in user_message or any(word in message_lower for word in ["puedes", "ayúdame", "necesito", "quiero"])
+        Returns:
+            Diccionario con información del workflow
+        """
+        try:
+            if not self.is_smart_ai_enabled():
+                return {"smart_ai_enabled": False}
+            
+            return {
+                "smart_ai_enabled": True,
+                "workflow": {
+                    "entry_point": "smart_ai_preprocessing",
+                    "flow": [
+                        "smart_ai_preprocessing",
+                        "infer_resources", 
+                        "optimize_schemas",
+                        "plan_or_reply",
+                        "execute_plan"
+                    ],
+                    "smart_ai_position": "first",
+                    "description": "Smart AI pre-procesa consultas antes de la inferencia de recursos"
+                },
+                "nodes": {
+                    "smart_ai": "SmartAINode - Pre-procesamiento inteligente",
+                    "resource_inference": "ResourceInferenceNode - Inferencia de recursos",
+                    "schema_optimization": "SchemaOptimizationNode - Optimización de esquemas",
+                    "planning": "PlanningNode - Generación de planes",
+                    "execution": "ExecutionNode - Ejecución de planes"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"[ExplorationGraph] ❌ Error obteniendo información del workflow: {e}")
+            return {"smart_ai_enabled": True, "error": str(e)}
+    
+    def _create_workflow_with_smart_ai(self) -> StateGraph:
+        """
+        Crea workflow con Smart AI habilitado.
+        
+        Returns:
+            StateGraph configurado con Smart AI
+        """
+        if self.is_smart_ai_enabled():
+            return self._create_optimized_workflow()
+        else:
+            # Fallback a workflow sin Smart AI
+            workflow = StateGraph(ExplorationState)
+            
+            workflow.add_node("infer_resources", self._create_node_wrapper('resource_inference'))
+            workflow.add_node("optimize_schemas", self._create_node_wrapper('schema_optimization'))
+            workflow.add_node("plan_or_reply", self._create_node_wrapper('planning'))
+            workflow.add_node("execute_plan", self._create_node_wrapper('execution'))
+            
+            workflow.set_entry_point("infer_resources")
+            workflow.add_edge("infer_resources", "optimize_schemas")
+            workflow.add_edge("optimize_schemas", "plan_or_reply")
+            workflow.add_edge("plan_or_reply", "execute_plan")
+            workflow.add_edge("execute_plan", END)
+            
+            return workflow

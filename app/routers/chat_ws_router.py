@@ -106,6 +106,10 @@ async def websocket_chat(
     else:
         new_chat = chat_service.create_chat(ChatCreate(name="Auto Chat"))
         chat_id = new_chat.id
+    
+    # 🔧 NUEVO: Establecer chat_id en el factory para tracking de LLM runs
+    factory.set_current_chat_id(chat_id)
+    logger.info(f"[ChatWS] 🔗 Chat ID establecido en factory: {chat_id}")
 
     try:
         while True:

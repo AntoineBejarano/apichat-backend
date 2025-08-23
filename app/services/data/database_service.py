@@ -12,6 +12,7 @@ from app.schemas.database_schema import (
 )
 from app.services.base_service import BaseService
 from app.utils.build_sqlalchemy_uri import build_sqlalchemy_uri
+from .connection_pool_service import ConnectionPoolService
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 class DatabaseService(BaseService):
     def __init__(self, factory: "ServiceFactory") -> None:
         super().__init__(factory)
+        # Inicializar pool de conexiones
+        self.connection_pool = ConnectionPoolService()
         logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user.id)
 
     # ───────────────── CRUD ─────────────────
@@ -83,7 +86,8 @@ class DatabaseService(BaseService):
 
     def get_sql_database_from_record(self, record: DatabaseConnection) -> Optional[SQLDatabase]:
         try:
-            engine = self.build_sqlalchemy_engine(record)
+            # Usar pool de conexiones en lugar de crear nuevo engine
+            engine = self.connection_pool.get_engine(record)
             return SQLDatabase(engine)
         except Exception as exc:
             logger.error("[DatabaseService] ❌ Error creando SQLDatabase: %s", exc)
@@ -158,3 +162,15 @@ class DatabaseService(BaseService):
             uri = build_sqlalchemy_uri(record)  # p.ej. "postgresql+psycopg2://..."
             scheme = uri.split("://", 1)[0]     # "postgresql+psycopg2"
             return scheme.split("+", 1)[0].lower()
+    
+    def get_connection_pool_stats(self) -> dict:
+        """Obtiene estadísticas del pool de conexiones"""
+        return self.connection_pool.get_pool_stats()
+    
+    def clear_connection_pool(self, db_id: Optional[str] = None):
+        """Limpia el pool de conexiones"""
+        self.connection_pool.clear_pool(db_id)
+    
+    def health_check_connections(self) -> dict:
+        """Realiza health check de todas las conexiones del pool"""
+        return self.connection_pool.health_check()

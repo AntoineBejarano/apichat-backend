@@ -230,7 +230,7 @@ class ReActOrchestrator:
             # Preparar estado para ExplorationGraph
             graph_state = {
                 "chat_id": context["chat_id"],
-                "message": type('obj', (object,), {'content': context['message']})(),
+                "message": ChatMessage(role="user", content=context['message']),
                 "db_ids": context["db_ids"],
                 "app_ids": context["app_ids"]
             }
@@ -249,7 +249,7 @@ class ReActOrchestrator:
             # Preparar estado para GuidedGraph
             graph_state = {
                 "chat_id": context["chat_id"],
-                "message": type('obj', (object,), {'content': context['message']})(),
+                "message": ChatMessage(role="user", content=context['message']),
                 "db_ids": context["db_ids"],
                 "app_ids": context["app_ids"]
             }

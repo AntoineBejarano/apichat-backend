@@ -53,7 +53,7 @@ class SchemaExplorerService:
         else:
             logger.warning(f"[SchemaExplorerService] ⚠️ ServiceFactory no inyectado - algunas funcionalidades pueden no estar disponibles")
     
-    def fast_lookup(
+    async def fast_lookup(
         self, 
         query: str, 
         db_ids: List[UUID]
@@ -89,7 +89,7 @@ class SchemaExplorerService:
             for db_id in db_ids:
                 # Asegurar que el índice léxico esté construido
                 if db_id not in self._lexical_indexes:
-                    self._build_lexical_index(db_id)
+                    await self._build_lexical_index(db_id)
                 
                 # Buscar matches en este DB
                 db_matches = self._search_lexical_index(db_id, query_terms)
@@ -1147,7 +1147,7 @@ class SchemaExplorerService:
             logger.error(f"[SchemaExplorerService] ❌ Error obteniendo esquema desde caché: {e}")
             return None
     
-    def get_compact_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+    async def get_compact_schema(self, db_id: UUID) -> Optional[Dict[str, Any]]:
         """
         Obtiene esquema compacto para optimización de tokens.
         Wrapper para compatibilidad con ContextLoader.
@@ -1159,7 +1159,7 @@ class SchemaExplorerService:
                     detailed_cache_service = self.factory.get_detailed_schema_cache_service()
                     if detailed_cache_service and hasattr(self.factory, 'user') and self.factory.user:
                         # Intentar obtener schema desde cache detallado
-                        schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                        schema_response = await detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
                         if schema_response and schema_response.compact:
                             logger.info(f"[SchemaExplorerService] ✅ Schema compacto obtenido desde DetailedSchemaCache para DB {db_id}")
                             # Devolver el schema compacto real
@@ -1314,7 +1314,7 @@ class SchemaExplorerService:
             words = normalized_query.split()
             return [word for word in words if len(word) >= 3][:3]
     
-    def _build_lexical_index(self, db_id: UUID) -> None:
+    async def _build_lexical_index(self, db_id: UUID) -> None:
         """Construye índice léxico para una base de datos específica"""
         try:
             if db_id in self._lexical_indexes:
@@ -1329,7 +1329,7 @@ class SchemaExplorerService:
                     detailed_cache_service = self.factory.get_detailed_schema_cache_service()
                     if detailed_cache_service and hasattr(self.factory, 'user') and self.factory.user:
                         # Intentar obtener schema desde cache detallado
-                        schema_response = detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
+                        schema_response = await detailed_cache_service.get_schema_cache(self.factory.user.id, db_id)
                         if schema_response and schema_response.compact:
                             logger.info(f"[SchemaExplorerService] ✅ Schema obtenido desde DetailedSchemaCache para DB {db_id}")
                             # Construir índice desde el schema en cache

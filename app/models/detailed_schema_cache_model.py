@@ -41,6 +41,7 @@ class DetailedSchemaCache(BaseTable):
     # 📊 Snapshots del esquema
     snapshot = Column(JSONB, nullable=False)            # Schema detallado completo
     compact = Column(Text, nullable=False)              # Schema compacto para AI
+    cleaned_schema = Column(Text, nullable=True)        # Schema optimizado y limpio para AI
     
     # ⚡ Metadatos de performance
     table_count = Column(Integer, nullable=False, default=0)
@@ -85,6 +86,7 @@ class DetailedSchemaCacheCreate(BaseModel):
     fingerprint_light: str
     snapshot: SchemaSnapshot
     compact: str
+    cleaned_schema: Optional[str] = None  # Schema optimizado y limpio
     table_count: int = 0
     total_columns: int = 0
     enrichment_level: EnrichmentLevel = EnrichmentLevel.BASIC
@@ -98,6 +100,7 @@ class DetailedSchemaCacheResponse(BaseModel):
     fingerprint: str
     fingerprint_light: str
     snapshot: SchemaSnapshot
+    cleaned_schema: Optional[str] = None  # Schema optimizado y limpio
     compact: str
     table_count: int
     total_columns: int

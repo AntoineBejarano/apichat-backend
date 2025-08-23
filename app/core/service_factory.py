@@ -16,9 +16,19 @@ class ServiceFactory:
     def __init__(self, db: Session, request: Union[Request, WebSocket, None] = None):
         self.db = db
         self.request = request
+        self.current_chat_id: Optional[UUID] = None  # 🔧 NUEVO: Chat ID actual para tracking
         logger.info("🧪 Inicializando ServiceFactory...")
 
         self._user: Optional[User] = None
+        
+        # 🔧 NUEVO: Método para establecer chat_id actual
+        def set_current_chat_id(self, chat_id: UUID):
+            """Establece el chat_id actual para tracking de LLM runs"""
+            self.current_chat_id = chat_id
+            logger.info(f"[ServiceFactory] 🔗 Chat ID establecido para tracking: {chat_id}")
+        
+        # Agregar método a la instancia
+        self.set_current_chat_id = set_current_chat_id.__get__(self, type(self))
 
         # ⚡ OPTIMIZACIÓN: Pre-inicializar servicios críticos
         self._usage_service = None
@@ -74,6 +84,72 @@ class ServiceFactory:
         self._guided_service = None
         self._ws_emitter = None
 
+        # 🔧 FASE 2: Inicializar warm-up del pool de conexiones
+        self._pool_warm_up_initiated = False
+        self._initiate_pool_warm_up()
+
+    def _initiate_pool_warm_up(self):
+        """🔧 FASE 2: Inicia el warm-up del pool de conexiones de forma asíncrona"""
+        try:
+            if not self._pool_warm_up_initiated:
+                self._pool_warm_up_initiated = True
+                
+                # Obtener todas las conexiones de base de datos del usuario
+                from app.models.database_model import DatabaseConnection
+                
+                try:
+                    # Obtener conexiones del usuario actual
+                    user_id = self.user.id if self.user else None
+                    if user_id:
+                        database_connections = self.db.query(DatabaseConnection).filter(
+                            DatabaseConnection.user_id == user_id
+                        ).all()
+                        
+                        if database_connections:
+                            logger.info(f"[ServiceFactory] 🔥 Iniciando warm-up del pool para {len(database_connections)} DBs...")
+                            
+                            # Obtener el database service y ejecutar warm-up
+                            database_service = self.get_database_service()
+                            if database_service and hasattr(database_service, 'connection_pool'):
+                                # Ejecutar warm-up en background
+                                import asyncio
+                                try:
+                                    loop = asyncio.get_event_loop()
+                                    if loop.is_running():
+                                        # Si el loop está corriendo, crear task
+                                        asyncio.create_task(
+                                            database_service.connection_pool.warm_up_pool(database_connections)
+                                        )
+                                    else:
+                                        # Si no está corriendo, ejecutar directamente
+                                        loop.run_until_complete(
+                                            database_service.connection_pool.warm_up_pool(database_connections)
+                                        )
+                                except RuntimeError:
+                                    # No hay event loop, crear uno nuevo
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    try:
+                                        loop.run_until_complete(
+                                            database_service.connection_pool.warm_up_pool(database_connections)
+                                        )
+                                    finally:
+                                        loop.close()
+                                        
+                                logger.info("[ServiceFactory] ✅ Warm-up del pool iniciado exitosamente")
+                            else:
+                                logger.warning("[ServiceFactory] ⚠️ No se pudo obtener database service para warm-up")
+                        else:
+                            logger.info("[ServiceFactory] ℹ️ No hay conexiones de BD para warm-up")
+                    else:
+                        logger.warning("[ServiceFactory] ⚠️ No hay usuario para warm-up del pool")
+                        
+                except Exception as e:
+                    logger.error(f"[ServiceFactory] ❌ Error obteniendo conexiones para warm-up: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error iniciando warm-up del pool: {e}")
+            # Continuar sin warm-up si falla
 
     @property
     def user(self) -> User:

@@ -30,6 +30,17 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - ✅ **Performance Mejorada**: 3-5x más rápido (1-3s vs 5-15s)
 - ✅ **Mantenibilidad**: Código 5x más simple y fácil de debuggear
 
+#### **🎯 Fase 8: Smart AI System (COMPLETADA)**
+- ✅ **SmartRephraseService**: Rephrase inteligente con mini-LLM y cache
+- ✅ **IntentRouterService**: Clasificación de intenciones y enrutamiento automático
+- ✅ **SmartAIOrchestrator**: Orquestador unificado que integra ambos servicios
+- ✅ **Cache Multi-nivel**: Memoria + Redis con TTL y fallback inteligente
+- ✅ **Batch Processing**: Procesamiento paralelo de múltiples consultas
+- ✅ **Sugerencias Inteligentes**: Basadas en similitud y confianza
+- ✅ **Integración con ExplorationGraph**: Nodo SmartAINode integrado en el flujo principal
+- ✅ **Enriquecimiento de Estado**: Estado enriquecido con resultados del Smart AI
+- ✅ **Workflow Inteligente**: Flujo optimizado con pre-procesamiento inteligente
+
 ---
 
 ## 🏗️ **Arquitectura Actual (v2.0)**
@@ -57,6 +68,9 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **🗄️ Cache Multi-nivel**: Memoria, disco y base de datos
 - **📊 LangSmith Integration**: Trazabilidad completa de LLM runs
 - **🚀 Performance**: 3-5x más rápido que la versión anterior
+- **🧠 Smart AI System**: Rephrase inteligente y clasificación de intenciones
+- **🎯 Intent Routing**: Enrutamiento automático basado en clasificación
+- **💾 Cache Inteligente**: Multi-nivel con Redis y fallback automático
 
 ### **🚀 Advanced Structured RAG Architecture:**
 - **🔍 Retrieval Inteligente**: Fast Schema Path + Vector Search + Lexical Index
@@ -64,6 +78,17 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **🤖 Generation Ejecutable**: No solo texto, sino SQL + Funciones + Acciones
 - **⚡ Performance Superior**: Cache inteligente con 95% hit ratio
 - **🛡️ Seguridad Integrada**: Guardrails en cada capa de la arquitectura
+
+### **🧠 Smart AI System Architecture:**
+- **🔄 SmartRephraseService**: Normalización inteligente de consultas con mini-LLM
+- **🎯 IntentRouterService**: Clasificación automática en 8 tipos de intenciones
+- **🚀 SmartAIOrchestrator**: Coordinación unificada de rephrase + clasificación
+- **💾 Cache Multi-nivel**: Memoria local + Redis persistente con TTL
+- **🔄 Batch Processing**: Procesamiento paralelo para múltiples consultas
+- **💡 Sugerencias Inteligentes**: Basadas en similitud semántica y confianza
+- **🧠 SmartAINode**: Nodo integrado en ExplorationGraph para pre-procesamiento inteligente
+- **📊 Estado Enriquecido**: Campos adicionales para resultados del Smart AI
+- **🔄 Workflow Optimizado**: Flujo con pre-procesamiento inteligente antes de la inferencia
 
 ### **Stack Tecnológico:**
 
@@ -78,6 +103,9 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **LangChain**: Framework de AI
 - **FAISS**: Vector search
 - **Tiktoken**: Tokenización
+- **SmartRephraseService**: Rephrase inteligente con mini-LLM
+- **IntentRouterService**: Clasificación de intenciones automática
+- **SmartAIOrchestrator**: Orquestador unificado de servicios AI
 
 #### **Performance:**
 - **ThreadPoolExecutor**: Async processing
@@ -165,6 +193,13 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **Mantenibilidad**: 4x mejorada
 - **Debugging**: 3x más simple
 
+### **🧠 Smart AI System (NUEVO):**
+- **Tiempo de Procesamiento**: ~70ms por consulta completa
+- **Cache Hit Rate**: Optimizado con normalización inteligente
+- **Clasificación de Intenciones**: 8 tipos con enrutamiento automático
+- **Batch Processing**: Paralelo para múltiples consultas
+- **Sugerencias Inteligentes**: Basadas en similitud semántica
+
 ### **⚡ Fast Schema Path:**
 - **Cache Hit**: <1ms (respuesta instantánea)
 - **Cache Miss + BD**: <100ms
@@ -176,6 +211,12 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **L2 (Disk)**: <10ms, TTL 24 horas  
 - **L3 (Database)**: <100ms, TTL 7 días
 - **Memory Usage**: 80% optimizado
+
+### **🧠 Smart AI Cache:**
+- **Rephrase Cache**: `rephrase_v{n}:{lang}:{domain}:{query_hash}`
+- **Intent Cache**: `intent:{query_hash}:{user_id}:{session_id}`
+- **TTL Configurable**: 24h para rephrase, 1h para intents
+- **Fallback Automático**: Memoria local si Redis no está disponible
 
 ### **📊 LangSmith Integration:**
 - **LLM Runs Tracking**: 100% trazabilidad
@@ -204,19 +245,29 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - Añadir más acciones especializadas
 ```
 
-### **3. Vector Search Integration (Semana 5-6)**
+### **3. Smart AI Integration (Semana 5-6)**
 ```python
-# Integrar búsqueda semántica con ReAct
+# Integrar sistema Smart AI con ExplorationGraph
+- Pre-procesamiento inteligente de consultas
+- Enrutamiento automático basado en intención
+- Cache inteligente con normalización
+- Sugerencias contextuales para usuarios
+```
+
+### **4. Vector Search Integration (Semana 7-8)**
+```python
+# Integrar búsqueda semántica con Smart AI
 - Vector search en esquemas de BD
 - Prompt engineering automático
 - Cache predictivo de consultas
 - Optimización semántica de contexto
 ```
 
-### **4. Performance Monitoring (Ongoing)**
+### **5. Performance Monitoring (Ongoing)**
 ```python
 # Monitoreo continuo
 - Métricas de ReAct (iteraciones, tiempo)
+- Smart AI performance (rephrase, intent classification)
 - Cache performance (hit/miss ratios)
 - LLM performance (tokens, latencia)
 - User experience metrics
@@ -232,6 +283,8 @@ APIchat es una plataforma avanzada de automatización que conecta APIs y permite
 - **[Resumen Ejecutivo RAG](docs/RAG_EXECUTIVE_SUMMARY.md)**: Resumen ejecutivo de la arquitectura RAG avanzada
 - **[Arquitectura y Roadmap](docs/ARCHITECTURE_ROADMAP.md)**: Roadmap futuro y evolución del sistema
 - **[Próximos Pasos Técnicos](docs/NEXT_STEPS_TECHNICAL.md)**: Guía detallada de implementación técnica
+- **[🧠 Smart AI System](docs/SMART_AI_SYSTEM.md)**: **NUEVO**: Documentación completa del sistema de rephrase inteligente y clasificación de intenciones
+- **[📋 Smart AI Executive Summary](docs/SMART_AI_EXECUTIVE_SUMMARY.md)**: **NUEVO**: Resumen ejecutivo del sistema Smart AI con métricas de negocio y roadmap
 - **[API Documentation](http://localhost:8000/docs)**: Documentación automática de la API
 
 ---
@@ -280,8 +333,11 @@ APIchat ha evolucionado de una aplicación básica a una **plataforma de clase m
 - ✅ **Cache Inteligente**: Fast Schema Path con respuestas <100ms
 - ✅ **Trazabilidad Completa**: LangSmith integration para observabilidad
 - ✅ **Arquitectura Híbrida**: ReAct + Grafos Especializados + Cache
+- ✅ **Smart AI System**: Rephrase inteligente y clasificación de intenciones
+- ✅ **Intent Routing**: Enrutamiento automático basado en clasificación
+- ✅ **Cache Multi-nivel**: Redis persistente con fallback automático
 
-La migración al **ReAct Orchestrator** ha transformado completamente el sistema, eliminando la complejidad innecesaria y manteniendo toda la funcionalidad. El roadmap futuro se enfoca en **optimizaciones de ReAct**, **integración de vector search** y **features avanzadas** para seguir siendo líder en el mercado.
+La migración al **ReAct Orchestrator** ha transformado completamente el sistema, eliminando la complejidad innecesaria y manteniendo toda la funcionalidad. El **Smart AI System** añade inteligencia adicional con rephrase automático y clasificación de intenciones. El roadmap futuro se enfoca en **integración del Smart AI**, **optimizaciones de ReAct**, **integración de vector search** y **features avanzadas** para seguir siendo líder en el mercado.
 
 **¡La migración está completada y el sistema es ahora más rápido, simple y mantenible que nunca!** 🚀
 

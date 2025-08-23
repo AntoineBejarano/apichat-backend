@@ -11,7 +11,8 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from uuid import uuid4
 
-from app.services.graphs.exploration_graph import ExplorationGraph, ExplorationState
+from app.services.execution.graphs.exploration_graph import ExplorationGraph
+from app.services.execution.graphs.state.exploration_state import ExplorationState
 from app.schemas.chat_schema import ChatMessage
 
 
