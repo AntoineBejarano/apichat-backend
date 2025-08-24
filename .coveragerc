@@ -1,0 +1,151 @@
+[run]
+# 🧪 CONFIGURACIÓN DE COVERAGE - SISTEMA EXPLORER/GUIDED
+
+# Archivos a incluir en coverage
+source = app
+
+# Archivos a excluir del coverage
+omit = 
+    */tests/*
+    */test_*
+    */__pycache__/*
+    */migrations/*
+    */venv/*
+    */env/*
+    */.env/*
+    */setup.py
+    */manage.py
+    */wsgi.py
+    */asgi.py
+    */celery.py
+    */__init__.py
+    */admin.py
+    */apps.py
+    */models.py
+    */views.py
+    */urls.py
+    */settings.py
+    */wsgi.py
+    */asgi.py
+    */celery.py
+    */__init__.py
+    */admin.py
+    */apps.py
+    */models.py
+    */views.py
+    */urls.py
+    */settings.py
+
+# Configuración de branch coverage
+branch = True
+
+# Configuración de source coverage
+source = app
+
+# Configuración de concurrency
+concurrency = multiprocessing
+
+[report]
+# Configuración de reportes
+
+# Excluir líneas específicas del coverage
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    if settings.DEBUG
+    raise AssertionError
+    raise NotImplementedError
+    if 0:
+    if __name__ == .__main__.:
+    class .*\bProtocol\):
+    @(abc\.)?abstractmethod
+
+# Mostrar líneas faltantes
+show_missing = True
+
+# Mostrar branches faltantes
+show_branches = True
+
+# Precisión de porcentajes
+precision = 2
+
+# Archivos de salida
+html_dir = htmlcov
+xml_output = coverage.xml
+
+# Configuración de filtros
+fail_under = 90
+
+[html]
+# Configuración del reporte HTML
+
+# Directorio de salida
+directory = htmlcov
+
+# Título del reporte
+title = Coverage Report - Sistema Explorer/Guided
+
+# Archivos a excluir del reporte
+exclude = 
+    */tests/*
+    */test_*
+    */__pycache__/*
+    */migrations/*
+    */venv/*
+    */env/*
+    */.env/*
+    */setup.py
+    */manage.py
+    */wsgi.py
+    */asgi.py
+    */celery.py
+    */__init__.py
+    */admin.py
+    */apps.py
+    */models.py
+    */views.py
+    */urls.py
+    */settings.py
+
+# Configuración de navegación
+extra_css = 
+extra_js = 
+
+# Configuración de filtros
+skip_covered = False
+skip_empty = False
+
+[xml]
+# Configuración del reporte XML
+
+# Archivo de salida
+output = coverage.xml
+
+# Configuración de filtros
+exclude = 
+    */tests/*
+    */test_*
+    */__pycache__/*
+    */migrations/*
+    */venv/*
+    */env/*
+    */.env/*
+    */setup.py
+    */manage.py
+    */wsgi.py
+    */asgi.py
+    */celery.py
+    */__init__.py
+    */admin.py
+    */apps.py
+    */models.py
+    */views.py
+    */urls.py
+    */settings.py
+
+# Configuración de formato
+format = xml
+
+# Configuración de filtros
+fail_under = 90

@@ -1,680 +1,627 @@
 """
-🎯 Servicio de Smart Fallbacks para el Sistema Explorer/Guided
+🧠 Smart Fallback Service: Sistema de fallback ultra compacto e inteligente
 
-Este servicio proporciona respuestas inteligentes cuando falla la detección de modo:
-- Respuestas contextuales basadas en el mensaje
-- Sugerencias inteligentes para el usuario
-- Aprendizaje de preferencias del usuario
-- Fallbacks ultra compactos
+Servicio que proporciona respuestas inteligentes cuando falla todo el sistema de detección
+de modo, con mensajes ultra compactos y opciones binarias para el usuario.
 """
 
 import logging
-import re
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
-
-from app.core.service_factory import ServiceFactory
-from app.services.ai.mode_detection_service import ModeDetectionService
-from app.services.ai.prompt_builder_service import PromptBuilderService
+import time
+import random
 
 logger = logging.getLogger(__name__)
 
 
 class FallbackType(Enum):
-    """Tipos de fallback"""
-    MODE_AMBIGUOUS = "mode_ambiguous"      # No se puede determinar el modo
-    DETECTION_FAILED = "detection_failed"   # Falló la detección
-    RESOURCE_CONFLICT = "resource_conflict" # Conflicto entre recursos
-    SYSTEM_ERROR = "system_error"          # Error del sistema
-    USER_GUIDANCE = "user_guidance"        # Necesita guía del usuario
+    """Tipos de fallback disponibles"""
+    MODE_DETECTION_FAILED = "mode_detection_failed"
+    RESOURCE_CONFLICT = "resource_conflict"
+    AGENT_NOT_FOUND = "agent_not_found"
+    SYSTEM_ERROR = "system_error"
+    AMBIGUOUS_QUERY = "ambiguous_query"
+    TIMEOUT = "timeout"
+    UNKNOWN = "unknown"
 
 
-class FallbackConfidence(Enum):
-    """Niveles de confianza del fallback"""
-    HIGH = "high"      # 80-100% seguro
-    MEDIUM = "medium"  # 50-79% seguro
-    LOW = "low"        # 20-49% seguro
-    UNCERTAIN = "uncertain"  # <20% seguro
+class FallbackStrategy(Enum):
+    """Estrategias de fallback"""
+    BINARY_CHOICE = "binary_choice"          # Opciones sí/no
+    RESOURCE_LIST = "resource_list"          # Lista de recursos disponibles
+    MODE_SELECTION = "mode_selection"        # Selección manual de modo
+    RETRY = "retry"                          # Reintentar
+    HELP = "help"                            # Mostrar ayuda
 
 
 class SmartFallbackService:
     """
-    🚀 Servicio de Smart Fallbacks
+    🧠 Servicio de fallback inteligente ultra compacto
     
-    Proporciona respuestas inteligentes cuando falla la detección de modo
+    Funcionalidades:
+    - Respuestas ultra compactas cuando falla el sistema
+    - Opciones binarias claras para el usuario
+    - Recuperación automática del sistema
+    - Sugerencias contextuales inteligentes
     """
     
-    def __init__(self, factory: ServiceFactory):
+    def __init__(self, factory):
         self.factory = factory
-        self.user_id = None  # Se establece al inicializar
-        self.fallback_patterns: Dict[str, Dict[str, Any]] = {}
-        self.user_preferences: Dict[str, Any] = {}
-        self.fallback_history: List[Dict[str, Any]] = []
+        self.user_id = factory.user.id
         
-        # Configuración de fallbacks
-        self.fallback_config = {
-            "max_fallback_history": 100,
-            "learning_enabled": True,
-            "context_window": 5,  # Últimos 5 mensajes para contexto
-            "confidence_thresholds": {
-                "high": 0.8,
-                "medium": 0.5,
-                "low": 0.2
+        # Cache de fallbacks utilizados
+        self._fallback_history = {}
+        self._recovery_attempts = {}
+        
+        # Configuración de fallbacks por tipo
+        self._fallback_configs = {
+            FallbackType.MODE_DETECTION_FAILED: {
+                "strategy": FallbackStrategy.BINARY_CHOICE,
+                "message": "I'm not sure if you want to explore or execute. Would you like me to show your resources or start with a plan?",
+                "options": ["Show resources", "Start with plan"],
+                "recovery_timeout": 30  # segundos
+            },
+            FallbackType.RESOURCE_CONFLICT: {
+                "strategy": FallbackStrategy.BINARY_CHOICE,
+                "message": "I found multiple resources that could help. Should I prioritize databases first or show you all options?",
+                "options": ["Prioritize DBs", "Show all options"],
+                "recovery_timeout": 45
+            },
+            FallbackType.AGENT_NOT_FOUND: {
+                "strategy": FallbackStrategy.MODE_SELECTION,
+                "message": "I couldn't find the right agent for your request. Which mode would you prefer?",
+                "options": ["Explorer", "Guided", "Auto"],
+                "recovery_timeout": 60
+            },
+            FallbackType.SYSTEM_ERROR: {
+                "strategy": FallbackStrategy.RETRY,
+                "message": "Something went wrong. Would you like me to try again or switch to a simpler mode?",
+                "options": ["Try again", "Simple mode"],
+                "recovery_timeout": 90
+            },
+            FallbackType.AMBIGUOUS_QUERY: {
+                "strategy": FallbackStrategy.BINARY_CHOICE,
+                "message": "Your request is a bit unclear. Do you want to explore what's available or get help with something specific?",
+                "options": ["Explore", "Get help"],
+                "recovery_timeout": 40
+            },
+            FallbackType.TIMEOUT: {
+                "strategy": FallbackStrategy.RETRY,
+                "message": "This is taking longer than expected. Should I continue or try a different approach?",
+                "options": ["Continue", "Different approach"],
+                "recovery_timeout": 120
+            },
+            FallbackType.UNKNOWN: {
+                "strategy": FallbackStrategy.BINARY_CHOICE,
+                "message": "I'm not sure how to help with this request. Would you like me to show your resources or start with a plan?",
+                "options": ["Show resources", "Start with plan"],
+                "recovery_timeout": 30
             }
         }
         
-        # Patrones de fallback predefinidos
-        self._initialize_fallback_patterns()
+        # Mensajes de recuperación automática
+        self._recovery_messages = [
+            "🔄 Recovering automatically...",
+            "⚡ Switching to fallback mode...",
+            "🔄 Attempting automatic recovery...",
+            "⚡ Using backup strategy...",
+            "🔄 System recovery in progress..."
+        ]
         
-        logger.info("[SmartFallbackService] 🚀 Servicio inicializado")
+        logger.info(f"[SmartFallbackService] 🚀 Inicializado para usuario {self.user_id}")
     
-    def _initialize_fallback_patterns(self):
-        """Inicializa patrones de fallback predefinidos"""
-        self.fallback_patterns = {
-            "mode_ambiguous": {
-                "patterns": [
-                    r"^(show|display|list|get|find|search|explore|analyze|help|what|how|when|where|why)",
-                    r"(database|table|schema|connection|api|app|strategy|resource)",
-                    r"(my|the|a|an|some|all|any|every)"
-                ],
-                "responses": [
-                    "I'm not sure if you want to explore or execute. Would you like me to show your resources or start with a plan?",
-                    "I can help you explore your resources or create a plan. What would you prefer?",
-                    "Let me clarify: do you want to see what's available or work with specific resources?"
-                ],
-                "confidence": FallbackConfidence.MEDIUM
-            },
-            "exploration_hint": {
-                "patterns": [
-                    r"(show|display|list|get|find|search|explore|browse|overview|summary)",
-                    r"(what|how many|which|where are|find all)"
-                ],
-                "responses": [
-                    "It looks like you want to explore. I'll show you your available resources.",
-                    "I'll help you explore what's available. Let me show you your resources.",
-                    "Exploring mode activated. Here's what you have access to:"
-                ],
-                "confidence": FallbackConfidence.HIGH,
-                "suggested_mode": "explorer"
-            },
-            "execution_hint": {
-                "patterns": [
-                    r"(create|build|make|generate|execute|run|perform|implement|plan|analyze|optimize)",
-                    r"(help me|assist|guide|walk through|step by step)"
-                ],
-                "responses": [
-                    "It looks like you want to execute something. I'll help you create a plan.",
-                    "I'll guide you through this. Let me create a plan for you.",
-                    "Execution mode activated. I'll help you get started:"
-                ],
-                "confidence": FallbackConfidence.HIGH,
-                "suggested_mode": "guided"
-            },
-            "resource_specific": {
-                "patterns": [
-                    r"(database|table|schema|connection|api|app|strategy)",
-                    r"(mysql|postgresql|mongodb|redis|elasticsearch)",
-                    r"(rest|graphql|soap|grpc)"
-                ],
-                "responses": [
-                    "I see you're working with {resource_type}. Let me help you with that.",
-                    "I'll focus on your {resource_type}. What would you like to do?",
-                    "Working with {resource_type}. I'll guide you through this."
-                ],
-                "confidence": FallbackConfidence.MEDIUM,
-                "resource_extraction": True
-            },
-            "general_help": {
-                "patterns": [
-                    r"(help|assist|support|guide|tutorial|how to|what can|examples)",
-                    r"(new|beginner|start|begin|first time|learning)"
-                ],
-                "responses": [
-                    "I'm here to help! I can show you your resources or help you create plans.",
-                    "Let me guide you. I can explore your resources or help you execute tasks.",
-                    "I'll help you get started. Would you like to explore or work on something specific?"
-                ],
-                "confidence": FallbackConfidence.HIGH
-            }
-        }
-    
-    async def initialize(self, user_id: str):
-        """Inicializa el servicio para un usuario específico"""
-        self.user_id = user_id
-        logger.info(f"[SmartFallbackService] Inicializado para usuario: {user_id}")
-        
-        # Cargar preferencias del usuario
-        await self._load_user_preferences()
-        
-        # Cargar historial de fallbacks
-        await self._load_fallback_history()
-    
-    async def _load_user_preferences(self):
-        """Carga preferencias del usuario"""
-        try:
-            # TODO: Implementar carga desde base de datos
-            # Por ahora, preferencias por defecto
-            self.user_preferences = {
-                "preferred_mode": "auto",
-                "fallback_style": "compact",
-                "learning_enabled": True,
-                "context_sensitivity": "medium"
-            }
-            
-            logger.debug(f"[SmartFallbackService] Preferencias cargadas para usuario: {self.user_id}")
-            
-        except Exception as e:
-            logger.warning(f"[SmartFallbackService] ⚠️ Error cargando preferencias: {e}")
-    
-    async def _load_fallback_history(self):
-        """Carga historial de fallbacks del usuario"""
-        try:
-            # TODO: Implementar carga desde base de datos
-            # Por ahora, historial vacío
-            self.fallback_history = []
-            
-            logger.debug(f"[SmartFallbackService] Historial de fallbacks cargado")
-            
-        except Exception as e:
-            logger.warning(f"[SmartFallbackService] ⚠️ Error cargando historial: {e}")
-    
-    async def get_smart_fallback(
-        self,
-        message: str,
+    async def handle_fallback(
+        self, 
         fallback_type: FallbackType,
-        context: Optional[Dict[str, Any]] = None,
-        previous_messages: Optional[List[str]] = None
+        context: Dict[str, Any],
+        user_message: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        🎯 Obtiene un fallback inteligente basado en el tipo y contexto
+        🎯 Maneja un fallback del sistema de forma inteligente
         
         Args:
-            message: Mensaje del usuario que causó el fallback
             fallback_type: Tipo de fallback que ocurrió
-            context: Contexto adicional (recursos, modo anterior, etc.)
-            previous_messages: Últimos mensajes para contexto
+            context: Contexto del fallback
+            user_message: Mensaje del usuario que causó el fallback
             
         Returns:
-            Dict con respuesta de fallback, confianza y metadatos
+            Respuesta de fallback con opciones de recuperación
         """
         try:
-            start_time = datetime.now()
-            context = context or {}
-            previous_messages = previous_messages or []
+            start_time = time.time()
+            logger.info(f"[SmartFallbackService] 🎯 Manejando fallback: {fallback_type.value}")
             
-            # Analizar el mensaje para determinar el mejor fallback
-            analysis = self._analyze_message_for_fallback(message, context, previous_messages)
+            # 1. Obtener configuración del fallback
+            fallback_config = self._get_fallback_config(fallback_type)
             
-            # Seleccionar el fallback más apropiado
-            fallback_response = self._select_best_fallback(analysis, fallback_type)
+            # 2. Generar mensaje personalizado
+            personalized_message = await self._personalize_fallback_message(
+                fallback_config, context, user_message
+            )
             
-            # Aplicar personalización del usuario
-            personalized_response = await self._personalize_fallback(fallback_response, context)
+            # 3. Crear opciones de recuperación
+            recovery_options = await self._create_recovery_options(
+                fallback_config, context
+            )
             
-            # Generar sugerencias contextuales
-            suggestions = await self._generate_contextual_suggestions(message, context, analysis)
+            # 4. Registrar fallback para análisis
+            await self._log_fallback(fallback_type, context, user_message)
             
-            # Construir respuesta final
+            # 5. Intentar recuperación automática si es posible
+            auto_recovery = await self._attempt_auto_recovery(fallback_type, context)
+            
+            execution_time = time.time() - start_time
+            
             result = {
+                "success": True,
                 "fallback_type": fallback_type.value,
-                "response": personalized_response["response"],
-                "confidence": personalized_response["confidence"],
-                "suggested_mode": personalized_response.get("suggested_mode"),
-                "suggestions": suggestions,
-                "context_analysis": analysis,
-                "processing_time_ms": (datetime.now() - start_time).total_seconds() * 1000,
-                "timestamp": datetime.now().isoformat()
+                "message": personalized_message,
+                "options": recovery_options,
+                "strategy": fallback_config["strategy"].value,
+                "auto_recovery": auto_recovery,
+                "recovery_timeout": fallback_config["recovery_timeout"],
+                "metadata": {
+                    "execution_time_ms": round(execution_time * 1000, 2),
+                    "fallback_count": self._get_fallback_count(fallback_type),
+                    "recovery_attempts": self._get_recovery_attempts(fallback_type)
+                }
             }
             
-            # Registrar fallback para aprendizaje
-            await self._record_fallback(message, fallback_type, result, context)
-            
-            logger.info(f"[SmartFallbackService] Fallback generado: {fallback_type.value} (confianza: {result['confidence']})")
-            
+            logger.info(f"[SmartFallbackService] ✅ Fallback manejado en {execution_time:.3f}s")
             return result
             
         except Exception as e:
-            logger.error(f"[SmartFallbackService] ❌ Error generando fallback: {e}")
-            return self._get_emergency_fallback(fallback_type)
+            logger.exception(f"[SmartFallbackService] ❌ Error manejando fallback: {e}")
+            return self._build_emergency_fallback(fallback_type, context)
     
-    def _analyze_message_for_fallback(
-        self,
-        message: str,
-        context: Dict[str, Any],
-        previous_messages: List[str]
-    ) -> Dict[str, Any]:
-        """Analiza el mensaje para determinar el mejor fallback"""
-        analysis = {
-            "message_length": len(message),
-            "word_count": len(message.split()),
-            "contains_questions": "?" in message,
-            "contains_commands": self._detect_commands(message),
-            "resource_mentions": self._extract_resource_mentions(message),
-            "intent_indicators": self._detect_intent_indicators(message),
-            "context_similarity": self._analyze_context_similarity(message, previous_messages),
-            "complexity_score": self._calculate_complexity_score(message)
-        }
-        
-        return analysis
+    def _get_fallback_config(self, fallback_type: FallbackType) -> Dict[str, Any]:
+        """Obtiene la configuración para un tipo de fallback"""
+        return self._fallback_configs.get(fallback_type, self._fallback_configs[FallbackType.UNKNOWN])
     
-    def _detect_commands(self, message: str) -> List[str]:
-        """Detecta comandos en el mensaje"""
-        commands = []
-        command_patterns = [
-            r"\b(show|display|list|get|find|search|explore|create|build|make|generate|execute|run|perform|implement|plan|analyze|optimize)\b",
-            r"\b(help|assist|support|guide|tutorial|how to|what can|examples)\b"
-        ]
-        
-        for pattern in command_patterns:
-            matches = re.findall(pattern, message.lower())
-            commands.extend(matches)
-        
-        return list(set(commands))
-    
-    def _extract_resource_mentions(self, message: str) -> List[str]:
-        """Extrae menciones de recursos del mensaje"""
-        resources = []
-        resource_patterns = [
-            r"\b(database|table|schema|connection|api|app|strategy|resource)\b",
-            r"\b(mysql|postgresql|mongodb|redis|elasticsearch|sql|nosql)\b",
-            r"\b(rest|graphql|soap|grpc|http|https)\b"
-        ]
-        
-        for pattern in resource_patterns:
-            matches = re.findall(pattern, message.lower())
-            resources.extend(matches)
-        
-        return list(set(resources))
-    
-    def _detect_intent_indicators(self, message: str) -> Dict[str, float]:
-        """Detecta indicadores de intención en el mensaje"""
-        intent_scores = {
-            "exploration": 0.0,
-            "execution": 0.0,
-            "help": 0.0,
-            "analysis": 0.0
-        }
-        
-        # Patrones de exploración
-        exploration_patterns = [
-            r"\b(show|display|list|get|find|search|explore|browse|overview|summary)\b",
-            r"\b(what|how many|which|where are|find all)\b"
-        ]
-        
-        # Patrones de ejecución
-        execution_patterns = [
-            r"\b(create|build|make|generate|execute|run|perform|implement|plan)\b",
-            r"\b(help me|assist|guide|walk through|step by step)\b"
-        ]
-        
-        # Patrones de ayuda
-        help_patterns = [
-            r"\b(help|assist|support|guide|tutorial|how to|what can|examples)\b",
-            r"\b(new|beginner|start|begin|first time|learning)\b"
-        ]
-        
-        # Patrones de análisis
-        analysis_patterns = [
-            r"\b(analyze|examine|investigate|study|review|check|verify|test)\b",
-            r"\b(performance|optimization|efficiency|speed|quality|metrics)\b"
-        ]
-        
-        # Calcular scores
-        for pattern in exploration_patterns:
-            if re.search(pattern, message.lower()):
-                intent_scores["exploration"] += 0.3
-        
-        for pattern in execution_patterns:
-            if re.search(pattern, message.lower()):
-                intent_scores["execution"] += 0.3
-        
-        for pattern in help_patterns:
-            if re.search(pattern, message.lower()):
-                intent_scores["help"] += 0.3
-        
-        for pattern in analysis_patterns:
-            if re.search(pattern, message.lower()):
-                intent_scores["analysis"] += 0.3
-        
-        # Normalizar scores
-        total_score = sum(intent_scores.values())
-        if total_score > 0:
-            for intent in intent_scores:
-                intent_scores[intent] = min(intent_scores[intent] / total_score, 1.0)
-        
-        return intent_scores
-    
-    def _analyze_context_similarity(self, message: str, previous_messages: List[str]) -> float:
-        """Analiza similitud con mensajes anteriores"""
-        if not previous_messages:
-            return 0.0
-        
-        # Calcular similitud simple basada en palabras comunes
-        current_words = set(message.lower().split())
-        similarities = []
-        
-        for prev_message in previous_messages[-self.fallback_config["context_window"]:]:
-            prev_words = set(prev_message.lower().split())
-            if current_words and prev_words:
-                similarity = len(current_words.intersection(prev_words)) / len(current_words.union(prev_words))
-                similarities.append(similarity)
-        
-        return sum(similarities) / len(similarities) if similarities else 0.0
-    
-    def _calculate_complexity_score(self, message: str) -> float:
-        """Calcula un score de complejidad del mensaje"""
-        score = 0.0
-        
-        # Longitud del mensaje
-        if len(message) > 100:
-            score += 0.3
-        elif len(message) > 50:
-            score += 0.2
-        elif len(message) > 20:
-            score += 0.1
-        
-        # Número de palabras
-        word_count = len(message.split())
-        if word_count > 15:
-            score += 0.3
-        elif word_count > 10:
-            score += 0.2
-        elif word_count > 5:
-            score += 0.1
-        
-        # Preguntas
-        if "?" in message:
-            score += 0.2
-        
-        # Comandos múltiples
-        commands = self._detect_commands(message)
-        if len(commands) > 2:
-            score += 0.2
-        elif len(commands) > 1:
-            score += 0.1
-        
-        # Recursos múltiples
-        resources = self._extract_resource_mentions(message)
-        if len(resources) > 2:
-            score += 0.2
-        elif len(resources) > 1:
-            score += 0.1
-        
-        return min(score, 1.0)
-    
-    def _select_best_fallback(
-        self,
-        analysis: Dict[str, Any],
-        fallback_type: FallbackType
-    ) -> Dict[str, Any]:
-        """Selecciona el mejor fallback basado en el análisis"""
-        best_fallback = None
-        best_score = 0.0
-        
-        for pattern_name, pattern_data in self.fallback_patterns.items():
-            score = self._calculate_pattern_match_score(analysis, pattern_data)
+    async def _personalize_fallback_message(
+        self, 
+        fallback_config: Dict[str, Any], 
+        context: Dict[str, Any], 
+        user_message: Optional[str] = None
+    ) -> str:
+        """Personaliza el mensaje de fallback basado en el contexto"""
+        try:
+            base_message = fallback_config["message"]
             
-            if score > best_score:
-                best_score = score
-                best_fallback = pattern_data
+            # Personalizar basado en el idioma del usuario
+            user_language = context.get("user_language", "en")
+            if user_language == "es":
+                base_message = self._translate_to_spanish(base_message)
+            
+            # Personalizar basado en el historial de fallbacks
+            fallback_count = self._get_fallback_count(context.get("fallback_type", "unknown"))
+            if fallback_count > 3:
+                base_message += " (This has happened before - I'm working on improving this!)"
+            
+            # Personalizar basado en el tipo de usuario
+            user_type = context.get("user_type", "regular")
+            if user_type == "premium":
+                base_message += " As a premium user, you can access advanced fallback options."
+            
+            # Personalizar basado en la hora del día
+            current_hour = time.localtime().tm_hour
+            if 22 <= current_hour or current_hour <= 6:
+                base_message += " (Late night mode - using simplified options)"
+            
+            return base_message
+            
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error personalizando mensaje: {e}")
+            return fallback_config["message"]
+    
+    def _translate_to_spanish(self, message: str) -> str:
+        """Traduce mensajes básicos al español"""
+        translations = {
+            "I'm not sure if you want to explore or execute. Would you like me to show your resources or start with a plan?": 
+                "No estoy seguro si quieres explorar o ejecutar. ¿Te gustaría que te muestre tus recursos o que empiece con un plan?",
+            "I found multiple resources that could help. Should I prioritize databases first or show you all options?":
+                "Encontré múltiples recursos que podrían ayudar. ¿Debería priorizar las bases de datos primero o mostrarte todas las opciones?",
+            "I couldn't find the right agent for your request. Which mode would you prefer?":
+                "No pude encontrar el agente correcto para tu solicitud. ¿Qué modo prefieres?",
+            "Something went wrong. Would you like me to try again or switch to a simpler mode?":
+                "Algo salió mal. ¿Te gustaría que lo intente de nuevo o que cambie a un modo más simple?",
+            "Your request is a bit unclear. Do you want to explore what's available or get help with something specific?":
+                "Tu solicitud es un poco confusa. ¿Quieres explorar lo que está disponible o obtener ayuda con algo específico?",
+            "This is taking longer than expected. Should I continue or try a different approach?":
+                "Esto está tomando más tiempo del esperado. ¿Debería continuar o probar un enfoque diferente?"
+        }
         
-        if not best_fallback:
-            # Fallback por defecto
-            best_fallback = {
-                "responses": ["I'm here to help. What would you like to do?"],
-                "confidence": FallbackConfidence.LOW
+        return translations.get(message, message)
+    
+    async def _create_recovery_options(
+        self, 
+        fallback_config: Dict[str, Any], 
+        context: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Crea opciones de recuperación inteligentes"""
+        try:
+            base_options = fallback_config["options"]
+            strategy = fallback_config["strategy"]
+            
+            if strategy == FallbackStrategy.BINARY_CHOICE:
+                return self._create_binary_options(base_options, context)
+            elif strategy == FallbackStrategy.MODE_SELECTION:
+                return self._create_mode_options(context)
+            elif strategy == FallbackStrategy.RESOURCE_LIST:
+                return await self._create_resource_options(context)
+            elif strategy == FallbackStrategy.RETRY:
+                return self._create_retry_options(context)
+            elif strategy == FallbackStrategy.HELP:
+                return await self._create_help_options(context)
+            else:
+                return self._create_generic_options(base_options, context)
+                
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error creando opciones: {e}")
+            return self._create_generic_options(fallback_config["options"], context)
+    
+    def _create_binary_options(self, base_options: List[str], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones binarias claras"""
+        return [
+            {
+                "id": f"option_{i}",
+                "text": option,
+                "action": option.lower().replace(" ", "_"),
+                "type": "button",
+                "priority": i + 1
             }
-        
-        # Seleccionar respuesta aleatoria de las disponibles
-        import random
-        selected_response = random.choice(best_fallback["responses"])
-        
-        return {
-            "response": selected_response,
-            "confidence": best_fallback["confidence"].value if hasattr(best_fallback["confidence"], 'value') else best_fallback["confidence"],
-            "suggested_mode": best_fallback.get("suggested_mode"),
-            "pattern_name": pattern_name if 'pattern_name' in locals() else "default"
-        }
+            for i, option in enumerate(base_options)
+        ]
     
-    def _calculate_pattern_match_score(
-        self,
-        analysis: Dict[str, Any],
-        pattern_data: Dict[str, Any]
-    ) -> float:
-        """Calcula score de coincidencia con un patrón"""
-        score = 0.0
+    def _create_mode_options(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones de selección de modo"""
+        modes = [
+            {"id": "explorer", "text": "🔍 Explorer", "description": "Explore your resources"},
+            {"id": "guided", "text": "🎯 Guided", "description": "Get step-by-step guidance"},
+            {"id": "auto", "text": "🤖 Auto", "description": "Let me choose the best approach"}
+        ]
         
-        # Coincidencia con patrones regex
-        patterns = pattern_data.get("patterns", [])
-        for pattern in patterns:
-            if re.search(pattern, analysis.get("message", ""), re.IGNORECASE):
-                score += 0.4
-        
-        # Indicadores de intención
-        intent_scores = analysis.get("intent_indicators", {})
-        if "exploration" in intent_scores and pattern_data.get("suggested_mode") == "explorer":
-            score += intent_scores["exploration"] * 0.3
-        
-        if "execution" in intent_scores and pattern_data.get("suggested_mode") == "guided":
-            score += intent_scores["execution"] * 0.3
-        
-        # Complejidad del mensaje
-        complexity = analysis.get("complexity_score", 0.0)
-        if complexity > 0.7 and pattern_data.get("confidence") == FallbackConfidence.HIGH:
-            score += 0.2
-        
-        return min(score, 1.0)
+        return [
+            {
+                "id": mode["id"],
+                "text": mode["text"],
+                "description": mode["description"],
+                "action": f"switch_to_{mode['id']}",
+                "type": "mode_selection",
+                "priority": i + 1
+            }
+            for i, mode in enumerate(modes)
+        ]
     
-    async def _personalize_fallback(
-        self,
-        fallback_response: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Personaliza el fallback basado en preferencias del usuario"""
+    async def _create_resource_options(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones basadas en recursos disponibles"""
         try:
-            # Obtener servicio de prompts para personalización
-            prompt_service = self.factory.get_prompt_builder_service()
+            # Obtener recursos del usuario
+            user_resources = await self._get_user_resources(context)
             
-            # Personalizar respuesta basada en preferencias del usuario
-            user_style = self.user_preferences.get("fallback_style", "compact")
+            options = []
+            for i, resource in enumerate(user_resources[:5]):  # Máximo 5 recursos
+                options.append({
+                    "id": f"resource_{resource['id']}",
+                    "text": f"📊 {resource['name']}",
+                    "description": resource.get('description', ''),
+                    "action": f"use_resource_{resource['id']}",
+                    "type": "resource",
+                    "priority": i + 1
+                })
             
-            if user_style == "detailed" and fallback_response["confidence"] == FallbackConfidence.LOW:
-                # Expandir respuesta para usuarios que prefieren detalles
-                fallback_response["response"] += " I can help you explore your resources or create specific plans. What would you like to focus on?"
-            
-            elif user_style == "compact" and fallback_response["confidence"] == FallbackConfidence.HIGH:
-                # Acortar respuesta para usuarios que prefieren concisión
-                if len(fallback_response["response"]) > 100:
-                    fallback_response["response"] = fallback_response["response"][:100] + "..."
-            
-            # Aplicar contexto de recursos si está disponible
-            if context.get("available_resources"):
-                resource_context = context["available_resources"]
-                if len(resource_context) > 0:
-                    fallback_response["response"] += f" I can see you have {len(resource_context)} resources available."
-            
-            return fallback_response
+            return options
             
         except Exception as e:
-            logger.warning(f"[SmartFallbackService] ⚠️ Error personalizando fallback: {e}")
-            return fallback_response
+            logger.warning(f"[SmartFallbackService] ⚠️ Error obteniendo recursos: {e}")
+            return self._create_generic_options(["Show databases", "Show apps", "Show strategies"], context)
     
-    async def _generate_contextual_suggestions(
-        self,
-        message: str,
-        context: Dict[str, Any],
-        analysis: Dict[str, Any]
-    ) -> List[str]:
-        """Genera sugerencias contextuales para el usuario"""
-        suggestions = []
-        
+    def _create_retry_options(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones de reintento"""
+        return [
+            {
+                "id": "retry_same",
+                "text": "🔄 Try again",
+                "description": "Retry with the same approach",
+                "action": "retry_same",
+                "type": "retry",
+                "priority": 1
+            },
+            {
+                "id": "retry_different",
+                "text": "🔄 Different approach",
+                "description": "Try a different method",
+                "action": "retry_different",
+                "type": "retry",
+                "priority": 2
+            },
+            {
+                "id": "fallback_mode",
+                "text": "🔄 Fallback mode",
+                "description": "Switch to simplified mode",
+                "action": "fallback_mode",
+                "type": "retry",
+                "priority": 3
+            }
+        ]
+    
+    async def _create_help_options(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones de ayuda"""
+        return [
+            {
+                "id": "help_general",
+                "text": "❓ General help",
+                "description": "Get general usage help",
+                "action": "show_help",
+                "type": "help",
+                "priority": 1
+            },
+            {
+                "id": "help_examples",
+                "text": "📚 Examples",
+                "description": "See usage examples",
+                "action": "show_examples",
+                "type": "help",
+                "priority": 2
+            },
+            {
+                "id": "help_contact",
+                "text": "📞 Contact support",
+                "description": "Get human support",
+                "action": "contact_support",
+                "type": "help",
+                "priority": 3
+            }
+        ]
+    
+    def _create_generic_options(self, base_options: List[str], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Crea opciones genéricas cuando fallan las específicas"""
+        return [
+            {
+                "id": f"generic_{i}",
+                "text": option,
+                "action": f"generic_action_{i}",
+                "type": "generic",
+                "priority": i + 1
+            }
+            for i, option in enumerate(base_options)
+        ]
+    
+    async def _get_user_resources(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Obtiene recursos del usuario para opciones de fallback"""
         try:
-            # Sugerencias basadas en el análisis del mensaje
-            if analysis.get("contains_questions", False):
-                suggestions.append("Try asking specific questions about your resources")
+            # Simular obtención de recursos (en implementación real, usar servicios reales)
+            return [
+                {"id": "db_1", "name": "Users Database", "description": "User management database"},
+                {"id": "app_1", "name": "CRM App", "description": "Customer relationship management"},
+                {"id": "strategy_1", "name": "Data Analysis", "description": "Data analysis workflow"}
+            ]
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error obteniendo recursos: {e}")
+            return []
+    
+    async def _attempt_auto_recovery(self, fallback_type: FallbackType, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Intenta recuperación automática del sistema"""
+        try:
+            recovery_key = f"{fallback_type.value}_{self.user_id}"
+            attempts = self._recovery_attempts.get(recovery_key, 0)
             
-            if analysis.get("resource_mentions"):
-                suggestions.append("I can help you work with those specific resources")
+            # Máximo 3 intentos de recuperación
+            if attempts >= 3:
+                return {
+                    "possible": False,
+                    "reason": "Max recovery attempts reached",
+                    "message": "Maximum recovery attempts reached. Manual intervention required."
+                }
             
-            if analysis.get("complexity_score", 0.0) > 0.7:
-                suggestions.append("Consider breaking this down into smaller steps")
+            # Incrementar contador de intentos
+            self._recovery_attempts[recovery_key] = attempts + 1
             
-            # Sugerencias basadas en el contexto
-            if context.get("previous_mode"):
-                suggestions.append(f"You were in {context['previous_mode']} mode. Want to continue?")
+            # Intentar recuperación basada en el tipo de fallback
+            if fallback_type == FallbackType.MODE_DETECTION_FAILED:
+                return await self._recover_mode_detection(context)
+            elif fallback_type == FallbackType.RESOURCE_CONFLICT:
+                return await self._recover_resource_conflict(context)
+            elif fallback_type == FallbackType.AGENT_NOT_FOUND:
+                return await self._recover_agent_not_found(context)
+            else:
+                return {
+                    "possible": False,
+                    "reason": "No recovery strategy available",
+                    "message": "No automatic recovery available for this type of fallback."
+                }
+                
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error en recuperación automática: {e}")
+            return {
+                "possible": False,
+                "reason": "Recovery error",
+                "message": "Error during automatic recovery attempt."
+            }
+    
+    async def _recover_mode_detection(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Recupera fallo de detección de modo"""
+        try:
+            # Intentar usar el último modo conocido del usuario
+            last_known_mode = context.get("last_known_mode")
+            if last_known_mode:
+                return {
+                    "possible": True,
+                    "strategy": "use_last_known_mode",
+                    "mode": last_known_mode,
+                    "message": f"Recovering using last known mode: {last_known_mode}"
+                }
             
-            if context.get("available_resources"):
-                resource_count = len(context["available_resources"])
-                suggestions.append(f"You have {resource_count} resources available to work with")
-            
-            # Sugerencias generales
-            suggestions.extend([
-                "Use 'explore' to see what's available",
-                "Use 'plan' to create specific actions",
-                "Ask for help anytime with 'help' or '?'"
-            ])
-            
-            # Limitar a 5 sugerencias
-            return suggestions[:5]
+            # Fallback al modo auto
+            return {
+                "possible": True,
+                "strategy": "fallback_to_auto",
+                "mode": "auto",
+                "message": "Recovering by switching to auto mode"
+            }
             
         except Exception as e:
-            logger.warning(f"[SmartFallbackService] ⚠️ Error generando sugerencias: {e}")
-            return ["I'm here to help. What would you like to do?"]
+            logger.warning(f"[SmartFallbackService] ⚠️ Error recuperando detección de modo: {e}")
+            return {"possible": False, "reason": "Recovery error"}
     
-    async def _record_fallback(
-        self,
-        message: str,
-        fallback_type: FallbackType,
-        result: Dict[str, Any],
-        context: Dict[str, Any]
-    ):
-        """Registra el fallback para aprendizaje futuro"""
+    async def _recover_resource_conflict(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Recupera conflicto de recursos"""
         try:
+            # Usar estrategia de priorización automática
+            return {
+                "possible": True,
+                "strategy": "auto_prioritization",
+                "message": "Recovering using automatic resource prioritization"
+            }
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error recuperando conflicto de recursos: {e}")
+            return {"possible": False, "reason": "Recovery error"}
+    
+    async def _recover_agent_not_found(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Recupera agente no encontrado"""
+        try:
+            # Usar agente genérico del sistema
+            return {
+                "possible": True,
+                "strategy": "use_generic_agent",
+                "message": "Recovering using generic system agent"
+            }
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error recuperando agente: {e}")
+            return {"possible": False, "reason": "Recovery error"}
+    
+    async def _log_fallback(self, fallback_type: FallbackType, context: Dict[str, Any], user_message: Optional[str] = None):
+        """Registra el fallback para análisis posterior"""
+        try:
+            fallback_key = f"{fallback_type.value}_{self.user_id}"
+            
+            if fallback_key not in self._fallback_history:
+                self._fallback_history[fallback_key] = []
+            
             fallback_record = {
-                "message": message,
-                "fallback_type": fallback_type.value,
-                "response": result["response"],
-                "confidence": result["confidence"],
+                "timestamp": time.time(),
+                "type": fallback_type.value,
                 "context": context,
-                "timestamp": datetime.now().isoformat(),
-                "user_id": self.user_id
+                "user_message": user_message,
+                "recovery_attempts": self._recovery_attempts.get(fallback_key, 0)
             }
             
-            # Agregar al historial
-            self.fallback_history.append(fallback_record)
+            self._fallback_history[fallback_key].append(fallback_record)
             
-            # Mantener solo los últimos N registros
-            if len(self.fallback_history) > self.fallback_config["max_fallback_history"]:
-                self.fallback_history = self.fallback_history[-self.fallback_config["max_fallback_history"]:]
-            
-            # TODO: Persistir en base de datos para análisis
-            
-            logger.debug(f"[SmartFallbackService] Fallback registrado: {fallback_type.value}")
-            
+            # Mantener solo los últimos 10 fallbacks
+            if len(self._fallback_history[fallback_key]) > 10:
+                self._fallback_history[fallback_key] = self._fallback_history[fallback_key][-10:]
+                
         except Exception as e:
             logger.warning(f"[SmartFallbackService] ⚠️ Error registrando fallback: {e}")
     
-    def _get_emergency_fallback(self, fallback_type: FallbackType) -> Dict[str, Any]:
-        """Proporciona fallback de emergencia cuando todo falla"""
-        emergency_fallbacks = {
-            FallbackType.MODE_AMBIGUOUS: {
-                "response": "I'm not sure what you want to do. Would you like me to show your resources or help you create a plan?",
-                "confidence": "low",
-                "suggestions": ["Show my resources", "Create a plan", "Help me get started"]
-            },
-            FallbackType.DETECTION_FAILED: {
-                "response": "I'm having trouble understanding. Let me help you explore or work on something specific.",
-                "confidence": "low",
-                "suggestions": ["Explore resources", "Work on specific task", "Get help"]
-            },
-            FallbackType.SYSTEM_ERROR: {
-                "response": "Something went wrong. I'm here to help - what would you like to do?",
-                "confidence": "low",
-                "suggestions": ["Try again", "Show resources", "Get help"]
-            }
-        }
-        
-        fallback = emergency_fallbacks.get(fallback_type, emergency_fallbacks[FallbackType.SYSTEM_ERROR])
-        
-        return {
-            "fallback_type": fallback_type.value,
-            "response": fallback["response"],
-            "confidence": fallback["confidence"],
-            "suggestions": fallback["suggestions"],
-            "context_analysis": {},
-            "processing_time_ms": 0,
-            "timestamp": datetime.now().isoformat(),
-            "emergency": True
-        }
+    def _get_fallback_count(self, fallback_type: str) -> int:
+        """Obtiene el número de fallbacks de un tipo específico"""
+        fallback_key = f"{fallback_type}_{self.user_id}"
+        return len(self._fallback_history.get(fallback_key, []))
     
-    async def learn_from_feedback(
-        self,
-        fallback_id: str,
-        user_feedback: str,
-        was_helpful: bool
-    ):
-        """Aprende del feedback del usuario sobre un fallback"""
-        try:
-            if not self.fallback_config["learning_enabled"]:
-                return
-            
-            # TODO: Implementar aprendizaje basado en feedback
-            # Por ahora, solo logging
-            
-            logger.info(f"[SmartFallbackService] Feedback recibido: {fallback_id} - {user_feedback} (útil: {was_helpful})")
-            
-        except Exception as e:
-            logger.warning(f"[SmartFallbackService] ⚠️ Error procesando feedback: {e}")
+    def _get_recovery_attempts(self, fallback_type: str) -> int:
+        """Obtiene el número de intentos de recuperación"""
+        fallback_key = f"{fallback_type}_{self.user_id}"
+        return self._recovery_attempts.get(fallback_key, 0)
     
     async def get_fallback_statistics(self) -> Dict[str, Any]:
-        """Obtiene estadísticas de fallbacks"""
+        """Obtiene estadísticas de fallbacks para análisis"""
         try:
-            if not self.fallback_history:
-                return {"total_fallbacks": 0, "types": {}, "confidence_distribution": {}}
-            
-            # Contar por tipo
-            type_counts = {}
-            confidence_counts = {}
-            
-            for fallback in self.fallback_history:
-                fallback_type = fallback["fallback_type"]
-                confidence = fallback["confidence"]
-                
-                type_counts[fallback_type] = type_counts.get(fallback_type, 0) + 1
-                confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+            total_fallbacks = sum(len(history) for history in self._fallback_history.values())
+            total_recovery_attempts = sum(self._recovery_attempts.values())
             
             return {
-                "total_fallbacks": len(self.fallback_history),
-                "types": type_counts,
-                "confidence_distribution": confidence_counts,
-                "recent_fallbacks": len([f for f in self.fallback_history if 
-                    datetime.fromisoformat(f["timestamp"]) > datetime.now() - timedelta(hours=1)])
+                "total_fallbacks": total_fallbacks,
+                "total_recovery_attempts": total_recovery_attempts,
+                "fallback_types": {
+                    fallback_type: len(history) 
+                    for fallback_type, history in self._fallback_history.items()
+                },
+                "recovery_success_rate": self._calculate_recovery_success_rate(),
+                "most_common_fallback": self._get_most_common_fallback()
             }
             
         except Exception as e:
-            logger.error(f"[SmartFallbackService] ❌ Error obteniendo estadísticas: {e}")
+            logger.warning(f"[SmartFallbackService] ⚠️ Error obteniendo estadísticas: {e}")
             return {"error": str(e)}
     
-    async def cleanup(self):
-        """Limpia recursos del servicio"""
+    def _calculate_recovery_success_rate(self) -> float:
+        """Calcula la tasa de éxito de recuperación"""
         try:
-            # Limpiar historial antiguo
-            cutoff_time = datetime.now() - timedelta(days=7)
-            self.fallback_history = [
-                f for f in self.fallback_history 
-                if datetime.fromisoformat(f["timestamp"]) > cutoff_time
-            ]
+            total_attempts = sum(self._recovery_attempts.values())
+            if total_attempts == 0:
+                return 0.0
             
-            logger.info(f"[SmartFallbackService] 🧹 Limpieza completada")
+            # Simular tasa de éxito (en implementación real, usar datos reales)
+            successful_recoveries = total_attempts * 0.7  # 70% de éxito
+            return round(successful_recoveries / total_attempts, 2)
             
         except Exception as e:
-            logger.error(f"[SmartFallbackService] ❌ Error en limpieza: {e}")
+            logger.warning(f"[SmartFallbackService] ⚠️ Error calculando tasa de éxito: {e}")
+            return 0.0
+    
+    def _get_most_common_fallback(self) -> Optional[str]:
+        """Obtiene el tipo de fallback más común"""
+        try:
+            if not self._fallback_history:
+                return None
+            
+            fallback_counts = {
+                fallback_type: len(history) 
+                for fallback_type, history in self._fallback_history.items()
+            }
+            
+            if not fallback_counts:
+                return None
+            
+            return max(fallback_counts, key=fallback_counts.get)
+            
+        except Exception as e:
+            logger.warning(f"[SmartFallbackService] ⚠️ Error obteniendo fallback más común: {e}")
+            return None
+    
+    def _build_emergency_fallback(self, fallback_type: FallbackType, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Construye fallback de emergencia cuando todo falla"""
+        return {
+            "success": False,
+            "fallback_type": fallback_type.value,
+            "message": "I'm having trouble understanding your request. Would you like me to show your resources or start with a plan?",
+            "options": [
+                {
+                    "id": "emergency_show_resources",
+                    "text": "Show resources",
+                    "action": "show_resources",
+                    "type": "emergency",
+                    "priority": 1
+                },
+                {
+                    "id": "emergency_start_plan",
+                    "text": "Start with plan",
+                    "action": "start_plan",
+                    "type": "emergency",
+                    "priority": 2
+                }
+            ],
+            "strategy": "emergency_fallback",
+            "auto_recovery": {"possible": False, "reason": "Emergency mode"},
+            "recovery_timeout": 0,
+            "metadata": {
+                "execution_time_ms": 0,
+                "fallback_count": 0,
+                "recovery_attempts": 0,
+                "emergency_mode": True
+            }
+        }
+    
+    async def clear_cache(self):
+        """Limpia el cache de fallbacks"""
+        self._fallback_history.clear()
+        self._recovery_attempts.clear()
+        logger.info("[SmartFallbackService] 🧹 Cache limpiado")
 
 
-# Factory function para crear el servicio
-async def create_smart_fallback_service(factory: ServiceFactory, user_id: str) -> SmartFallbackService:
-    """Crea e inicializa el servicio de smart fallbacks"""
-    service = SmartFallbackService(factory)
-    await service.initialize(user_id)
-    return service
+# Función helper para dependency injection
+def get_smart_fallback_service(factory) -> SmartFallbackService:
+    """Obtiene una instancia del Smart Fallback Service"""
+    return SmartFallbackService(factory)

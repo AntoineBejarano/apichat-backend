@@ -14,7 +14,7 @@ from . import orchestrator
 
 # Importar servicios que permanecen en la carpeta principal
 from .base_service import BaseService
-from .orchestrator_service import OrchestratorService
+from .orchestrator.orchestrator_service import OrchestratorService
 
 __all__ = [
     "context",

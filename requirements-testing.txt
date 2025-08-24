@@ -1,0 +1,40 @@
+# 🧪 DEPENDENCIAS DE TESTING - SISTEMA EXPLORER/GUIDED
+
+# Framework Principal
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-benchmark>=4.0.0
+
+# Mocks y Fixtures
+pytest-mock>=3.11.0
+factory-boy>=3.3.0
+faker>=19.0.0
+
+# Base de Datos de Testing
+pytest-postgresql>=4.1.0
+pytest-redis>=2.0.0
+testcontainers>=3.7.0
+
+# Monitoreo y Reportes
+pytest-html>=3.2.0
+pytest-xdist>=3.3.0
+pytest-profiling>=1.7.0
+
+# Utilidades de Testing
+httpx>=0.24.0  # Para tests de API
+pytest-timeout>=2.1.0  # Timeouts en tests
+pytest-repeat>=0.9.0  # Repetición de tests
+pytest-randomly>=3.15.0  # Ejecución aleatoria
+
+# Coverage y Análisis
+coverage>=7.3.0
+pytest-cov>=4.1.0
+
+# Performance Testing
+locust>=2.15.0  # Tests de carga
+memory-profiler>=0.61.0  # Profiling de memoria
+
+# Debugging
+pytest-pdb>=0.2.0  # Debugger integrado
+pytest-sugar>=0.9.7  # UI mejorada para tests

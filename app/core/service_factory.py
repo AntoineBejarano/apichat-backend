@@ -214,6 +214,18 @@ class ServiceFactory:
         return self.ai.get_pattern_learning_service()
     
     # ─────────────────────────────────────────────
+    #   🎯 FASE 9: PRIORIZACIÓN DE RECURSOS Y FALLBACK INTELIGENTE
+    # ─────────────────────────────────────────────
+    
+    def get_resource_priority_service(self):
+        """Obtiene el servicio de priorización de recursos"""
+        return self.ai.get_resource_priority_service()
+    
+    def get_smart_fallback_service(self):
+        """Obtiene el servicio de fallback inteligente"""
+        return self.ai.get_smart_fallback_service()
+    
+    # ─────────────────────────────────────────────
     #   📊 DATA SERVICES (Delegación a DataServicesFactory)
     # ─────────────────────────────────────────────
     

@@ -1,20 +1,15 @@
 """
-🎯 Resource Priority Service: Priorización inteligente de recursos
+🎯 Resource Priority Service: Priorización automática de recursos y resolución de conflictos
 
-Este servicio prioriza recursos por tipo (DB > App > Estrategia) y
-optimiza el orden de consulta para maximizar la eficiencia del sistema.
+Sistema que prioriza automáticamente recursos (DB > App > Estrategia) y resuelve conflictos
+entre múltiples recursos solicitados por el usuario.
 """
 
 import logging
-import asyncio
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timedelta
-from uuid import UUID
 from enum import Enum
-
-from app.services.ai.mode_detection_service import ModeDetectionService
-from app.services.data.database_service import DatabaseService
-from app.services.management.app_service import AppService
+from uuid import UUID
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -22,676 +17,552 @@ logger = logging.getLogger(__name__)
 class ResourceType(Enum):
     """Tipos de recursos disponibles"""
     DATABASE = "database"
-    APPLICATION = "application"
+    APP = "app"
     STRATEGY = "strategy"
-    INTEGRATION = "integration"
-    CACHE = "cache"
-    EXTERNAL_API = "external_api"
+    UNKNOWN = "unknown"
 
 
 class PriorityLevel(Enum):
     """Niveles de prioridad para recursos"""
-    CRITICAL = "critical"      # Prioridad máxima (DB principal)
-    HIGH = "high"              # Alta prioridad (DB secundarias, Apps críticas)
-    MEDIUM = "medium"          # Prioridad media (Apps normales, Estrategias)
-    LOW = "low"                # Prioridad baja (Integraciones, APIs externas)
-    OPTIONAL = "optional"      # Prioridad mínima (Recursos opcionales)
+    CRITICAL = 1      # DB crítica (usuarios, auth, etc.)
+    HIGH = 2          # DB principal
+    MEDIUM = 3        # Apps importantes
+    LOW = 4           # Apps secundarias
+    MINIMAL = 5       # Estrategias
 
 
-class QueryType(Enum):
-    """Tipos de consultas para optimización"""
-    DATA_QUERY = "data_query"           # Consultas de datos (prioridad DB)
-    OPERATION_QUERY = "operation_query" # Operaciones (prioridad App)
-    ANALYSIS_QUERY = "analysis_query"   # Análisis (prioridad Estrategia)
-    INTEGRATION_QUERY = "integration_query" # Integraciones (prioridad baja)
+class ConflictResolution(Enum):
+    """Tipos de resolución de conflictos"""
+    AUTO_PRIORITY = "auto_priority"      # Priorización automática
+    USER_CONFIRMATION = "user_confirmation"  # Confirmación del usuario
+    SEQUENTIAL = "sequential"            # Ejecución secuencial
+    PARALLEL = "parallel"                # Ejecución paralela
 
 
 class ResourcePriorityService:
     """
-    🎯 Servicio de priorización inteligente de recursos
+    🎯 Servicio de priorización automática de recursos
     
     Funcionalidades:
-    - Priorización automática por tipo de recurso
-    - Optimización de orden de consulta
-    - Métricas de priorización
-    - Aprendizaje de patrones de uso
-    - Balanceo de carga inteligente
+    - Priorización automática: DB > App > Estrategia
+    - Resolución de conflictos entre recursos
+    - Confirmación automática cuando hay ambigüedad
+    - Sugerencias inteligentes para el usuario
     """
     
     def __init__(self, factory):
-        """
-        Inicializa el servicio de priorización de recursos
-        
-        Args:
-            factory: ServiceFactory para obtener servicios
-        """
         self.factory = factory
-        self.database_service = None
-        self.app_service = None
-        self.mode_detection_service = None
+        self.user_id = factory.user.id
+        
+        # Cache de prioridades de recursos
+        self._resource_priorities = {}
+        self._conflict_resolutions = {}
         
         # Configuración de prioridades por tipo
-        self._setup_priority_config()
-        
-        # Métricas de uso de recursos
-        self.resource_usage_metrics = {}
-        self.query_performance_metrics = {}
-        
-        logger.info("[ResourcePriorityService] 🚀 Inicializado para priorización inteligente de recursos")
-    
-    def _setup_priority_config(self):
-        """Configura las prioridades por tipo de recurso"""
-        self.priority_config = {
-            ResourceType.DATABASE: {
-                "base_priority": PriorityLevel.CRITICAL,
-                "weight": 1.0,
-                "fallback_timeout": 5000,  # 5 segundos
-                "retry_attempts": 3
-            },
-            ResourceType.APPLICATION: {
-                "base_priority": PriorityLevel.HIGH,
-                "weight": 0.8,
-                "fallback_timeout": 3000,  # 3 segundos
-                "retry_attempts": 2
-            },
-            ResourceType.STRATEGY: {
-                "base_priority": PriorityLevel.MEDIUM,
-                "weight": 0.6,
-                "fallback_timeout": 2000,  # 2 segundos
-                "retry_attempts": 1
-            },
-            ResourceType.INTEGRATION: {
-                "base_priority": PriorityLevel.LOW,
-                "weight": 0.4,
-                "fallback_timeout": 1000,  # 1 segundo
-                "retry_attempts": 1
-            },
-            ResourceType.EXTERNAL_API: {
-                "base_priority": PriorityLevel.OPTIONAL,
-                "weight": 0.2,
-                "fallback_timeout": 500,   # 0.5 segundos
-                "retry_attempts": 0
-            }
+        self._type_priorities = {
+            ResourceType.DATABASE: PriorityLevel.HIGH,
+            ResourceType.APP: PriorityLevel.MEDIUM,
+            ResourceType.STRATEGY: PriorityLevel.MINIMAL
         }
-    
-    async def _get_services(self):
-        """Obtiene servicios necesarios de forma lazy"""
-        try:
-            if not self.database_service:
-                self.database_service = self.factory.get_database_service()
-            
-            if not self.app_service:
-                self.app_service = self.factory.get_app_service()
-            
-            if not self.mode_detection_service:
-                self.mode_detection_service = self.factory.get_mode_detection_service()
-                
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo servicios: {e}")
+        
+        # Recursos críticos que siempre tienen prioridad máxima
+        self._critical_resources = {
+            "users", "auth", "authentication", "user_management",
+            "sessions", "permissions", "roles", "security"
+        }
+        
+        logger.info(f"[ResourcePriorityService] 🚀 Inicializado para usuario {self.user_id}")
     
     async def prioritize_resources(
-        self,
-        user_id: UUID,
-        query_type: QueryType,
-        available_resources: List[Dict[str, Any]],
-        context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, 
+        requested_resources: List[Dict[str, Any]],
+        query_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
-        Prioriza recursos según tipo de consulta y contexto
+        🎯 Prioriza recursos automáticamente y resuelve conflictos
         
         Args:
-            user_id: ID del usuario
-            query_type: Tipo de consulta
-            available_resources: Lista de recursos disponibles
-            context: Contexto adicional
+            requested_resources: Lista de recursos solicitados
+            query_context: Contexto de la consulta del usuario
             
         Returns:
-            Lista de recursos priorizados
+            Recursos priorizados y plan de ejecución
         """
         try:
-            await self._get_services()
+            start_time = time.time()
+            logger.info(f"[ResourcePriorityService] 🎯 Priorizando {len(requested_resources)} recursos")
             
-            # Calcular prioridades para cada recurso
-            prioritized_resources = []
+            # 1. Analizar y clasificar recursos
+            classified_resources = await self._classify_resources(requested_resources)
             
-            for resource in available_resources:
-                priority_score = await self._calculate_resource_priority(
-                    resource, query_type, context, user_id
-                )
+            # 2. Calcular prioridades individuales
+            prioritized_resources = await self._calculate_priorities(classified_resources, query_context)
+            
+            # 3. Detectar y resolver conflictos
+            conflict_resolution = await self._resolve_conflicts(prioritized_resources, query_context)
+            
+            # 4. Generar plan de ejecución
+            execution_plan = await self._generate_execution_plan(
+                prioritized_resources, 
+                conflict_resolution, 
+                query_context
+            )
+            
+            execution_time = time.time() - start_time
+            
+            result = {
+                "success": True,
+                "prioritized_resources": prioritized_resources,
+                "conflict_resolution": conflict_resolution,
+                "execution_plan": execution_plan,
+                "metadata": {
+                    "total_resources": len(requested_resources),
+                    "execution_time_ms": round(execution_time * 1000, 2),
+                    "conflicts_resolved": len(conflict_resolution.get("resolved_conflicts", [])),
+                    "user_confirmation_required": conflict_resolution.get("requires_confirmation", False)
+                }
+            }
+            
+            logger.info(f"[ResourcePriorityService] ✅ Priorización completada en {execution_time:.3f}s")
+            return result
+            
+        except Exception as e:
+            logger.exception(f"[ResourcePriorityService] ❌ Error en priorización: {e}")
+            return self._build_error_result(
+                error=f"Error en priorización: {str(e)}",
+                requested_resources=requested_resources
+            )
+    
+    async def _classify_resources(self, resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Clasifica recursos por tipo y extrae información relevante"""
+        classified = []
+        
+        for resource in resources:
+            try:
+                resource_type = await self._detect_resource_type(resource)
+                priority_level = self._type_priorities.get(resource_type, PriorityLevel.MINIMAL)
+                
+                classified_resource = {
+                    "original": resource,
+                    "type": resource_type,
+                    "priority_level": priority_level,
+                    "name": resource.get("name", "unknown"),
+                    "id": resource.get("id"),
+                    "description": resource.get("description", ""),
+                    "is_critical": self._is_critical_resource(resource.get("name", "")),
+                    "metadata": resource.get("metadata", {})
+                }
+                
+                classified.append(classified_resource)
+                
+            except Exception as e:
+                logger.warning(f"[ResourcePriorityService] ⚠️ Error clasificando recurso: {e}")
+                # Agregar como desconocido
+                classified.append({
+                    "original": resource,
+                    "type": ResourceType.UNKNOWN,
+                    "priority_level": PriorityLevel.MINIMAL,
+                    "name": resource.get("name", "unknown"),
+                    "id": resource.get("id"),
+                    "description": resource.get("description", ""),
+                    "is_critical": False,
+                    "metadata": resource.get("metadata", {})
+                })
+        
+        return classified
+    
+    async def _detect_resource_type(self, resource: Dict[str, Any]) -> ResourceType:
+        """Detecta el tipo de recurso basado en su estructura"""
+        try:
+            # Detectar por campos específicos
+            if "connection_string" in resource or "database_type" in resource:
+                return ResourceType.DATABASE
+            elif "api_endpoint" in resource or "app_type" in resource:
+                return ResourceType.APP
+            elif "strategy_type" in resource or "execution_plan" in resource:
+                return ResourceType.STRATEGY
+            
+            # Detectar por nombre
+            name = resource.get("name", "").lower()
+            if any(db_keyword in name for db_keyword in ["db", "database", "table", "schema"]):
+                return ResourceType.DATABASE
+            elif any(app_keyword in name for app_keyword in ["app", "api", "service", "integration"]):
+                return ResourceType.APP
+            elif any(strategy_keyword in name for strategy_keyword in ["strategy", "plan", "workflow"]):
+                return ResourceType.STRATEGY
+            
+            # Detectar por descripción
+            description = resource.get("description", "").lower()
+            if any(db_keyword in description for db_keyword in ["database", "table", "schema", "query"]):
+                return ResourceType.DATABASE
+            elif any(app_keyword in description for app_keyword in ["application", "api", "service"]):
+                return ResourceType.APP
+            elif any(strategy_keyword in description for strategy_keyword in ["strategy", "plan", "workflow"]):
+                return ResourceType.STRATEGY
+            
+            return ResourceType.UNKNOWN
+            
+        except Exception as e:
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error detectando tipo: {e}")
+            return ResourceType.UNKNOWN
+    
+    def _is_critical_resource(self, resource_name: str) -> bool:
+        """Determina si un recurso es crítico"""
+        if not resource_name:
+            return False
+        
+        name_lower = resource_name.lower()
+        return any(critical in name_lower for critical in self._critical_resources)
+    
+    async def _calculate_priorities(
+        self, 
+        classified_resources: List[Dict[str, Any]], 
+        query_context: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Calcula prioridades individuales para cada recurso"""
+        prioritized = []
+        
+        for resource in classified_resources:
+            try:
+                # Prioridad base por tipo
+                base_priority = resource["priority_level"].value
+                
+                # Bonus por recurso crítico
+                critical_bonus = 2 if resource["is_critical"] else 0
+                
+                # Bonus por contexto de consulta
+                context_bonus = await self._calculate_context_bonus(resource, query_context)
+                
+                # Prioridad final (menor número = mayor prioridad)
+                final_priority = max(1, base_priority - critical_bonus - context_bonus)
                 
                 prioritized_resource = {
                     **resource,
-                    "priority_score": priority_score,
-                    "priority_level": self._get_priority_level(priority_score),
-                    "recommended_order": 0  # Se actualizará después
+                    "base_priority": base_priority,
+                    "critical_bonus": critical_bonus,
+                    "context_bonus": context_bonus,
+                    "final_priority": final_priority
                 }
                 
-                prioritized_resources.append(prioritized_resource)
-            
-            # Ordenar por prioridad descendente
-            prioritized_resources.sort(key=lambda x: x["priority_score"], reverse=True)
-            
-            # Asignar orden recomendado
-            for i, resource in enumerate(prioritized_resources):
-                resource["recommended_order"] = i + 1
-            
-            # Actualizar métricas
-            await self._update_priority_metrics(user_id, query_type, prioritized_resources)
-            
-            logger.info(
-                f"[ResourcePriorityService] 🎯 Recursos priorizados para usuario {user_id}: "
-                f"{len(prioritized_resources)} recursos ordenados por prioridad"
-            )
-            
-            return prioritized_resources
-            
-        except Exception as e:
-            logger.error(f"[ResourcePriorityService] ❌ Error priorizando recursos: {e}")
-            return available_resources
-    
-    async def _calculate_resource_priority(
-        self,
-        resource: Dict[str, Any],
-        query_type: QueryType,
-        context: Dict[str, Any],
-        user_id: UUID
-    ) -> float:
-        """
-        Calcula la prioridad de un recurso específico
+                prioritized.append(prioritized_resource)
+                
+            except Exception as e:
+                logger.warning(f"[ResourcePriorityService] ⚠️ Error calculando prioridad: {e}")
+                prioritized.append(resource)
         
-        Args:
-            resource: Recurso a evaluar
-            query_type: Tipo de consulta
-            query_type: Tipo de consulta
-            context: Contexto de la consulta
-            user_id: ID del usuario
-            
-        Returns:
-            Score de prioridad (0.0 - 1.0)
-        """
-        try:
-            # Obtener tipo de recurso
-            resource_type = self._classify_resource_type(resource)
-            
-            # Prioridad base según tipo
-            base_priority = self._get_base_priority_score(resource_type)
-            
-            # Ajustes por tipo de consulta
-            query_adjustment = self._get_query_type_adjustment(query_type, resource_type)
-            
-            # Ajustes por contexto
-            context_adjustment = await self._get_context_adjustment(resource, context, user_id)
-            
-            # Ajustes por rendimiento histórico
-            performance_adjustment = await self._get_performance_adjustment(resource, user_id)
-            
-            # Ajustes por disponibilidad
-            availability_adjustment = self._get_availability_adjustment(resource)
-            
-            # Calcular prioridad final
-            final_priority = (
-                base_priority * 0.4 +
-                query_adjustment * 0.2 +
-                context_adjustment * 0.2 +
-                performance_adjustment * 0.15 +
-                availability_adjustment * 0.05
-            )
-            
-            # Normalizar a rango 0.0 - 1.0
-            final_priority = max(0.0, min(1.0, final_priority))
-            
-            return round(final_priority, 3)
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error calculando prioridad: {e}")
-            return 0.5
-    
-    def _classify_resource_type(self, resource: Dict[str, Any]) -> ResourceType:
-        """Clasifica el tipo de recurso"""
-        try:
-            resource_category = resource.get("category", "").lower()
-            resource_type = resource.get("type", "").lower()
-            
-            if "database" in resource_category or "db" in resource_type:
-                return ResourceType.DATABASE
-            elif "application" in resource_category or "app" in resource_type:
-                return ResourceType.APPLICATION
-            elif "strategy" in resource_category or "strategy" in resource_type:
-                return ResourceType.STRATEGY
-            elif "integration" in resource_category or "api" in resource_type:
-                return ResourceType.INTEGRATION
-            elif "external" in resource_category or "third_party" in resource_type:
-                return ResourceType.EXTERNAL_API
-            else:
-                # Intentar inferir por otros campos
-                if resource.get("connection_string") or resource.get("schema"):
-                    return ResourceType.DATABASE
-                elif resource.get("endpoint") or resource.get("method"):
-                    return ResourceType.APPLICATION
-                else:
-                    return ResourceType.STRATEGY
-                    
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error clasificando recurso: {e}")
-            return ResourceType.STRATEGY
-    
-    def _get_base_priority_score(self, resource_type: ResourceType) -> float:
-        """Obtiene el score de prioridad base según tipo de recurso"""
-        try:
-            if resource_type in self.priority_config:
-                base_priority = self.priority_config[resource_type]["base_priority"]
-                
-                priority_scores = {
-                    PriorityLevel.CRITICAL: 1.0,
-                    PriorityLevel.HIGH: 0.8,
-                    PriorityLevel.MEDIUM: 0.6,
-                    PriorityLevel.LOW: 0.4,
-                    PriorityLevel.OPTIONAL: 0.2
-                }
-                
-                return priority_scores.get(base_priority, 0.5)
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo prioridad base: {e}")
-            return 0.5
-    
-    def _get_query_type_adjustment(self, query_type: QueryType, resource_type: ResourceType) -> float:
-        """Obtiene ajuste de prioridad según tipo de consulta"""
-        try:
-            # Matriz de ajustes: query_type vs resource_type
-            adjustment_matrix = {
-                QueryType.DATA_QUERY: {
-                    ResourceType.DATABASE: 1.0,      # Máxima prioridad
-                    ResourceType.APPLICATION: 0.6,   # Prioridad media
-                    ResourceType.STRATEGY: 0.3,      # Prioridad baja
-                    ResourceType.INTEGRATION: 0.2,   # Prioridad muy baja
-                    ResourceType.EXTERNAL_API: 0.1   # Prioridad mínima
-                },
-                QueryType.OPERATION_QUERY: {
-                    ResourceType.DATABASE: 0.7,      # Alta prioridad
-                    ResourceType.APPLICATION: 1.0,   # Máxima prioridad
-                    ResourceType.STRATEGY: 0.5,      # Prioridad media
-                    ResourceType.INTEGRATION: 0.4,   # Prioridad media-baja
-                    ResourceType.EXTERNAL_API: 0.2   # Prioridad baja
-                },
-                QueryType.ANALYSIS_QUERY: {
-                    ResourceType.DATABASE: 0.8,      # Alta prioridad
-                    ResourceType.APPLICATION: 0.6,   # Prioridad media
-                    ResourceType.STRATEGY: 1.0,      # Máxima prioridad
-                    ResourceType.INTEGRATION: 0.3,   # Prioridad baja
-                    ResourceType.EXTERNAL_API: 0.2   # Prioridad baja
-                },
-                QueryType.INTEGRATION_QUERY: {
-                    ResourceType.DATABASE: 0.3,      # Prioridad baja
-                    ResourceType.APPLICATION: 0.5,   # Prioridad media
-                    ResourceType.STRATEGY: 0.4,      # Prioridad media-baja
-                    ResourceType.INTEGRATION: 1.0,   # Máxima prioridad
-                    ResourceType.EXTERNAL_API: 0.8   # Alta prioridad
-                }
-            }
-            
-            if query_type in adjustment_matrix and resource_type in adjustment_matrix[query_type]:
-                return adjustment_matrix[query_type][resource_type]
-            
-            return 0.5
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo ajuste de consulta: {e}")
-            return 0.5
-    
-    async def _get_context_adjustment(
-        self,
-        resource: Dict[str, Any],
-        context: Dict[str, Any],
-        user_id: UUID
-    ) -> float:
-        """
-        Obtiene ajuste de prioridad basado en contexto
+        # Ordenar por prioridad final (ascendente)
+        prioritized.sort(key=lambda x: x.get("final_priority", 999))
         
-        Args:
-            resource: Recurso a evaluar
-            context: Contexto de la consulta
-            user_id: ID del usuario
-            
-        Returns:
-            Ajuste de prioridad (0.0 - 1.0)
-        """
+        return prioritized
+    
+    async def _calculate_context_bonus(self, resource: Dict[str, Any], query_context: Dict[str, Any]) -> int:
+        """Calcula bonus de prioridad basado en el contexto de la consulta"""
         try:
-            adjustment = 0.5  # Valor neutral
+            bonus = 0
+            query_text = query_context.get("query", "").lower()
+            resource_name = resource.get("name", "").lower()
             
-            # Ajuste por recursos específicos solicitados
-            requested_resources = context.get("requested_resources", [])
-            if resource.get("id") in requested_resources:
-                adjustment += 0.3
+            # Bonus si el recurso está mencionado explícitamente en la consulta
+            if resource_name in query_text:
+                bonus += 1
             
-            # Ajuste por modo activo
-            active_mode = context.get("active_mode", "auto")
-            if active_mode == "explorer" and resource.get("type") == "database":
-                adjustment += 0.2
-            elif active_mode == "guided" and resource.get("type") == "application":
-                adjustment += 0.2
+            # Bonus por tipo de consulta
+            query_type = query_context.get("query_type", "")
+            if query_type == "data_analysis" and resource["type"] == ResourceType.DATABASE:
+                bonus += 1
+            elif query_type == "integration" and resource["type"] == ResourceType.APP:
+                bonus += 1
+            elif query_type == "execution" and resource["type"] == ResourceType.STRATEGY:
+                bonus += 1
             
-            # Ajuste por historial de uso del usuario
-            user_preference = await self._get_user_resource_preference(user_id, resource)
-            adjustment += user_preference * 0.2
+            # Bonus por recursos recientemente utilizados
+            recent_usage = query_context.get("recent_resources", [])
+            if resource.get("id") in recent_usage:
+                bonus += 1
             
-            # Ajuste por complejidad de la consulta
-            query_complexity = context.get("query_complexity", 5)
-            if query_complexity > 7 and resource.get("type") == "database":
-                adjustment += 0.1
-            elif query_complexity < 3 and resource.get("type") == "application":
-                adjustment += 0.1
-            
-            return max(0.0, min(1.0, adjustment))
+            return min(bonus, 2)  # Máximo 2 de bonus
             
         except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo ajuste de contexto: {e}")
-            return 0.5
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error calculando bonus de contexto: {e}")
+            return 0
     
-    async def _get_user_resource_preference(self, user_id: UUID, resource: Dict[str, Any]) -> float:
-        """Obtiene preferencia del usuario por un tipo de recurso"""
-        try:
-            # Aquí se implementaría lógica para obtener preferencias del usuario
-            # Por ahora retornamos un valor neutral
-            return 0.0
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo preferencia de usuario: {e}")
-            return 0.0
-    
-    async def _get_performance_adjustment(self, resource: Dict[str, Any], user_id: UUID) -> float:
-        """Obtiene ajuste de prioridad basado en rendimiento histórico"""
-        try:
-            # Obtener métricas de rendimiento del recurso
-            resource_id = resource.get("id")
-            if not resource_id:
-                return 0.5
-            
-            # Obtener métricas del usuario
-            user_metrics = self.resource_usage_metrics.get(str(user_id), {})
-            resource_metrics = user_metrics.get(str(resource_id), {})
-            
-            if not resource_metrics:
-                return 0.5
-            
-            # Calcular ajuste basado en rendimiento
-            avg_response_time = resource_metrics.get("avg_response_time", 1000)
-            success_rate = resource_metrics.get("success_rate", 0.9)
-            last_used = resource_metrics.get("last_used", 0)
-            
-            # Ajuste por tiempo de respuesta (menor = mejor)
-            response_adjustment = max(0.0, 1.0 - (avg_response_time / 5000))
-            
-            # Ajuste por tasa de éxito
-            success_adjustment = success_rate
-            
-            # Ajuste por uso reciente (más reciente = mejor)
-            time_since_last = (datetime.utcnow() - datetime.fromtimestamp(last_used)).total_seconds() if last_used > 0 else 0
-            recency_adjustment = max(0.0, 1.0 - (time_since_last / 3600))  # 1 hora
-            
-            # Calcular ajuste final
-            final_adjustment = (
-                response_adjustment * 0.4 +
-                success_adjustment * 0.4 +
-                recency_adjustment * 0.2
-            )
-            
-            return round(final_adjustment, 3)
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo ajuste de rendimiento: {e}")
-            return 0.5
-    
-    def _get_availability_adjustment(self, resource: Dict[str, Any]) -> float:
-        """Obtiene ajuste de prioridad basado en disponibilidad"""
-        try:
-            # Verificar estado del recurso
-            status = resource.get("status", "unknown")
-            health_score = resource.get("health_score", 1.0)
-            
-            # Ajuste por estado
-            status_adjustments = {
-                "active": 1.0,
-                "available": 0.9,
-                "healthy": 0.8,
-                "warning": 0.6,
-                "error": 0.3,
-                "offline": 0.1,
-                "unknown": 0.5
-            }
-            
-            status_adjustment = status_adjustments.get(status, 0.5)
-            
-            # Ajuste por salud del recurso
-            health_adjustment = health_score
-            
-            # Calcular ajuste final
-            final_adjustment = (status_adjustment + health_adjustment) / 2
-            
-            return round(final_adjustment, 3)
-            
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo ajuste de disponibilidad: {e}")
-            return 0.5
-    
-    def _get_priority_level(self, priority_score: float) -> str:
-        """Convierte score de prioridad a nivel de prioridad"""
-        try:
-            if priority_score >= 0.8:
-                return PriorityLevel.CRITICAL.value
-            elif priority_score >= 0.6:
-                return PriorityLevel.HIGH.value
-            elif priority_score >= 0.4:
-                return PriorityLevel.MEDIUM.value
-            elif priority_score >= 0.2:
-                return PriorityLevel.LOW.value
-            else:
-                return PriorityLevel.OPTIONAL.value
-                
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo nivel de prioridad: {e}")
-            return PriorityLevel.MEDIUM.value
-    
-    async def _update_priority_metrics(
-        self,
-        user_id: UUID,
-        query_type: QueryType,
-        prioritized_resources: List[Dict[str, Any]]
-    ):
-        """Actualiza métricas de priorización"""
-        try:
-            user_id_str = str(user_id)
-            
-            if user_id_str not in self.resource_usage_metrics:
-                self.resource_usage_metrics[user_id_str] = {}
-            
-            # Actualizar métricas por recurso
-            for resource in prioritized_resources:
-                resource_id = str(resource.get("id"))
-                
-                if resource_id not in self.resource_usage_metrics[user_id_str]:
-                    self.resource_usage_metrics[user_id_str][resource_id] = {
-                        "usage_count": 0,
-                        "avg_response_time": 0,
-                        "success_rate": 1.0,
-                        "last_used": 0,
-                        "priority_history": []
-                    }
-                
-                # Actualizar métricas
-                metrics = self.resource_usage_metrics[user_id_str][resource_id]
-                metrics["usage_count"] += 1
-                metrics["last_used"] = datetime.utcnow().timestamp()
-                metrics["priority_history"].append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "priority_score": resource.get("priority_score", 0),
-                    "priority_level": resource.get("priority_level", "medium"),
-                    "query_type": query_type.value
-                })
-                
-                # Mantener solo los últimos 100 registros
-                if len(metrics["priority_history"]) > 100:
-                    metrics["priority_history"] = metrics["priority_history"][-100:]
-            
-            # Actualizar métricas de consulta
-            if user_id_str not in self.query_performance_metrics:
-                self.query_performance_metrics[user_id_str] = {}
-            
-            query_type_str = query_type.value
-            if query_type_str not in self.query_performance_metrics[user_id_str]:
-                self.query_performance_metrics[user_id_str][query_type_str] = {
-                    "total_queries": 0,
-                    "avg_priority_score": 0,
-                    "resource_distribution": {}
-                }
-            
-            # Actualizar métricas de consulta
-            query_metrics = self.query_performance_metrics[user_id_str][query_type_str]
-            query_metrics["total_queries"] += 1
-            
-            # Calcular prioridad promedio
-            total_priority = sum(r.get("priority_score", 0) for r in prioritized_resources)
-            avg_priority = total_priority / len(prioritized_resources) if prioritized_resources else 0
-            query_metrics["avg_priority_score"] = (
-                (query_metrics["avg_priority_score"] * (query_metrics["total_queries"] - 1) + avg_priority) /
-                query_metrics["total_queries"]
-            )
-            
-            # Actualizar distribución de recursos
-            for resource in prioritized_resources:
-                resource_type = resource.get("type", "unknown")
-                if resource_type not in query_metrics["resource_distribution"]:
-                    query_metrics["resource_distribution"][resource_type] = 0
-                query_metrics["resource_distribution"][resource_type] += 1
-                
-        except Exception as e:
-            logger.warning(f"[ResourcePriorityService] ⚠️ Error actualizando métricas: {e}")
-    
-    async def get_priority_analytics(
-        self,
-        user_id: UUID,
-        days: int = 7
+    async def _resolve_conflicts(
+        self, 
+        prioritized_resources: List[Dict[str, Any]], 
+        query_context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Obtiene análisis de priorización para un usuario
-        
-        Args:
-            user_id: ID del usuario
-            days: Días hacia atrás para el análisis
-            
-        Returns:
-            Análisis de priorización
-        """
+        """Resuelve conflictos entre recursos priorizados"""
         try:
-            user_id_str = str(user_id)
+            conflicts = []
+            resolved_conflicts = []
+            requires_confirmation = False
             
-            if user_id_str not in self.resource_usage_metrics:
-                return {
-                    "user_id": str(user_id),
-                    "message": "No hay datos de priorización disponibles"
-                }
+            # Detectar conflictos por tipo de recurso
+            resource_types = [r["type"] for r in prioritized_resources]
+            type_conflicts = self._detect_type_conflicts(resource_types)
             
-            # Obtener métricas del usuario
-            user_metrics = self.resource_usage_metrics[user_id_str]
+            if type_conflicts:
+                conflicts.extend(type_conflicts)
             
-            # Calcular estadísticas generales
-            total_resources = len(user_metrics)
-            total_usage = sum(metrics["usage_count"] for metrics in user_metrics.values())
+            # Detectar conflictos por prioridad similar
+            priority_conflicts = self._detect_priority_conflicts(prioritized_resources)
+            if priority_conflicts:
+                conflicts.extend(priority_conflicts)
             
-            # Análisis por tipo de recurso
-            resource_type_analysis = {}
-            for resource_id, metrics in user_metrics.items():
-                # Aquí se implementaría lógica para obtener tipo de recurso
-                # Por ahora usamos un placeholder
-                resource_type = "unknown"
+            # Resolver conflictos automáticamente cuando sea posible
+            for conflict in conflicts:
+                resolution = await self._resolve_single_conflict(conflict, prioritized_resources, query_context)
+                resolved_conflicts.append(resolution)
                 
-                if resource_type not in resource_type_analysis:
-                    resource_type_analysis[resource_type] = {
-                        "count": 0,
-                        "total_usage": 0,
-                        "avg_priority": 0
-                    }
-                
-                resource_type_analysis[resource_type]["count"] += 1
-                resource_type_analysis[resource_type]["total_usage"] += metrics["usage_count"]
-                
-                # Calcular prioridad promedio
-                if metrics["priority_history"]:
-                    avg_priority = sum(h["priority_score"] for h in metrics["priority_history"]) / len(metrics["priority_history"])
-                    resource_type_analysis[resource_type]["avg_priority"] = round(avg_priority, 3)
-            
-            # Análisis de tendencias de prioridad
-            priority_trends = {}
-            for resource_id, metrics in user_metrics.items():
-                if metrics["priority_history"]:
-                    # Agrupar por día
-                    daily_priorities = {}
-                    for history in metrics["priority_history"]:
-                        date = history["timestamp"][:10]  # YYYY-MM-DD
-                        if date not in daily_priorities:
-                            daily_priorities[date] = []
-                        daily_priorities[date].append(history["priority_score"])
-                    
-                    # Calcular promedio diario
-                    for date, priorities in daily_priorities.items():
-                        if date not in priority_trends:
-                            priority_trends[date] = []
-                        priority_trends[date].extend(priorities)
-            
-            # Calcular tendencia general
-            overall_trend = 0
-            if priority_trends:
-                all_priorities = []
-                for priorities in priority_trends.values():
-                    all_priorities.extend(priorities)
-                if all_priorities:
-                    overall_trend = sum(all_priorities) / len(all_priorities)
+                if resolution["resolution_type"] == ConflictResolution.USER_CONFIRMATION:
+                    requires_confirmation = True
             
             return {
-                "user_id": str(user_id),
-                "analysis_period_days": days,
-                "summary": {
-                    "total_resources": total_resources,
-                    "total_usage": total_usage,
-                    "overall_avg_priority": round(overall_trend, 3)
-                },
-                "resource_type_analysis": resource_type_analysis,
-                "priority_trends": {
-                    "daily_averages": {
-                        date: round(sum(priorities) / len(priorities), 3)
-                        for date, priorities in priority_trends.items()
-                    },
-                    "overall_trend": round(overall_trend, 3)
-                }
+                "conflicts_detected": conflicts,
+                "resolved_conflicts": resolved_conflicts,
+                "requires_confirmation": requires_confirmation,
+                "resolution_strategy": "auto_priority_with_confirmation" if requires_confirmation else "auto_priority"
             }
             
         except Exception as e:
-            logger.error(f"[ResourcePriorityService] ❌ Error obteniendo análisis: {e}")
-            return {"error": str(e)}
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error resolviendo conflictos: {e}")
+            return {
+                "conflicts_detected": [],
+                "resolved_conflicts": [],
+                "requires_confirmation": False,
+                "resolution_strategy": "error_fallback"
+            }
     
-    def get_service_info(self) -> Dict[str, Any]:
-        """Obtiene información del servicio"""
-        return {
-            "service_name": "ResourcePriorityService",
-            "description": "Servicio de priorización inteligente de recursos",
-            "features": [
-                "Priorización automática por tipo de recurso",
-                "Optimización de orden de consulta",
-                "Métricas de priorización",
-                "Aprendizaje de patrones de uso",
-                "Balanceo de carga inteligente"
-            ],
-            "supported_resource_types": [rt.value for rt in ResourceType],
-            "supported_priority_levels": [pl.value for pl in PriorityLevel],
-            "supported_query_types": [qt.value for qt in QueryType],
-            "priority_config": {
-                rt.value: {
-                    "base_priority": config["base_priority"].value,
-                    "weight": config["weight"]
+    def _detect_type_conflicts(self, resource_types: List[ResourceType]) -> List[Dict[str, Any]]:
+        """Detecta conflictos entre diferentes tipos de recursos"""
+        conflicts = []
+        
+        # Conflicto: Múltiples bases de datos
+        db_count = resource_types.count(ResourceType.DATABASE)
+        if db_count > 1:
+            conflicts.append({
+                "type": "multiple_databases",
+                "severity": "medium",
+                "description": f"Se detectaron {db_count} bases de datos",
+                "suggestion": "Considerar ejecución secuencial o priorizar por importancia"
+            })
+        
+        # Conflicto: Múltiples apps
+        app_count = resource_types.count(ResourceType.APP)
+        if app_count > 2:
+            conflicts.append({
+                "type": "multiple_apps",
+                "severity": "low",
+                "description": f"Se detectaron {app_count} aplicaciones",
+                "suggestion": "Agrupar por funcionalidad relacionada"
+            })
+        
+        return conflicts
+    
+    def _detect_priority_conflicts(self, prioritized_resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Detecta conflictos por prioridades similares"""
+        conflicts = []
+        
+        if len(prioritized_resources) < 2:
+            return conflicts
+        
+        # Detectar recursos con prioridad muy similar
+        for i in range(len(prioritized_resources) - 1):
+            current = prioritized_resources[i]
+            next_resource = prioritized_resources[i + 1]
+            
+            priority_diff = abs(current["final_priority"] - next_resource["final_priority"])
+            
+            if priority_diff <= 1:  # Prioridades muy similares
+                conflicts.append({
+                    "type": "similar_priority",
+                    "severity": "low",
+                    "description": f"Recursos '{current['name']}' y '{next_resource['name']}' tienen prioridad similar",
+                    "suggestion": "Confirmar orden de ejecución con el usuario",
+                    "resources": [current["name"], next_resource["name"]]
+                })
+        
+        return conflicts
+    
+    async def _resolve_single_conflict(
+        self, 
+        conflict: Dict[str, Any], 
+        prioritized_resources: List[Dict[str, Any]], 
+        query_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Resuelve un conflicto individual"""
+        try:
+            conflict_type = conflict["type"]
+            
+            if conflict_type == "multiple_databases":
+                # Priorizar por criticidad y orden alfabético
+                db_resources = [r for r in prioritized_resources if r["type"] == ResourceType.DATABASE]
+                db_resources.sort(key=lambda x: (x["is_critical"], x["name"]))
+                
+                return {
+                    "conflict": conflict,
+                    "resolution_type": ConflictResolution.AUTO_PRIORITY,
+                    "resolution": "Priorización automática por criticidad",
+                    "new_order": [r["name"] for r in db_resources],
+                    "requires_confirmation": False
                 }
-                for rt, config in self.priority_config.items()
-            },
-            "status": "active"
+            
+            elif conflict_type == "similar_priority":
+                # Requerir confirmación del usuario
+                return {
+                    "conflict": conflict,
+                    "resolution_type": ConflictResolution.USER_CONFIRMATION,
+                    "resolution": "Confirmación requerida del usuario",
+                    "suggestion": f"¿En qué orden prefieres ejecutar: {', '.join(conflict['resources'])}?",
+                    "requires_confirmation": True
+                }
+            
+            else:
+                # Resolución por defecto
+                return {
+                    "conflict": conflict,
+                    "resolution_type": ConflictResolution.AUTO_PRIORITY,
+                    "resolution": "Resolución automática por prioridad",
+                    "requires_confirmation": False
+                }
+                
+        except Exception as e:
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error resolviendo conflicto: {e}")
+            return {
+                "conflict": conflict,
+                "resolution_type": ConflictResolution.AUTO_PRIORITY,
+                "resolution": "Resolución automática por error",
+                "requires_confirmation": False
+            }
+    
+    async def _generate_execution_plan(
+        self, 
+        prioritized_resources: List[Dict[str, Any]], 
+        conflict_resolution: Dict[str, Any], 
+        query_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Genera plan de ejecución basado en recursos priorizados"""
+        try:
+            execution_plan = {
+                "phases": [],
+                "estimated_duration": "unknown",
+                "parallel_execution": False,
+                "fallback_strategy": "sequential"
+            }
+            
+            # Fase 1: Recursos críticos (si los hay)
+            critical_resources = [r for r in prioritized_resources if r["is_critical"]]
+            if critical_resources:
+                execution_plan["phases"].append({
+                    "phase": 1,
+                    "name": "Recursos Críticos",
+                    "resources": [r["name"] for r in critical_resources],
+                    "execution_type": "sequential",
+                    "priority": "critical"
+                })
+            
+            # Fase 2: Bases de datos
+            db_resources = [r for r in prioritized_resources if r["type"] == ResourceType.DATABASE and not r["is_critical"]]
+            if db_resources:
+                execution_plan["phases"].append({
+                    "phase": len(execution_plan["phases"]) + 1,
+                    "name": "Bases de Datos",
+                    "resources": [r["name"] for r in db_resources],
+                    "execution_type": "sequential",
+                    "priority": "high"
+                })
+            
+            # Fase 3: Aplicaciones
+            app_resources = [r for r in prioritized_resources if r["type"] == ResourceType.APP]
+            if app_resources:
+                execution_plan["phases"].append({
+                    "phase": len(execution_plan["phases"]) + 1,
+                    "name": "Aplicaciones",
+                    "resources": [r["name"] for r in app_resources],
+                    "execution_type": "parallel" if len(app_resources) > 1 else "sequential",
+                    "priority": "medium"
+                })
+            
+            # Fase 4: Estrategias
+            strategy_resources = [r for r in prioritized_resources if r["type"] == ResourceType.STRATEGY]
+            if strategy_resources:
+                execution_plan["phases"].append({
+                    "phase": len(execution_plan["phases"]) + 1,
+                    "name": "Estrategias",
+                    "resources": [r["name"] for r in strategy_resources],
+                    "execution_type": "sequential",
+                    "priority": "low"
+                })
+            
+            # Calcular duración estimada
+            total_phases = len(execution_plan["phases"])
+            if total_phases > 0:
+                execution_plan["estimated_duration"] = f"{total_phases * 2-3} minutos"
+            
+            # Determinar si se puede ejecutar en paralelo
+            execution_plan["parallel_execution"] = any(
+                phase["execution_type"] == "parallel" for phase in execution_plan["phases"]
+            )
+            
+            return execution_plan
+            
+        except Exception as e:
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error generando plan: {e}")
+            return {
+                "phases": [],
+                "estimated_duration": "unknown",
+                "parallel_execution": False,
+                "fallback_strategy": "sequential",
+                "error": str(e)
+            }
+    
+    async def get_priority_suggestions(self, query: str) -> List[str]:
+        """Obtiene sugerencias de priorización para una consulta"""
+        try:
+            suggestions = []
+            
+            # Sugerencias basadas en palabras clave
+            query_lower = query.lower()
+            
+            if any(word in query_lower for word in ["database", "db", "table", "query"]):
+                suggestions.append("💾 Priorizar bases de datos para consultas de datos")
+            
+            if any(word in query_lower for word in ["app", "api", "integration"]):
+                suggestions.append("🔗 Priorizar aplicaciones para integraciones")
+            
+            if any(word in query_lower for word in ["strategy", "plan", "workflow"]):
+                suggestions.append("📋 Priorizar estrategias para ejecución de planes")
+            
+            if any(word in query_lower for word in ["analyze", "analyze", "report"]):
+                suggestions.append("📊 Considerar ejecución secuencial para análisis complejos")
+            
+            if any(word in query_lower for word in ["fast", "quick", "urgent"]):
+                suggestions.append("⚡ Priorizar recursos críticos para respuestas rápidas")
+            
+            return suggestions[:3]  # Máximo 3 sugerencias
+            
+        except Exception as e:
+            logger.warning(f"[ResourcePriorityService] ⚠️ Error obteniendo sugerencias: {e}")
+            return ["💡 Usar modo automático para priorización inteligente"]
+    
+    async def clear_cache(self):
+        """Limpia el cache de prioridades"""
+        self._resource_priorities.clear()
+        self._conflict_resolutions.clear()
+        logger.info("[ResourcePriorityService] 🧹 Cache limpiado")
+    
+    def _build_error_result(self, error: str, requested_resources: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Construye resultado de error"""
+        return {
+            "success": False,
+            "error": error,
+            "requested_resources": requested_resources,
+            "fallback_message": "I'm not sure how to prioritize these resources. Would you like me to show your resources or start with a plan?",
+            "requires_user_guidance": True
         }
+
+
+# Función helper para dependency injection
+def get_resource_priority_service(factory) -> ResourcePriorityService:
+    """Obtiene una instancia del Resource Priority Service"""
+    return ResourcePriorityService(factory)

@@ -208,6 +208,19 @@ class AIServicesFactory(BaseServiceFactory):
             logger.error(f"[AIServicesFactory] ❌ Error obteniendo PatternLearningService: {e}")
             return None
     
+    # ─────────────────────────────────────────────
+    #   🎯 FASE 9: PRIORIZACIÓN DE RECURSOS Y FALLBACK INTELIGENTE
+    # ─────────────────────────────────────────────
+    
+    def get_resource_priority_service(self):
+        """Obtiene el servicio de priorización de recursos"""
+        try:
+            from app.services.ai.resource_priority_service import ResourcePriorityService
+            return self._get_or_create_service(ResourcePriorityService, "resource_priority")
+        except Exception as e:
+            logger.error(f"[AIServicesFactory] ❌ Error obteniendo ResourcePriorityService: {e}")
+            return None
+    
     def get_factory_info(self) -> dict:
         """Obtiene información de la factory de IA"""
         try:
@@ -234,7 +247,9 @@ class AIServicesFactory(BaseServiceFactory):
                     "user_experience_service",
                     # FASE 8: Custom System Prompts Inteligentes
                     "premium_prompt_service",
-                    "pattern_learning_service"
+                    "pattern_learning_service",
+                    # FASE 9: Priorización de Recursos y Fallback Inteligente
+                    "resource_priority_service"
                 ],
                 **self._get_service_info()
             }

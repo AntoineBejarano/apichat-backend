@@ -37,7 +37,7 @@ from app.common.enums import Mode
 from app.core.config import settings
 
 # Importar ReAct Orchestrator simplificado
-from app.services.react_orchestrator import ReActOrchestrator
+from app.services.orchestrator.react_orchestrator import ReActOrchestrator
 
 # Importar ChatHistoryManager
 from app.services.orchestrator.chat_history_manager import ChatHistoryManager
