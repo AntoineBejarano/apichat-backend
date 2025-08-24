@@ -98,6 +98,24 @@ class AppService(BaseService):
             except Exception as e:
                 logger.exception(f"[AppService] ❌ MCP fetch failed for app_id={app.id}")
                 raise HTTPException(status_code=502, detail="Failed to fetch MCP functions")
+    
+    # ─────────────────────────────────────────────
+    #   🔧 FASE 3: Método para Mode Detection Service
+    # ─────────────────────────────────────────────
+    
+    def get_user_apps(self, user_id: UUID) -> List[App]:
+        """Obtiene todas las aplicaciones de un usuario específico"""
+        try:
+            apps = (
+                self.db.query(App)
+                .filter(App.user_id == user_id)
+                .all()
+            )
+            logger.info(f"[AppService] ✅ Obtenidas {len(apps)} apps para user_id={user_id}")
+            return apps
+        except Exception as e:
+            logger.warning(f"[AppService] ⚠️ Error obteniendo apps del usuario: {e}")
+            return []
 
         logger.debug(f"[AppService] 🔧 Delegating to FunctionService for app_id={app.id}")
         return self.factory.get_function_service().get_by_app(app.id)

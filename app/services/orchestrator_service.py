@@ -1602,7 +1602,7 @@ class OrchestratorService:
             # Extraer db_ids y app_ids del contexto si están disponibles
             db_ids = context.get("db_ids") if context else None
             app_ids = context.get("app_ids") if context else None
-            explorer = context.get("explorer", True) if context else True
+            explorer = context.get("explorer", False) if context else False
             
             # 🧠 Usar ReAct Orchestrator para procesar el mensaje
             react_response = await self.react_orchestrator.handle_message(

@@ -28,6 +28,8 @@ class DatabaseConnectionUpdate(BaseModel):
     database: Optional[str]
     username: Optional[str]
     password: Optional[str]
+    # 🔧 NUEVO: Campo para actualizar estado del schema
+    schema_status: Optional[str]
 
     model_config = {
         "from_attributes": False
@@ -37,6 +39,8 @@ class DatabaseConnectionOut(DatabaseConnectionBase):
     id: UUID
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    # 🔧 NUEVO: Campo para mostrar estado del schema
+    schema_status: Optional[str]
 
     model_config = {
         "from_attributes": True

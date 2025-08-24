@@ -1,17 +1,31 @@
 # app/dependencies.py
 
-from app.services.openai_service import OpenAIService
-from app.services.langchain_service import LangchainService
+# 🔧 CORRECCIÓN: Este archivo estaba creando servicios sin factory
+# Los servicios deben obtenerse a través de ServiceFactory en lugar de crearse directamente
 
-openai_client = OpenAIService()
-langchain_client = LangchainService()
+# NOTA: Este archivo parece estar obsoleto. Los servicios se obtienen a través de ServiceFactory
+# que se inyecta en los routers y servicios que los necesitan.
 
-def get_openai_client():
-    return openai_client
+# Si necesitas servicios OpenAI o Langchain, úsalos a través de ServiceFactory:
+# factory.get_openai_service() o factory.get_langchain_service()
 
-def get_langchain_client():
-    return langchain_client
+from typing import Optional
+from fastapi import Depends, HTTPException, status
+from app.core.service_factory import ServiceFactory
 
-def is_admin(self) -> bool:
+
+def get_current_user(factory: ServiceFactory):
+    """Obtiene el usuario actual desde el factory"""
+    if not factory or not factory.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario no autenticado"
+        )
+    return factory.user
+
+
+def is_admin(factory) -> bool:
     """Verifica si el usuario autenticado es administrador."""
-    return bool(getattr(self.factory.user, "is_admin", False))
+    if hasattr(factory, 'user') and factory.user:
+        return bool(getattr(factory.user, "is_admin", False))
+    return False

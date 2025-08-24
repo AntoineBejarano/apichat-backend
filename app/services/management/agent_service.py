@@ -153,3 +153,51 @@ class AgentService(BaseService):
         except Exception as e:
             logger.warning("[AgentService] No se pudo obtener prompt de historial: %s", e)
             return ""
+
+    # ─────────────────────────────────────────────
+    #   🔧 FASE 2: Métodos para Agent Router Service
+    # ─────────────────────────────────────────────
+    
+    def get_agent_by_name_and_user(self, name: str, user_id: UUID) -> Optional[Agent]:
+        """Obtiene un agente por nombre y usuario específico"""
+        try:
+            agent = (
+                self.db.query(Agent)
+                .filter(Agent.name == name, Agent.user_id == user_id)
+                .first()
+            )
+            return agent
+        except Exception as e:
+            logger.warning(f"[AgentService] Error obteniendo agente por nombre: {e}")
+            return None
+    
+    def get_agents_by_user_and_mode(self, user_id: UUID, mode: str, is_generic: bool = False) -> List[Agent]:
+        """Obtiene agentes de un usuario por modo y tipo genérico"""
+        try:
+            query = self.db.query(Agent).filter(Agent.user_id == user_id)
+            
+            if mode:
+                query = query.filter(Agent.mode == mode)
+            
+            if is_generic is not None:
+                query = query.filter(Agent.is_generic == is_generic)
+            
+            agents = query.all()
+            logger.info(f"[AgentService] Encontrados {len(agents)} agentes para user_id={user_id}, mode={mode}, is_generic={is_generic}")
+            return agents
+        except Exception as e:
+            logger.warning(f"[AgentService] Error obteniendo agentes por modo: {e}")
+            return []
+    
+    def get_agents_by_user_and_generic(self, user_id: UUID, is_generic: bool = True) -> List[Agent]:
+        """Obtiene agentes de un usuario por tipo genérico"""
+        try:
+            agents = (
+                self.db.query(Agent)
+                .filter(Agent.user_id == user_id, Agent.is_generic == is_generic)
+                .all()
+            )
+            return agents
+        except Exception as e:
+            logger.warning(f"[AgentService] Error obteniendo agentes genéricos: {e}")
+            return []

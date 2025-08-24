@@ -41,7 +41,13 @@ class ProgressReportingNode:
         try:
             # Extraer información del estado
             current_phase = state.get("current_phase", "unknown")
-            query = state.get("message", {}).get("content", "")
+            # 🔧 CORRECCIÓN: message es ChatMessage, no dict, usar atributos directos
+            message = state.get("message")
+            if message and hasattr(message, 'content'):
+                query = message.content
+            else:
+                query = ""
+            
             chat_id = state.get("chat_id")
             
             logger.info(f"[ProgressReportingNode] 📊 Reportando progreso: {current_phase}")

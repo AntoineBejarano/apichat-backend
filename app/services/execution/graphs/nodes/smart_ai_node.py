@@ -53,7 +53,13 @@ class SmartAINode:
         
         try:
             # Extraer información del estado
-            query = state.get("message", {}).get("content", "")
+            # 🔧 CORRECCIÓN: message es ChatMessage, no dict, usar atributos directos
+            message = state.get("message")
+            if message and hasattr(message, 'content'):
+                query = message.content
+            else:
+                query = ""
+            
             chat_id = state.get("chat_id", "default")
             user_id = state.get("user_id", "default")
             
@@ -75,19 +81,20 @@ class SmartAINode:
             )
             
             # 📊 ENRIQUECER ESTADO CON RESULTADOS DEL SMART AI
-            enriched_state = await self._enrich_state_with_smart_ai(state, smart_result)
+            # 🔧 CORRECCIÓN: _enrich_state_with_smart_ai modifica state directamente
+            await self._enrich_state_with_smart_ai(state, smart_result)
             
             # 📈 CALCULAR MÉTRICAS DE PERFORMANCE
             execution_time = time.time() - node_start_time
             performance_metrics.record_node_performance("smart_ai", execution_time)
             
             # 📊 REGISTRAR MÉTRICAS DEL SMART AI
-            if 'performance_metrics' not in enriched_state:
-                enriched_state['performance_metrics'] = {}
-            if 'smart_ai' not in enriched_state['performance_metrics']:
-                enriched_state['performance_metrics']['smart_ai'] = {}
+            if 'performance_metrics' not in state:
+                state['performance_metrics'] = {}
+            if 'smart_ai' not in state['performance_metrics']:
+                state['performance_metrics']['smart_ai'] = {}
             
-            enriched_state['performance_metrics']['smart_ai'].update({
+            state['performance_metrics']['smart_ai'].update({
                 'execution_time': execution_time,
                 'rephrase_confidence': smart_result.get('rephrase', {}).get('confidence', 0.0),
                 'intent_confidence': smart_result.get('intent', {}).get('confidence', 0.0),
@@ -99,7 +106,7 @@ class SmartAINode:
             logger.info(f"[SmartAINode] 🎯 Intención: {smart_result.get('intent', {}).get('intent_type', 'unknown')}")
             logger.info(f"[SmartAINode] 🔄 Rephrase: {smart_result.get('rephrase', {}).get('normalized_query', '')[:50]}...")
             
-            return enriched_state
+            return state
             
         except Exception as e:
             execution_time = time.time() - node_start_time

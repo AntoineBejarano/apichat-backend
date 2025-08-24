@@ -3,9 +3,9 @@ from sqlalchemy import Column, String, ForeignKey, DateTime, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.models.base_model import Base
+from app.models.base_model import BaseTable
 
-class DatabaseConnection(Base):
+class DatabaseConnection(BaseTable):
     __tablename__ = "database_connections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
@@ -21,6 +21,10 @@ class DatabaseConnection(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # 🔧 NUEVO: Estado del schema para tracking
+    schema_status = Column(String, nullable=False, default="pending", 
+                          comment="Estado del schema: pending, generating, ready, error")
 
     user = relationship("User", back_populates="databases")
     agent_links = relationship("AgentDatabaseLink", back_populates="database", cascade="all, delete-orphan")

@@ -77,7 +77,7 @@ class ReActOrchestrator:
         message: ChatMessage,
         db_ids: Optional[List[UUID]] = None,
         app_ids: Optional[List[UUID]] = None,
-        explorer: bool = True
+        explorer: bool = False
     ) -> Dict[str, Any]:
         """
         🧠 Método principal: Maneja mensajes usando ReAct

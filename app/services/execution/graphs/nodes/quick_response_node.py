@@ -43,7 +43,13 @@ class QuickResponseNode:
         
         try:
             # Extraer información del estado
-            query = state.get("message", {}).get("content", "")
+            # 🔧 CORRECCIÓN: message es ChatMessage, no dict, usar atributos directos
+            message = state.get("message")
+            if message and hasattr(message, 'content'):
+                query = message.content
+            else:
+                query = ""
+            
             db_ids = state.get("db_ids", [])
             compact_schemas = state.get("compact_schemas", {})
             

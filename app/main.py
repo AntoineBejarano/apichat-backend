@@ -12,6 +12,8 @@ from app.routers import (
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
     billing_router, integration_router, permission_router, usage_router, event_definition_router,
     event_trigger_router, trigger_router, app_router, performance_router, cache_router,
+    notification_router,  # 🔧 FASE 5: Router de notificaciones
+    api_cache_router,  # 🔧 FASE 7: Router de cache de APIs
     # telemetry_router,  # 🎯 FASE 13: Router de telemetría (comentado temporalmente para tests)
     # background_task_router  # Comentado temporalmente para tests
 )
@@ -51,11 +53,13 @@ from app.seed.seed_all import seed_permissions, seed_event_definitions
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = next(get_db())
-    factory = ServiceFactory(db=db)
+    # 🔧 CORRECCIÓN: No crear ServiceFactory durante startup ya que no hay request
+    # factory = ServiceFactory(db=db)  # ❌ Esto causa errores de autenticación
 
     try:
-        #seed_permissions(factory)
-        #seed_event_definitions(factory)
+        # 🔧 CORRECCIÓN: Si necesitamos seed, hacerlo directamente sin ServiceFactory
+        # seed_permissions(factory)
+        # seed_event_definitions(factory)
         logger.info("🔐 Default permissions seeded.")
     except OperationalError as e:
         # Si la tabla 'permissions' (o cualquier otra) no existe, saltamos el seed
@@ -143,6 +147,8 @@ app.include_router(event_trigger_router.router); logger.info("📡 EventTrigger 
 app.include_router(trigger_router.router); logger.info("🎯 Trigger router loaded")
 app.include_router(performance_router.router); logger.info("📊 Performance router loaded")
 app.include_router(cache_router.router); logger.info("🗄️ Cache router loaded")
+app.include_router(notification_router.router); logger.info("🔔 FASE 5: Notification router loaded.")
+app.include_router(api_cache_router.router); logger.info("🔧 FASE 7: API Cache router loaded.")
 # app.include_router(telemetry_router.router); logger.info("🎯 FASE 13: Telemetría router loaded")  # Comentado temporalmente para tests
 # app.include_router(error_handler_router); logger.info("🎯 Error Handler router loaded")
 # app.include_router(background_task_router.router); logger.info("🚀 Background Task router loaded") # Comentado temporalmente para tests

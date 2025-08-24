@@ -9,6 +9,8 @@ from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
 from app.schemas.chat_schema import ChatMessage, ChatCreate
 from app.utils.logger import logger
+from app.services.common.ws_emitter import get_ws_emitter
+from app.services.notifications.schema_notification_service import get_schema_notification_service
 
 router = APIRouter(
     tags=["🧠 WebSocket Chat"],
@@ -98,6 +100,18 @@ async def websocket_chat(
 
     orchestrator = factory.get_orchestrator_service()
     chat_service = factory.get_chat_service()
+
+    # 🔧 FASE 5: Servicios de notificaciones y WebSocket
+    ws_emitter = get_ws_emitter()
+    notification_service = get_schema_notification_service(factory)
+    
+    # Registrar conexión WebSocket para notificaciones
+    ws_emitter.register_connection(str(user_id), websocket)
+    logger.info(f"[ChatWS] 🔗 Conexión WebSocket registrada para notificaciones del usuario {user_id}")
+    
+    # Suscribir usuario a notificaciones de schema
+    notification_service.subscribe_user(user_id)
+    logger.info(f"[ChatWS] 📧 Usuario {user_id} suscrito a notificaciones de schema")
 
     # Crea o reutiliza un chat existente
     chats = chat_service.get_all(limit=1)
@@ -353,8 +367,25 @@ async def websocket_chat(
 
     except WebSocketDisconnect:
         logger.info(f"❌ WebSocket disconnected - user_id={user_id}")
+        
+        # 🔧 FASE 5: Limpiar conexión y suscripciones
+        try:
+            ws_emitter.unregister_connection(str(user_id), websocket)
+            notification_service.unsubscribe_user(user_id)
+            logger.info(f"[ChatWS] 🧹 Conexión WebSocket y suscripciones limpiadas para usuario {user_id}")
+        except Exception as cleanup_error:
+            logger.warning(f"[ChatWS] ⚠️ Error limpiando conexión: {cleanup_error}")
+            
     except Exception as e:
         logger.error(f"❌ Internal WebSocket error - user_id={user_id} - {str(e)}")
+        
+        # 🔧 FASE 5: Limpiar conexión en caso de error
+        try:
+            ws_emitter.unregister_connection(str(user_id), websocket)
+            notification_service.unsubscribe_user(user_id)
+        except Exception as cleanup_error:
+            logger.warning(f"[ChatWS] ⚠️ Error limpiando conexión en error: {cleanup_error}")
+            
         await websocket.send_json({
             "type": "error",
             "message": f"❌ Internal server error: {str(e)}",

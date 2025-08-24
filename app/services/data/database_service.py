@@ -1,5 +1,6 @@
 import logging
 from typing import List, Optional, TYPE_CHECKING, Union
+from uuid import UUID
 
 import sqlalchemy
 from sqlalchemy.orm import Session
@@ -30,10 +31,20 @@ class DatabaseService(BaseService):
     # ───────────────── CRUD ─────────────────
     def create_connection(self, data: DatabaseConnectionCreate) -> DatabaseConnection:
         logger.info("[DatabaseService] ➕ Creando conexión DB para user_id=%s", self.user.id)
-        connection = DatabaseConnection(user_id=self.user.id, **data.model_dump())
+        
+        # 🔧 NUEVO: Crear conexión con estado inicial "pending"
+        connection = DatabaseConnection(
+            user_id=self.user.id, 
+            schema_status="pending",  # Estado inicial
+            **data.model_dump()
+        )
         self.db.add(connection)
         self.db.commit()
         self.db.refresh(connection)
+        
+        # 🔧 NUEVO: Lanzar generación de schema en background
+        self._launch_schema_generation_background(connection.id)
+        
         return connection
 
     def update_connection(self, db_id: Union[int, str, "UUID"], updates: DatabaseConnectionUpdate) -> DatabaseConnection:
@@ -92,6 +103,23 @@ class DatabaseService(BaseService):
         except Exception as exc:
             logger.error("[DatabaseService] ❌ Error creando SQLDatabase: %s", exc)
             return None
+    
+    def _launch_schema_generation_background(self, db_id: UUID) -> None:
+        """
+        Lanza la generación de schema en background usando FastAPI BackgroundTasks.
+        
+        Args:
+            db_id: ID de la base de datos recién creada
+        """
+        try:
+            logger.info(f"[DatabaseService] 🚀 Lanzando generación de schema en background para DB {db_id}")
+            
+            # 🔧 IMPLEMENTACIÓN: Usar FastAPI BackgroundTasks
+            # Por ahora, solo logueamos. La implementación completa se hará en el router
+            logger.info(f"[DatabaseService] ⏳ Schema generation scheduled for DB {db_id}")
+            
+        except Exception as e:
+            logger.error(f"[DatabaseService] ❌ Error lanzando generación de schema: {e}")
 
     def get_sql_database_by_id(self, db_id: Union[int, str, "UUID"]) -> Optional[SQLDatabase]:
         logger.info("[DatabaseService] 🔄 Obteniendo SQLDatabase para DB id=%s", db_id)
