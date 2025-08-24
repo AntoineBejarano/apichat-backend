@@ -5,7 +5,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 from starlette.datastructures import Headers
 from app.core.database import SessionLocal
-from app.services.billing_service import BillingService
+from app.services.management.billing_service import BillingService
 from app.core.service_factory import ServiceFactory
 
 class FakeRequest(Request):

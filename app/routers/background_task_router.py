@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any
 from uuid import UUID
 
 from app.core.service_factory import get_service_factory
-from app.services.background_task_service import BackgroundTaskService, TaskPriority
+from app.services.management.background_task_service import BackgroundTaskService, TaskPriority
 from app.schemas.background_task_schema import (
     TaskCreate, TaskResponse, TaskStatusResponse, TaskListResponse, TASK_TYPES_INFO
 )

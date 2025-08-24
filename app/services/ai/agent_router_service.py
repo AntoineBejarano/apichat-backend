@@ -12,7 +12,7 @@ from enum import Enum
 import time
 
 from app.models.agent_model import Agent
-from app.services.agent_service import AgentService
+from app.services.management.agent_service import AgentService
 
 logger = logging.getLogger(__name__)
 

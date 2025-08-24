@@ -298,7 +298,7 @@ class BackgroundTaskService:
     
     def _handle_performance_metrics_collection(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Recolectar métricas de performance"""
-        from app.services.performance_monitoring_service import PerformanceMonitoringService
+        from app.services.monitoring.performance_monitoring_service import PerformanceMonitoringService
         
         monitoring_service = PerformanceMonitoringService()
         metrics = monitoring_service.get_current_metrics()
