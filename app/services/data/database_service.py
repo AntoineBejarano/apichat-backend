@@ -11,7 +11,6 @@ from app.schemas.database_schema import (
     DatabaseConnectionCreate,
     DatabaseConnectionUpdate,
 )
-from app.services.base_service import BaseService
 from app.utils.build_sqlalchemy_uri import build_sqlalchemy_uri
 from .connection_pool_service import ConnectionPoolService
 
@@ -21,12 +20,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class DatabaseService(BaseService):
+class DatabaseService:
     def __init__(self, factory: "ServiceFactory") -> None:
-        super().__init__(factory)
+        # 🔧 ROMPER CICLO RECURSIVO: No heredar de BaseService
+        self.factory = factory
+        self.user = factory.user
         # Inicializar pool de conexiones
         self.connection_pool = ConnectionPoolService()
+        # 🔧 Obtener sesión directamente sin recursión
+        self.db = factory.get_database_session()
         logger.info("[DatabaseService] ✅ Inicializado para user_id=%s", self.user.id)
+    
+    def get_db(self) -> Session:
+        """Obtiene la sesión de base de datos"""
+        return self.db
 
     # ───────────────── CRUD ─────────────────
     def create_connection(self, data: DatabaseConnectionCreate) -> DatabaseConnection:

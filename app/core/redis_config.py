@@ -57,9 +57,13 @@ class RedisConfig:
             'db': self.redis_db,
             'socket_timeout': self.redis_timeout,
             'socket_connect_timeout': self.redis_timeout,
-            'retry_on_timeout': self.retry_on_timeout,
             'max_connections': self.max_connections,
         }
+        
+        # Retry on timeout está deprecated desde Redis 6.0, TimeoutError se incluye por defecto
+        # Solo incluir si es explícitamente False
+        if not self.retry_on_timeout:
+            params['retry_on_timeout'] = False
         
         if self.redis_password:
             params['password'] = self.redis_password

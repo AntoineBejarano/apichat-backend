@@ -5,9 +5,26 @@ from app.models.plan_model import Plan
 
 class BaseService:
     def __init__(self, factory, user=None):
-        self.db: Session = factory.db
+        # 🔧 ROMPER CICLO RECURSIVO: No llamar a get_database_service() aquí
+        self.db: Session = None  # Se establecerá después de la inicialización
         self.factory = factory
         self.user = user or getattr(factory, "user", None)
+        
+        # 🔧 Establecer la base de datos después de la inicialización completa
+        self._setup_database()
+    
+    def _setup_database(self):
+        """Configura la base de datos después de la inicialización completa"""
+        try:
+            # 🔧 ROMPER CICLO RECURSIVO: Solo obtener DB si no es DatabaseService
+            if not hasattr(self, '__class__') or 'DatabaseService' not in self.__class__.__name__:
+                self.db = self.factory.get_database_session()
+            else:
+                # Para DatabaseService, no hacer nada aquí
+                pass
+        except Exception as e:
+            # Fallback: intentar acceder directamente si existe
+            self.db = getattr(self.factory, "db", None)
 
     def get_active_plan(self) -> Plan:
         """

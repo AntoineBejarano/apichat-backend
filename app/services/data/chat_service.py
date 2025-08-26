@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 class ChatService:
     def __init__(self, factory: "ServiceFactory"):
         self.factory = factory
-        self.db: Session = factory.db
+        # 🔧 Obtener sesión directamente sin recursión
+        self.db: Session = factory.get_database_session()
         self.user_id = factory.user.id
         logger.info(f"[ChatService] Initialized for user_id={self.user_id}")
 

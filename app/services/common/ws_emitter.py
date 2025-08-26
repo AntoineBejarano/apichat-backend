@@ -30,8 +30,9 @@ class WSEmitter:
     - Rate limiting básico
     """
     
-    def __init__(self):
+    def __init__(self, factory=None):
         self.logger = logger
+        self.factory = factory
         
         # Conexiones WebSocket activas por usuario
         self._active_connections: Dict[str, List[Any]] = {}
@@ -334,6 +335,43 @@ class WSEmitter:
         except Exception as e:
             self.logger.error(f"[WSEmitter] ❌ Error en limpieza de conexiones: {e}")
             return 0
+    
+    async def emit_result_final(
+        self,
+        summary: str,
+        data: Dict[str, Any],
+        next_actions: list,
+        usage_stats: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Emite resultado final a todos los usuarios conectados.
+        
+        Args:
+            summary: Resumen del resultado
+            data: Datos del resultado
+            next_actions: Próximas acciones sugeridas
+            usage_stats: Estadísticas de uso (opcional)
+            
+        Returns:
+            True si se emitió correctamente, False en caso contrario
+        """
+        try:
+            message = {
+                'event': 'result_final',
+                'data': {
+                    'summary': summary,
+                    'data': data,
+                    'next_actions': next_actions,
+                    'usage_stats': usage_stats or {},
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
+            }
+            
+            return await self.broadcast(message)
+            
+        except Exception as e:
+            self.logger.error(f"[WSEmitter] ❌ Error emitiendo resultado final: {e}")
+            return False
 
 
 # Instancia global del WSEmitter

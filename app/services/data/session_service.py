@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class SessionService:
-    def __init__(self, factory: ServiceFactory):
+    def __init__(self, db: Session, factory: ServiceFactory = None):
+        self.db: Session = db
         self.factory = factory
-        self.db: Session = factory.db
-        self.request: Request = factory.request
+        self.request: Request = getattr(factory, 'request', None) if factory else None
 
     def create_session(self, user_id: int, request: Request) -> SessionModel:
         token = str(uuid.uuid4())

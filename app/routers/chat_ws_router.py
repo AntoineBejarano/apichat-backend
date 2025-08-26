@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from uuid import UUID
 from datetime import datetime
 import re
+import asyncio
 
 from app.core.database import get_db
 from app.core.service_factory import ServiceFactory
@@ -11,6 +12,8 @@ from app.schemas.chat_schema import ChatMessage, ChatCreate
 from app.utils.logger import logger
 from app.services.common.ws_emitter import get_ws_emitter
 from app.services.notifications.schema_notification_service import get_schema_notification_service
+from app.services.management.system_readiness_manager import SystemReadinessManager
+from app.services.management.environment_preparation_orchestrator import EnvironmentPreparationOrchestrator
 
 router = APIRouter(
     tags=["🧠 WebSocket Chat"],
@@ -85,33 +88,177 @@ async def websocket_chat(
 ):
     await websocket.accept()
 
-    factory = ServiceFactory(db, websocket)
-
+    # 🔧 CORRECCIÓN: Validar token de sesión y recuperar usuario real
     try:
-        user_id = factory.user.id
-        logger.info(f"✅ WebSocket connected - user_id={user_id}")
+        # Obtener token de sesión del WebSocket (prioridad: cookies > query_params > headers)
+        session_token = None
+        
+        # 1. Intentar obtener de cookies (método principal)
+        if hasattr(websocket, 'cookies') and websocket.cookies:
+            session_token = websocket.cookies.get("session_token")
+        
+        # 2. Si no hay cookies, intentar de query parameters
+        if not session_token:
+            session_token = websocket.query_params.get("session_token")
+        
+        # 3. Si no hay query params, intentar de headers
+        if not session_token:
+            session_token = websocket.headers.get("session_token")
+        
+        # 4. Si no hay headers, intentar de Authorization header
+        if not session_token:
+            auth_header = websocket.headers.get("authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                session_token = auth_header.replace("Bearer ", "")
+        
+        if not session_token:
+            await websocket.send_json({
+                "type": "error",
+                "message": "❌ No se proporcionó token de sesión en cookies, query params, headers o Authorization",
+            })
+            await websocket.close(code=1008)
+            return
+        
+        # Validar sesión y obtener usuario real
+        from app.services.data.session_service import SessionService
+        session_service = SessionService(db)
+        session = session_service.validate_session(session_token)
+        
+        if not session or not session.user:
+            await websocket.send_json({
+                "type": "error",
+                "message": "❌ Sesión inválida o expirada",
+            })
+            await websocket.close(code=1008)
+            return
+        
+        # Usar usuario real de la sesión
+        real_user = session.user
+        factory = ServiceFactory(websocket, real_user)
+        
+        logger.info(f"✅ WebSocket connected - user_id={real_user.id} (sesión válida)")
+        
+        # 🔧 FASE 4: Inicializar servicios de readiness y preparación del entorno
+        try:
+            # Inicializar SystemReadinessManager
+            system_readiness_manager = SystemReadinessManager(factory)
+            await system_readiness_manager.initialize_system()
+            
+            # Inicializar EnvironmentPreparationOrchestrator
+            env_prep_orchestrator = EnvironmentPreparationOrchestrator(factory)
+            
+            # Enviar estado inicial del sistema
+            system_status = await system_readiness_manager.get_system_status()
+            await websocket.send_json({
+                "type": "system.status",
+                "data": system_status,
+                "message": "🔍 Verificando estado del sistema...",
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            logger.info(f"[ChatWS] 🔍 Estado del sistema verificado para usuario {real_user.id}")
+            
+        except Exception as readiness_error:
+            logger.warning(f"[ChatWS] ⚠️ Error inicializando servicios de readiness: {readiness_error}")
+            await websocket.send_json({
+                "type": "system.warning",
+                "message": "⚠️ Advertencia: No se pudo verificar el estado del sistema",
+                "timestamp": datetime.now().isoformat()
+            })
+        
     except Exception as e:
         await websocket.send_json({
             "type": "error",
-            "message": f"❌ Authentication failed: {str(e)}",
+            "message": f"❌ Error de autenticación: {str(e)}",
         })
         await websocket.close(code=1008)
         return
+    
+    # El usuario ya está validado arriba, continuar con la lógica del WebSocket
 
     orchestrator = factory.get_orchestrator_service()
     chat_service = factory.get_chat_service()
+    
+    # 🔧 FASE 4: Verificar readiness del entorno antes de procesar mensajes
+    # Definir recursos del usuario (esto se puede mejorar para obtener de la base de datos)
+    user_resources = {
+        "db_uuid": None,  # TODO: Obtener de la base de datos
+        "app_id": None,   # TODO: Obtener de la base de datos
+        "strategy_ids": [] # TODO: Obtener de la base de datos
+    }
+    
+    try:
+        
+        # Verificar readiness del entorno
+        env_status = await env_prep_orchestrator.get_environment_status(
+            user_id=str(real_user.id),
+            **user_resources
+        )
+        
+        # Enviar estado del entorno
+        await websocket.send_json({
+            "type": "environment.status",
+            "data": env_status,
+            "message": "🔍 Verificando recursos del entorno...",
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Si el entorno no está listo, iniciar preparación automática
+        if not env_status.get("environment_ready", False):
+            await websocket.send_json({
+                "type": "environment.preparing",
+                "message": "🚀 Preparando entorno automáticamente...",
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Iniciar preparación del entorno en background
+            prep_result = await env_prep_orchestrator.prepare_user_environment(
+                user_id=str(real_user.id),
+                **user_resources
+            )
+            
+            if prep_result.get("success"):
+                await websocket.send_json({
+                    "type": "environment.preparation_started",
+                    "data": prep_result,
+                    "message": "✅ Preparación del entorno iniciada",
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Iniciar monitoreo de readiness en background
+                asyncio.create_task(env_prep_orchestrator.wait_for_environment_ready(
+                    user_id=str(real_user.id),
+                    **user_resources
+                ))
+            else:
+                await websocket.send_json({
+                    "type": "environment.preparation_failed",
+                    "data": prep_result,
+                    "message": "❌ Error iniciando preparación del entorno",
+                    "timestamp": datetime.now().isoformat()
+                })
+        
+        logger.info(f"[ChatWS] 🔍 Estado del entorno verificado para usuario {real_user.id}")
+        
+    except Exception as env_error:
+        logger.warning(f"[ChatWS] ⚠️ Error verificando readiness del entorno: {env_error}")
+        await websocket.send_json({
+            "type": "environment.warning",
+            "message": "⚠️ Advertencia: No se pudo verificar el estado del entorno",
+            "timestamp": datetime.now().isoformat()
+        })
 
     # 🔧 FASE 5: Servicios de notificaciones y WebSocket
     ws_emitter = get_ws_emitter()
     notification_service = get_schema_notification_service(factory)
     
     # Registrar conexión WebSocket para notificaciones
-    ws_emitter.register_connection(str(user_id), websocket)
-    logger.info(f"[ChatWS] 🔗 Conexión WebSocket registrada para notificaciones del usuario {user_id}")
+    ws_emitter.register_connection(str(real_user.id), websocket)
+    logger.info(f"[ChatWS] 🔗 Conexión WebSocket registrada para notificaciones del usuario {real_user.id}")
     
     # Suscribir usuario a notificaciones de schema
-    notification_service.subscribe_user(user_id)
-    logger.info(f"[ChatWS] 📧 Usuario {user_id} suscrito a notificaciones de schema")
+    notification_service.subscribe_user(real_user.id)
+    logger.info(f"[ChatWS] 📧 Usuario {real_user.id} suscrito a notificaciones de schema")
 
     # Crea o reutiliza un chat existente
     chats = chat_service.get_all(limit=1)
@@ -175,6 +322,57 @@ async def websocket_chat(
                     await websocket.send_json({
                         "type": "error",
                         "message": f"❌ Error procesando decisión: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+            
+            # 🔧 FASE 4: Manejar solicitudes de estado del sistema
+            if data.get("type") == "system.status.request":
+                try:
+                    # Obtener estado actual del sistema
+                    system_status = await system_readiness_manager.get_system_status()
+                    
+                    await websocket.send_json({
+                        "type": "system.status",
+                        "data": system_status,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    logger.info(f"[ChatWS] 🔍 Estado del sistema enviado a usuario {real_user.id}")
+                    continue
+                    
+                except Exception as e:
+                    logger.error(f"[ChatWS] ❌ Error obteniendo estado del sistema: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"❌ Error obteniendo estado del sistema: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+            
+            # 🔧 FASE 4: Manejar solicitudes de estado del entorno
+            if data.get("type") == "environment.status.request":
+                try:
+                    # Obtener estado actual del entorno
+                    env_status = await env_prep_orchestrator.get_environment_status(
+                        user_id=str(real_user.id),
+                        **user_resources
+                    )
+                    
+                    await websocket.send_json({
+                        "type": "environment.status",
+                        "data": env_status,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    logger.info(f"[ChatWS] 🔍 Estado del entorno enviado a usuario {real_user.id}")
+                    continue
+                    
+                except Exception as e:
+                    logger.error(f"[ChatWS] ❌ Error obteniendo estado del entorno: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"❌ Error obteniendo estado del entorno: {str(e)}",
                         "timestamp": datetime.now().isoformat()
                     })
                     continue

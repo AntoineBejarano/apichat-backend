@@ -28,7 +28,8 @@ class QueryIntent(Enum):
 class ExecutionPlannerService:
     """Servicio para planificar la ejecución de consultas de forma inteligente"""
     
-    def __init__(self):
+    def __init__(self, factory=None):
+        self.factory = factory
         self.language_service = LanguageDetectionService()
         
         # Patrones para detectar intenciones

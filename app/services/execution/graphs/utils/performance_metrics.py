@@ -38,6 +38,10 @@ class PerformanceMetrics:
             self.metrics[node_name] = node_time
             logger.info(f"[PerformanceMetrics] 📊 Performance - {node_name}: {node_time:.3f}s")
     
+    def record_node_performance(self, node_name: str, execution_time: float):
+        """Registra el performance de un nodo específico (alias para record_node_time)"""
+        self.record_node_time(node_name, execution_time)
+    
     def record_tokens(self, token_type: str, count: int):
         """Registra el conteo de tokens por tipo"""
         if token_type in self.token_metrics:

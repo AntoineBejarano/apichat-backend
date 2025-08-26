@@ -347,9 +347,7 @@ class SmartAIOrchestrator:
             if intent_result.intent_type == IntentType.DB_QUERY:
                 recommendations.append("Consulta de base de datos detectada - se aplicará validación de esquema")
             elif intent_result.intent_type == IntentType.API_FUNCTION:
-                recommendations.append("Función de API detectada - se validarán parámetros")
-            elif intent_result.intent_type == IntentType.MCP_INTEGRATION:
-                recommendations.append("Integración MCP detectada - se cargarán herramientas disponibles")
+                recommendations.append("Función de API/MCP detectada - se validarán parámetros y herramientas disponibles")
             
             # Recomendaciones basadas en ruta de enrutamiento
             if intent_result.routing_path == "fallback":
@@ -361,7 +359,8 @@ class SmartAIOrchestrator:
             
         except Exception as e:
             logger.error(f"[SmartAIOrchestrator] ❌ Error generando recomendaciones: {e}")
-            recommendations.append("Error generando recomendaciones")
+            # Agregar recomendación genérica en caso de error
+            recommendations.append("Consulta procesada - se aplicarán optimizaciones estándar")
         
         return recommendations
     

@@ -81,6 +81,33 @@ class BackgroundServicesFactory(BaseServiceFactory):
             logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo EmailService: {e}")
             return None
     
+    def get_warmup_engine(self):
+        """Obtiene el motor de warmup"""
+        try:
+            from app.services.background.warmup_engine import WarmupEngine
+            return self._get_or_create_service(WarmupEngine, "warmup_engine")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo WarmupEngine: {e}")
+            return None
+    
+    def get_resource_preparation_service(self):
+        """Obtiene el servicio de preparación de recursos"""
+        try:
+            from app.services.background.resource_preparation_service import ResourcePreparationService
+            return self._get_or_create_service(ResourcePreparationService, "resource_preparation")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo ResourcePreparationService: {e}")
+            return None
+    
+    def get_upload_trigger_service(self):
+        """Obtiene el servicio de triggers automáticos tras upload"""
+        try:
+            from app.services.background.resource_upload_trigger import ResourceUploadTrigger
+            return self._get_or_create_service(ResourceUploadTrigger, "upload_trigger")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo ResourceUploadTrigger: {e}")
+            return None
+    
     def get_factory_info(self) -> dict:
         """Obtiene información de la factory de background"""
         try:
@@ -92,7 +119,10 @@ class BackgroundServicesFactory(BaseServiceFactory):
                     "queue_service",
                     "worker_service",
                     "notification_service",
-                    "email_service"
+                    "email_service",
+                    "warmup_engine",
+                    "resource_preparation_service",
+                    "upload_trigger_service"
                 ],
                 **self._get_service_info()
             }

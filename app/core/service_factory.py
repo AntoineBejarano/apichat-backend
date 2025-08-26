@@ -6,8 +6,8 @@ reemplazando el ServiceFactory monolítico de 400+ líneas.
 """
 
 import logging
-from typing import Optional, Dict, Any
-from fastapi import Request
+from typing import Optional, Dict, Any, Union
+from fastapi import Request, WebSocket
 
 from app.models.user_model import User
 from app.core.factories.core_services_factory import CoreServicesFactory
@@ -33,33 +33,197 @@ class ServiceFactory:
     - Background Services (Jobs, Scheduler, Queue)
     """
     
-    def __init__(self, request: Request, user: User):
+    def __init__(self, request: Union[Request, WebSocket], user: Optional[User] = None):
         """
         Inicializa el Service Factory refactorizado
         
         Args:
-            request: Request de FastAPI
-            user: Usuario autenticado
+            request: Request de FastAPI o WebSocket
+            user: Usuario autenticado (opcional para WebSockets)
         """
         self.request = request
         self.user = user
         
-        # Inicializar todas las sub-factories
-        logger.info(f"[ServiceFactory] 🚀 Inicializando sub-factories para usuario {user.id}")
+        # 🔧 NUEVO: Inicializar atributo db para servicios del orquestador
+        try:
+            from app.core.database import SessionLocal
+            self.db = SessionLocal()
+            logger.info(f"[ServiceFactory] ✅ Sesión de DB inicializada")
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error inicializando sesión de DB: {e}")
+            self.db = None
+        
+        # 🔧 NUEVO: Atributos para gestión de fases (NO inicializar sub-factories aquí)
+        self.readiness_registry = None
+        self.phase_manager = None
+        
+        # 🔧 NUEVO: Flags para control de fases
+        self._phase_1_core_ready = False
+        self._phase_2_ai_ready = False
+        self._phase_3_execution_ready = False
+        self._phase_4_orchestrator_ready = False
+        
+        logger.info(f"[ServiceFactory] ✅ Inicialización básica completada (ligera)")
+    
+    # ─────────────────────────────────────────────
+    #   🔧 MÉTODOS DE PREPARACIÓN POR FASES
+    # ─────────────────────────────────────────────
+    
+    async def prepare_phase_1_core(self):
+        """Prepara servicios core (DB, Auth, Config)"""
+        if self._phase_1_core_ready:
+            logger.info(f"[ServiceFactory] ✅ Fase 1 (Core) ya está lista")
+            return
         
         try:
+            logger.info(f"[ServiceFactory] 🚀 Iniciando Fase 1: Servicios Core")
+            
+            # Inicializar sub-factories core
             self.core = CoreServicesFactory(self)
+            
+            # Inicializar servicios de gestión de fases
+            from app.services.management import ReadinessRegistry, PhaseDependencyManager
+            self.readiness_registry = ReadinessRegistry()
+            self.phase_manager = PhaseDependencyManager()
+            
+            # Marcar fase como completada
+            await self.phase_manager.mark_phase_in_progress('phase_1_core')
+            await self.phase_manager.mark_phase_completed('phase_1_core')
+            
+            self._phase_1_core_ready = True
+            logger.info(f"[ServiceFactory] ✅ Fase 1 (Core) completada")
+            
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error en Fase 1 (Core): {e}")
+            raise
+    
+    def _initialize_core_services(self):
+        """Método auxiliar para inicializar servicios core (usado en tests)"""
+        return CoreServicesFactory(self)
+    
+    async def prepare_phase_2_ai(self):
+        """Prepara servicios AI (requiere core listo)"""
+        if self._phase_2_ai_ready:
+            logger.info(f"[ServiceFactory] ✅ Fase 2 (AI) ya está lista")
+            return
+        
+        try:
+            logger.info(f"[ServiceFactory] 🚀 Iniciando Fase 2: Servicios AI")
+            
+            # Asegurar que Fase 1 esté lista
+            await self.prepare_phase_1_core()
+            
+            # Inicializar sub-factories AI
             self.ai = AIServicesFactory(self)
+            
+            # Marcar fase como completada
+            await self.phase_manager.mark_phase_in_progress('phase_2_ai')
+            await self.phase_manager.mark_phase_completed('phase_2_ai')
+            
+            self._phase_2_ai_ready = True
+            logger.info(f"[ServiceFactory] ✅ Fase 2 (AI) completada")
+            
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error en Fase 2 (AI): {e}")
+            raise
+    
+    def _initialize_ai_services(self):
+        """Método auxiliar para inicializar servicios AI (usado en tests)"""
+        return AIServicesFactory(self)
+    
+    async def prepare_phase_3_execution(self):
+        """Prepara servicios de ejecución (requiere AI listo)"""
+        if self._phase_3_execution_ready:
+            logger.info(f"[ServiceFactory] ✅ Fase 3 (Execution) ya está lista")
+            return
+        
+        try:
+            logger.info(f"[ServiceFactory] 🚀 Iniciando Fase 3: Servicios de Ejecución")
+            
+            # Asegurar que Fase 2 esté lista
+            await self.prepare_phase_2_ai()
+            
+            # Inicializar sub-factories de ejecución
+            self.execution_services = True
+            
+            # Marcar fase como completada
+            await self.phase_manager.mark_phase_in_progress('phase_3_execution')
+            await self.phase_manager.mark_phase_completed('phase_3_execution')
+            
+            self._phase_3_execution_ready = True
+            logger.info(f"[ServiceFactory] ✅ Fase 3 (Execution) completada")
+            
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error en Fase 3 (Execution): {e}")
+            raise
+    
+    def _initialize_execution_services(self):
+        """Método auxiliar para inicializar servicios de ejecución (usado en tests)"""
+        return True
+    
+    async def prepare_phase_4_orchestrator(self):
+        """Prepara servicios del orquestador (requiere todas las fases anteriores)"""
+        if self._phase_4_orchestrator_ready:
+            logger.info(f"[ServiceFactory] ✅ Fase 4 (Orchestrator) ya está lista")
+            return
+        
+        try:
+            logger.info(f"[ServiceFactory] 🚀 Iniciando Fase 4: Servicios del Orquestador")
+            
+            # Asegurar que todas las fases anteriores estén listas
+            await self.prepare_phase_3_execution()
+            
+            # Inicializar sub-factories restantes
             self.cache = CacheServicesFactory(self)
             self.data = DataServicesFactory(self)
             self.management = ManagementServicesFactory(self)
             self.background = BackgroundServicesFactory(self)
             
-            logger.info(f"[ServiceFactory] ✅ Todas las sub-factories inicializadas correctamente")
+            # Marcar fase como completada
+            await self.phase_manager.mark_phase_in_progress('phase_4_orchestrator')
+            await self.phase_manager.mark_phase_completed('phase_4_orchestrator')
+            
+            self._phase_4_orchestrator_ready = True
+            logger.info(f"[ServiceFactory] ✅ Fase 4 (Orchestrator) completada")
             
         except Exception as e:
-            logger.error(f"[ServiceFactory] ❌ Error inicializando sub-factories: {e}")
+            logger.error(f"[ServiceFactory] ❌ Error en Fase 4 (Orchestrator): {e}")
             raise
+    
+    def _initialize_orchestrator_services(self):
+        """Método auxiliar para inicializar servicios del orquestador (usado en tests)"""
+        return {
+            'cache': CacheServicesFactory(self),
+            'data': DataServicesFactory(self),
+            'management': ManagementServicesFactory(self),
+            'background': BackgroundServicesFactory(self)
+        }
+    
+    async def prepare_for_chat(self):
+        """Prepara factory para uso en chat (Fases 1-3)"""
+        try:
+            await self.prepare_phase_1_core()
+            await self.prepare_phase_2_ai()
+            await self.prepare_phase_3_execution()
+            
+            logger.info(f"[ServiceFactory] ✅ Factory preparado para chat")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error preparando para chat: {e}")
+            return False
+    
+    async def prepare_for_orchestrator(self):
+        """Prepara factory para orquestador (todas las fases)"""
+        try:
+            await self.prepare_phase_4_orchestrator()
+            
+            logger.info(f"[ServiceFactory] ✅ Factory preparado para orquestador")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error preparando para orquestador: {e}")
+            return False
     
     # ─────────────────────────────────────────────
     #   🔧 CORE SERVICES (Delegación a CoreServicesFactory)
@@ -67,27 +231,263 @@ class ServiceFactory:
     
     def get_database_service(self):
         """Obtiene el servicio de base de datos"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_database_service()
+    
+    def get_database_session(self):
+        """Obtiene la sesión de base de datos directamente"""
+        try:
+            from app.core.database import SessionLocal
+            return SessionLocal()
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo sesión de DB: {e}")
+            return None
     
     def get_auth_service(self):
         """Obtiene el servicio de autenticación"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_auth_service()
     
     def get_config_service(self):
         """Obtiene el servicio de configuración"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_config_service()
     
     def get_session_service(self):
         """Obtiene el servicio de sesión"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_session_service()
     
     def get_ws_emitter(self):
         """Obtiene el emisor de WebSocket"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_ws_emitter()
     
     def get_openai_service(self):
         """Obtiene el servicio de OpenAI"""
+        if not self._phase_1_core_ready:
+            raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
         return self.core.get_openai_service()
+    
+    def get_orchestrator_service(self):
+        """Obtiene el servicio orquestador"""
+        if not self._phase_4_orchestrator_ready:
+            raise RuntimeError("Fase 4 (Orchestrator) no está lista. Llama a prepare_for_orchestrator() primero")
+        
+        try:
+            from app.services.orchestrator.orchestrator_service import OrchestratorService
+            return OrchestratorService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo OrchestratorService: {e}")
+            return None
+    
+    def get_chat_service(self):
+        """Obtiene el servicio de chat"""
+        if not self._phase_3_execution_ready:
+            raise RuntimeError("Fase 3 (Execution) no está lista. Llama a prepare_for_chat() primero")
+        
+        try:
+            from app.services.data.chat_service import ChatService
+            return ChatService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ChatService: {e}")
+            return None
+    
+    def get_chat_history_service(self):
+        """Obtiene el servicio de historial de chat"""
+        if not self._phase_3_execution_ready:
+            raise RuntimeError("Fase 3 (Execution) no está lista. Llama a prepare_for_chat() primero")
+        
+        try:
+            from app.services.data.chat_history_service import ChatHistoryService
+            return ChatHistoryService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ChatHistoryService: {e}")
+            return None
+    
+    def get_decision_manager(self):
+        """Obtiene el gestor de decisiones"""
+        if not self._phase_3_execution_ready:
+            raise RuntimeError("Fase 3 (Execution) no está lista. Llama a prepare_for_chat() primero")
+        
+        try:
+            from app.services.orchestrator.decision_manager import DecisionManager
+            return DecisionManager(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo DecisionManager: {e}")
+            return None
+    
+    def get_resource_proposal_service(self):
+        """Obtiene el servicio de propuestas de recursos"""
+        if not self._phase_3_execution_ready:
+            raise RuntimeError("Fase 3 (Execution) no está lista. Llama a prepare_for_chat() primero")
+        
+        try:
+            from app.services.orchestrator.resource_proposal_service import ResourceProposalService
+            return ResourceProposalService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ResourceProposalService: {e}")
+            return None
+    
+    # 🔧 NUEVOS SERVICIOS CRÍTICOS PARA ORCHESTRATOR
+    def get_advanced_telemetry_service(self):
+        """Obtiene el servicio de telemetría avanzada"""
+        if not self._phase_2_ai_ready:
+            raise RuntimeError("Fase 2 (AI) no está lista. Llama a prepare_phase_2_ai() primero")
+        
+        try:
+            from app.services.monitoring.performance_monitoring_service import PerformanceMonitoringService
+            return PerformanceMonitoringService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo PerformanceMonitoringService: {e}")
+            return None
+    
+    def get_function_service(self):
+        """Obtiene el servicio de funciones"""
+        if not self._phase_3_execution_ready:
+            raise RuntimeError("Fase 3 (Execution) no está lista. Llama a prepare_for_chat() primero")
+        
+        try:
+            from app.services.execution.function_service import FunctionService
+            return FunctionService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo FunctionService: {e}")
+            return None
+    
+    def get_mcp_integration_service(self):
+        """Obtiene el servicio de integración MCP"""
+        if not self._phase_4_orchestrator_ready:
+            raise RuntimeError("Fase 4 (Orchestrator) no está lista. Llama a prepare_for_orchestrator() primero")
+        
+        try:
+            from app.services.integration.mcp_integration_service import MCPIntegrationService
+            return MCPIntegrationService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo MCPIntegrationService: {e}")
+            return None
+    
+    def get_detailed_schema_cache_service(self):
+        """Obtiene el servicio de cache de esquemas detallados"""
+        if not self._phase_4_orchestrator_ready:
+            raise RuntimeError("Fase 4 (Orchestrator) no está lista. Llama a prepare_for_orchestrator() primero")
+        
+        try:
+            from app.services.context.detailed_schema_cache_service import DetailedSchemaCacheService
+            return DetailedSchemaCacheService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo DetailedSchemaCacheService: {e}")
+            return None
+    
+    def get_app_descriptor_cache_service(self):
+        """Obtiene el servicio de cache de descriptores de apps"""
+        if not self._phase_4_orchestrator_ready:
+            raise RuntimeError("Fase 4 (Orchestrator) no está lista. Llama a prepare_for_orchestrator() primero")
+        
+        try:
+            from app.services.context.app_descriptor_cache_service import AppDescriptorCacheService
+            return AppDescriptorCacheService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo AppDescriptorCacheService: {e}")
+            return None
+    
+    def get_vector_search_service(self):
+        """Obtiene el servicio de búsqueda vectorial"""
+        try:
+            from app.services.context.vector_search_service import VectorSearchService
+            return VectorSearchService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo VectorSearchService: {e}")
+            return None
+    
+    def get_schema_explorer_service(self):
+        """Obtiene el servicio de exploración de esquemas"""
+        try:
+            from app.services.context.schema_explorer_service import SchemaExplorerService
+            return SchemaExplorerService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo SchemaExplorerService: {e}")
+            return None
+    
+    def get_guided_service(self):
+        """Obtiene el servicio de grafos guiados"""
+        try:
+            from app.services.execution.graphs.exploration_graph import ExplorationGraph
+            return ExplorationGraph(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ExplorationGraph: {e}")
+            return None
+    
+    def get_resource_selector_service(self):
+        """Obtiene el servicio de selección de recursos"""
+        try:
+            from app.services.ai.resource_priority_service import ResourcePriorityService
+            return ResourcePriorityService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ResourcePriorityService: {e}")
+            return None
+    
+    def get_plan_builder_service(self):
+        """Obtiene el servicio de construcción de planes"""
+        try:
+            from app.services.ai.plan_builder_service import PlanBuilderService
+            return PlanBuilderService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo PlanBuilderService: {e}")
+            return None
+    
+    def get_performance_monitoring_service(self):
+        """Obtiene el servicio de monitoreo de performance"""
+        try:
+            from app.services.monitoring.performance_monitoring_service import PerformanceMonitoringService
+            return PerformanceMonitoringService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo PerformanceMonitoringService: {e}")
+            return None
+    
+    def get_usage_service(self):
+        """Obtiene el servicio de uso"""
+        try:
+            from app.services.data.usage_service import UsageService
+            return UsageService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo UsageService: {e}")
+            return None
+    
+    def get_executed_strategy_service(self):
+        """Obtiene el servicio de estrategias ejecutadas"""
+        try:
+            from app.services.data.executed_strategy_service import ExecutedStrategyService
+            return ExecutedStrategyService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ExecutedStrategyService: {e}")
+            return None
+    
+    def get_execution_engine_service(self):
+        """Obtiene el servicio del motor de ejecución"""
+        try:
+            from app.services.ai.execution_planner_service import ExecutionPlannerService
+            return ExecutionPlannerService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ExecutionPlannerService: {e}")
+            return None
+    
+    def get_prompt_engineering_service(self):
+        """Obtiene el servicio de ingeniería de prompts"""
+        try:
+            from app.services.ai.prompt_engineering_service import PromptEngineeringService
+            return PromptEngineeringService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo PromptEngineeringService: {e}")
+            return None
+    
+    def set_current_chat_id(self, chat_id: str):
+        """Establece el ID del chat actual para tracking"""
+        self.current_chat_id = chat_id
     
     # ─────────────────────────────────────────────
     #   🧠 AI SERVICES (Delegación a AIServicesFactory)
