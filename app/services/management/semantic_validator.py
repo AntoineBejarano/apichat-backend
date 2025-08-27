@@ -22,7 +22,16 @@ class SemanticValidator:
         """Valida esquema de base de datos semánticamente"""
         try:
             cache_service = self.factory.get_detailed_schema_cache_service()
-            schema = await cache_service.get_schema(db_uuid)
+            # 🔧 CORRECCIÓN: Usar get_schema_cache con user_id del factory
+            user_id = getattr(self.factory, 'user', None)
+            if not user_id:
+                return ValidationResult(
+                    valid=False,
+                    errors=["No se pudo obtener el ID del usuario del factory"],
+                    message="Factory no tiene usuario configurado"
+                )
+            
+            schema = await cache_service.get_schema_cache(user_id.id, db_uuid)
             
             if not schema:
                 return ValidationResult(
@@ -31,13 +40,37 @@ class SemanticValidator:
                     message="Esquema de base de datos no disponible"
                 )
             
+            # 🔧 FIX: Convertir DetailedSchemaCacheResponse a diccionario
+            if hasattr(schema, 'model_dump'):
+                schema_dict = schema.model_dump()
+            elif hasattr(schema, 'dict'):
+                schema_dict = schema.dict()
+            else:
+                schema_dict = schema
+            
             # Validaciones semánticas
             validation_errors = []
             
             # 1. Verificar que las tablas tienen sentido
-            tables = schema.get('tables', [])
+            tables = schema_dict.get('tables', [])
+            
+            # 🔧 VALIDACIÓN INTELIGENTE: Detectar DBs corruptas/inconsistentes
             if not tables:
-                validation_errors.append("No se detectaron tablas en el esquema")
+                # Verificar si es un esquema básico de Redis (solo metadata)
+                if schema_dict.get('dialect') or schema_dict.get('generated_at'):
+                    # 🔧 PROBLEMA REAL: DB antigua sin esquema completo en Redis
+                    logger.warning(f"[SemanticValidator] ⚠️ DB {db_uuid} tiene esquema básico de Redis pero sin tablas")
+                    return ValidationResult(
+                        valid=False,
+                        errors=[
+                            "No se detectaron tablas en el esquema",
+                            "Esta base de datos puede estar corrupta o inconsistente",
+                            "Recomendación: Borrar y recrear la base de datos desde el endpoint"
+                        ],
+                        message="Base de datos con esquema incompleto - requiere recreación"
+                    )
+                else:
+                    validation_errors.append("No se detectaron tablas en el esquema")
             
             for table in tables:
                 if not table.get('name') or not table.get('columns'):
@@ -50,9 +83,8 @@ class SemanticValidator:
                         if referenced_table not in [t['name'] for t in tables]:
                             validation_errors.append(f"Referencia a tabla inexistente: {referenced_table}")
             
-            # 2. Verificar que hay al menos una tabla
-            if not tables:
-                validation_errors.append("No se detectaron tablas en el esquema")
+            # 🔧 FIX: Eliminar validación duplicada
+            # La validación de tablas ya se hizo arriba
             
             # 3. Verificar que las columnas tienen tipos válidos
             valid_types = ['varchar', 'int', 'timestamp', 'boolean', 'text', 'decimal', 'float', 'date']
@@ -85,7 +117,16 @@ class SemanticValidator:
         """Valida funciones de aplicación semánticamente"""
         try:
             cache_service = self.factory.get_app_descriptor_cache_service()
-            descriptor = await cache_service.get_descriptor(app_id)
+            # 🔧 CORRECCIÓN: Usar get_descriptor con user_id del factory
+            user_id = getattr(self.factory, 'user', None)
+            if not user_id:
+                return ValidationResult(
+                    valid=False,
+                    errors=["No se pudo obtener el ID del usuario del factory"],
+                    message="Factory no tiene usuario configurado"
+                )
+            
+            descriptor = await cache_service.get_descriptor(user_id.id, app_id)
             
             if not descriptor:
                 return ValidationResult(

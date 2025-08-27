@@ -154,6 +154,25 @@ class ReadinessRegistry:
                 shared.append((resource_type, resource_id))
         return shared
     
+    async def get_all_resources(self) -> Dict[str, Dict[str, str]]:
+        """Obtiene todos los recursos organizados por tipo"""
+        resources_by_type = {}
+        
+        for (resource_type, resource_id), status_data in self.resource_readiness.items():
+            if resource_type not in resources_by_type:
+                resources_by_type[resource_type] = {}
+            
+            if isinstance(status_data, dict):
+                status = status_data.get('status')
+            else:
+                status = status_data
+            
+            # Convertir status a string si es un enum
+            status_str = status.value if hasattr(status, 'value') else str(status)
+            resources_by_type[resource_type][resource_id] = status_str
+        
+        return resources_by_type
+    
     async def _validate_resource_semantically(self, resource_type: str, resource_id: str) -> 'ValidationResult':
         """Valida semánticamente un recurso antes de marcarlo como listo"""
         try:
@@ -172,3 +191,32 @@ class ReadinessRegistry:
             logger.error(f"Error en validación semántica de {resource_type}:{resource_id}: {e}")
             from app.services.management.semantic_validator import ValidationResult
             return ValidationResult(valid=False, errors=[str(e)], message="Error en validación semántica")
+
+    async def is_environment_ready(self, resources: List[Tuple[str, str]]) -> bool:
+        """
+        Verifica si todos los recursos del entorno están listos.
+        
+        Args:
+            resources: Lista de tuplas (resource_type, resource_id)
+            
+        Returns:
+            True si todos los recursos están listos, False en caso contrario
+        """
+        try:
+            if not resources:
+                return False
+            
+            for resource_type, resource_id in resources:
+                status_data = await self.get_resource_status(resource_type, resource_id)
+                
+                # Verificar si el recurso está listo
+                if not status_data.get('ready', False):
+                    logger.debug(f"Recurso {resource_type}:{resource_id} no está listo: {status_data.get('status', 'UNKNOWN')}")
+                    return False
+            
+            logger.debug(f"Todos los recursos del entorno están listos: {resources}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error verificando readiness del entorno: {e}")
+            return False

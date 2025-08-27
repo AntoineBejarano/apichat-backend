@@ -1,6 +1,7 @@
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,12 @@ class PerformanceMetrics:
             "prompt_tokens": 0,
             "response_tokens": 0
         }
+        # NUEVAS MÉTRICAS PARA READINESS Y FASES
+        self.phase_timings = {}
+        self.resource_readiness_times = {}
+        self.users_waiting = {}
+        self.resource_preparation_history = {}
+        
         self.overall_start_time = None
     
     def start_overall_timer(self):
@@ -75,11 +82,119 @@ class PerformanceMetrics:
         logger.info(f"[PerformanceMetrics] 🎯 Total Tokens calculado: {total}")
         return total
     
+    # NUEVOS MÉTODOS PARA READINESS Y FASES
+    def record_phase_time(self, phase: str, duration: float):
+        """Registra tiempo de ejecución de una fase de inicialización"""
+        if phase not in self.phase_timings:
+            self.phase_timings[phase] = []
+        self.phase_timings[phase].append(duration)
+        logger.info(f"[PerformanceMetrics] 🚀 Fase {phase}: {duration:.3f}s")
+    
+    def record_resource_readiness(self, resource_type: str, resource_id: str, duration: float):
+        """Registra tiempo de preparación de un recurso específico"""
+        key = f"{resource_type}_{resource_id}"
+        if key not in self.resource_readiness_times:
+            self.resource_readiness_times[key] = []
+        self.resource_readiness_times[key].append(duration)
+        
+        # Guardar historial de preparación
+        if key not in self.resource_preparation_history:
+            self.resource_preparation_history[key] = []
+        
+        self.resource_preparation_history[key].append({
+            'timestamp': datetime.now(timezone.utc),
+            'duration': duration,
+            'status': 'completed'
+        })
+        
+        logger.info(f"[PerformanceMetrics] 🔧 Recurso {resource_type}:{resource_id} preparado en {duration:.3f}s")
+    
+    def track_user_waiting(self, user_id: str, waiting_for: str):
+        """Trackea usuarios esperando por recursos"""
+        self.users_waiting[user_id] = {
+            'waiting_for': waiting_for,
+            'started_at': datetime.now(timezone.utc),
+            'status': 'waiting'
+        }
+        logger.info(f"[PerformanceMetrics] ⏳ Usuario {user_id} esperando por {waiting_for}")
+    
+    def mark_user_no_longer_waiting(self, user_id: str):
+        """Marca que un usuario ya no está esperando"""
+        if user_id in self.users_waiting:
+            self.users_waiting[user_id]['status'] = 'completed'
+            self.users_waiting[user_id]['completed_at'] = datetime.now(timezone.utc)
+            
+            # Calcular tiempo total de espera
+            start_time = self.users_waiting[user_id]['started_at']
+            completed_time = self.users_waiting[user_id]['completed_at']
+            total_wait_time = (completed_time - start_time).total_seconds()
+            
+            logger.info(f"[PerformanceMetrics] ✅ Usuario {user_id} completó espera en {total_wait_time:.3f}s")
+    
+    def get_phase_stats(self, phase: str) -> Dict[str, Any]:
+        """Obtiene estadísticas de una fase específica"""
+        times = self.phase_timings.get(phase, [])
+        if not times:
+            return {'count': 0, 'average': 0, 'min': 0, 'max': 0}
+        
+        return {
+            'count': len(times),
+            'average': sum(times) / len(times),
+            'min': min(times),
+            'max': max(times),
+            'last_execution': times[-1] if times else 0
+        }
+    
+    def get_resource_performance_stats(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
+        """Obtiene estadísticas de performance de un recurso específico"""
+        key = f"{resource_type}_{resource_id}"
+        times = self.resource_readiness_times.get(key, [])
+        
+        if not times:
+            return {'count': 0, 'average': 0, 'min': 0, 'max': 0}
+        
+        return {
+            'count': len(times),
+            'average': sum(times) / len(times),
+            'min': min(times),
+            'max': max(times),
+            'last_preparation': self.resource_preparation_history.get(key, [])[-1] if self.resource_preparation_history.get(key) else None
+        }
+    
+    def get_users_waiting_stats(self) -> Dict[str, Any]:
+        """Obtiene estadísticas de usuarios esperando"""
+        waiting_users = [u for u in self.users_waiting.values() if u['status'] == 'waiting']
+        completed_users = [u for u in self.users_waiting.values() if u['status'] == 'completed']
+        
+        if not completed_users:
+            avg_wait_time = 0
+        else:
+            wait_times = [(u['completed_at'] - u['started_at']).total_seconds() for u in completed_users]
+            avg_wait_time = sum(wait_times) / len(wait_times)
+        
+        longest_current_wait = 0
+        if waiting_users:
+            longest_current_wait = max([
+                (datetime.now(timezone.utc) - u['started_at']).total_seconds() 
+                for u in waiting_users
+            ])
+        
+        return {
+            'currently_waiting': len(waiting_users),
+            'total_completed': len(completed_users),
+            'longest_current_wait': longest_current_wait,
+            'average_wait_time': avg_wait_time
+        }
+    
     def get_metrics(self) -> Dict[str, Any]:
         """Obtiene las métricas actuales incluyendo tokens"""
         return {
             "performance": self.metrics.copy(),
-            "tokens": self.token_metrics.copy()
+            "tokens": self.token_metrics.copy(),
+            # NUEVAS MÉTRICAS
+            "phases": self.phase_timings.copy(),
+            "resources": self.resource_readiness_times.copy(),
+            "users_waiting": self.get_users_waiting_stats()
         }
     
     def log_breakdown(self):
@@ -99,6 +214,21 @@ class PerformanceMetrics:
         logger.info(f"   • Prompt tokens: {self.token_metrics.get('prompt_tokens', 0)}")
         logger.info(f"   • Response tokens: {self.token_metrics.get('response_tokens', 0)}")
         logger.info(f"   • TOTAL TOKENS: {self.token_metrics.get('total_tokens', 0)}")
+        
+        # NUEVO: Breakdown de fases y recursos
+        if self.phase_timings:
+            logger.info(f"[PerformanceMetrics] 🚀 Fases BREAKDOWN:")
+            for phase, times in self.phase_timings.items():
+                if times:
+                    avg_time = sum(times) / len(times)
+                    logger.info(f"   • {phase}: {len(times)} ejecuciones, promedio: {avg_time:.3f}s")
+        
+        if self.resource_readiness_times:
+            logger.info(f"[PerformanceMetrics] 🔧 Recursos BREAKDOWN:")
+            for resource_key, times in self.resource_readiness_times.items():
+                if times:
+                    avg_time = sum(times) / len(times)
+                    logger.info(f"   • {resource_key}: {len(times)} preparaciones, promedio: {avg_time:.3f}s")
     
     def get_performance_summary(self) -> Dict[str, Any]:
         """Obtiene un resumen completo de las métricas de rendimiento"""
@@ -115,5 +245,12 @@ class PerformanceMetrics:
                 "duplicate_detection_enabled": True,
                 "schema_cache_enabled": True,
                 "db_instances_cache_enabled": True
+            },
+            # NUEVO: Resumen de readiness y fases
+            "readiness_metrics": {
+                "total_phases_tracked": len(self.phase_timings),
+                "total_resources_tracked": len(self.resource_readiness_times),
+                "users_currently_waiting": len([u for u in self.users_waiting.values() if u['status'] == 'waiting']),
+                "total_users_completed": len([u for u in self.users_waiting.values() if u['status'] == 'completed'])
             }
         }

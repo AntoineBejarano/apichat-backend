@@ -134,14 +134,14 @@ class EnvironmentPreparationOrchestrator:
                 db_status = await self.readiness_registry.get_resource_status("database", db_uuid)
                 status["resources"]["database"] = {
                     "uuid": db_uuid,
-                    "status": db_status.value if db_status else "UNKNOWN"
+                    "status": db_status.get("status", "UNKNOWN") if db_status else "UNKNOWN"
                 }
             
             if app_id:
                 app_status = await self.readiness_registry.get_resource_status("application", app_id)
                 status["resources"]["application"] = {
                     "id": app_id,
-                    "status": app_status.value if app_status else "UNKNOWN"
+                    "status": app_status.get("status", "UNKNOWN") if app_status else "UNKNOWN"
                 }
             
             if strategy_ids:
@@ -149,7 +149,7 @@ class EnvironmentPreparationOrchestrator:
                 for strategy_id in strategy_ids:
                     strategy_status = await self.readiness_registry.get_resource_status("strategy", strategy_id)
                     status["resources"]["strategies"][strategy_id] = {
-                        "status": strategy_status.value if strategy_status else "UNKNOWN"
+                        "status": strategy_status.get("status", "UNKNOWN") if strategy_status else "UNKNOWN"
                     }
             
             # Estado general del entorno
@@ -192,38 +192,92 @@ class EnvironmentPreparationOrchestrator:
             
             start_time = datetime.now(timezone.utc)
             timeout_seconds = timeout
+            max_retries = 5  # 🔧 NUEVO: Máximo de reintentos
+            retry_count = 0
+            consecutive_errors = 0  # 🔧 NUEVO: Contador de errores consecutivos
             
-            while timeout_seconds > 0:
-                status = await self.get_environment_status(user_id, db_uuid, app_id, strategy_ids)
-                
-                if status.get("environment_ready", False):
-                    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-                    logger.info(f"[EnvironmentPreparationOrchestrator] ✅ Entorno listo en {elapsed:.2f}s")
-                    return {
-                        "success": True,
-                        "ready": True,
-                        "elapsed_seconds": elapsed,
-                        "status": status
-                    }
-                
-                # Esperar antes de verificar nuevamente
-                await asyncio.sleep(2)
-                timeout_seconds -= 2
+            while timeout_seconds > 0 and retry_count < max_retries:
+                try:
+                    # 🔧 NUEVO: Verificar si hay errores consecutivos
+                    if consecutive_errors >= 3:
+                        logger.error(f"[EnvironmentPreparationOrchestrator] ❌ Demasiados errores consecutivos ({consecutive_errors}), abortando")
+                        return {
+                            "success": False,
+                            "ready": False,
+                            "error": f"Demasiados errores consecutivos: {consecutive_errors}",
+                            "aborted": True
+                        }
+                    
+                    status = await self.get_environment_status(user_id, db_uuid, app_id, strategy_ids)
+                    
+                    # 🔧 NUEVO: Verificar si el status es válido
+                    if not status or "error" in status:
+                        consecutive_errors += 1
+                        logger.warning(f"[EnvironmentPreparationOrchestrator] ⚠️ Status inválido o con error (intento {consecutive_errors}/3): {status}")
+                        await asyncio.sleep(5)  # Esperar más tiempo entre reintentos
+                        timeout_seconds -= 5
+                        continue
+                    
+                    # 🔧 NUEVO: Resetear contador de errores si el status es válido
+                    consecutive_errors = 0
+                    
+                    if status.get("environment_ready", False):
+                        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                        logger.info(f"[EnvironmentPreparationOrchestrator] ✅ Entorno listo en {elapsed:.2f}s")
+                        return {
+                            "success": True,
+                            "ready": True,
+                            "elapsed_seconds": elapsed,
+                            "status": status
+                        }
+                    
+                    # 🔧 NUEVO: Log de progreso cada 10 segundos
+                    if retry_count % 5 == 0:
+                        logger.info(f"[EnvironmentPreparationOrchestrator] ⏳ Esperando... (intento {retry_count + 1}/{max_retries}, timeout restante: {timeout_seconds}s)")
+                    
+                    # Esperar antes de verificar nuevamente
+                    await asyncio.sleep(2)
+                    timeout_seconds -= 2
+                    retry_count += 1
+                    
+                except Exception as loop_error:
+                    consecutive_errors += 1
+                    retry_count += 1
+                    logger.error(f"[EnvironmentPreparationOrchestrator] ❌ Error en iteración {retry_count}: {loop_error}")
+                    
+                    # 🔧 NUEVO: Esperar más tiempo si hay errores
+                    await asyncio.sleep(5)
+                    timeout_seconds -= 5
+                    
+                    if retry_count >= max_retries:
+                        logger.error(f"[EnvironmentPreparationOrchestrator] ❌ Máximo de reintentos alcanzado ({max_retries})")
+                        break
             
-            # Timeout alcanzado
-            logger.warning(f"[EnvironmentPreparationOrchestrator] ⏰ Timeout alcanzado para usuario {user_id}")
-            return {
-                "success": False,
-                "ready": False,
-                "timeout": True,
-                "elapsed_seconds": timeout,
-                "status": await self.get_environment_status(user_id, db_uuid, app_id, strategy_ids)
-            }
+            # 🔧 NUEVO: Determinar razón de salida
+            if retry_count >= max_retries:
+                logger.warning(f"[EnvironmentPreparationOrchestrator] ⏰ Máximo de reintentos alcanzado para usuario {user_id}")
+                return {
+                    "success": False,
+                    "ready": False,
+                    "max_retries_reached": True,
+                    "retry_count": retry_count,
+                    "elapsed_seconds": (datetime.now(timezone.utc) - start_time).total_seconds()
+                }
+            else:
+                logger.warning(f"[EnvironmentPreparationOrchestrator] ⏰ Timeout alcanzado para usuario {user_id}")
+                return {
+                    "success": False,
+                    "ready": False,
+                    "timeout": True,
+                    "elapsed_seconds": timeout,
+                    "retry_count": retry_count
+                }
             
         except Exception as e:
-            logger.error(f"[EnvironmentPreparationOrchestrator] ❌ Error esperando readiness del entorno: {e}")
+            logger.error(f"[EnvironmentPreparationOrchestrator] ❌ Error crítico esperando readiness del entorno: {e}")
             return {
                 "success": False,
                 "ready": False,
-                "error": str(e)
+                "error": str(e),
+                "critical_error": True
             }

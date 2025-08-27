@@ -665,11 +665,22 @@ class DetailedSchemaCacheService(BaseService):
             from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
             
             # Crear snapshot desde Redis
+            # 🔧 FIX: Manejar formato de fecha de Redis (puede tener 'Z' al final)
+            generated_at_str = redis_schema.get('generated_at', datetime.now().isoformat())
+            try:
+                # Intentar parsear la fecha, manejando el formato 'Z' de Redis
+                if generated_at_str.endswith('Z'):
+                    generated_at_str = generated_at_str.replace('Z', '+00:00')
+                generated_at = datetime.fromisoformat(generated_at_str)
+            except ValueError as date_error:
+                logger.warning(f"[SchemaCacheService] ⚠️ Error parseando fecha '{generated_at_str}': {date_error}, usando fecha actual")
+                generated_at = datetime.now(timezone.utc)
+            
             snapshot = SchemaSnapshot(
                 tables=redis_schema.get('tables', {}),
                 enrichment_level=EnrichmentLevel.BASIC,
                 dialect=redis_schema.get('dialect', 'postgresql'),
-                generated_at=datetime.fromisoformat(redis_schema.get('generated_at', datetime.now().isoformat()))
+                generated_at=generated_at
             )
             
             # Crear respuesta desde Redis

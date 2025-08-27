@@ -72,7 +72,7 @@ class WarmupEngine:
                 raise Exception("Cache service no disponible")
             
             # Intentar obtener/refrescar el esquema
-            schema = await cache_service.get_schema(db_uuid)
+            schema = await cache_service.get_schema_cache(user_id, db_uuid)
             if not schema:
                 raise Exception("No se pudo obtener esquema")
             
@@ -81,7 +81,7 @@ class WarmupEngine:
                 'warmed_up_at': datetime.now(),
                 'warmup_type': 'automatic',
                 'schema_version': 'latest',
-                'tables_count': len(schema.get('tables', []))
+                'tables_count': len(schema.tables) if hasattr(schema, 'tables') else 0
             })
             
             # Notificar completado
@@ -365,7 +365,9 @@ class WarmupEngine:
         try:
             ws_emitter = self._get_ws_emitter()
             if ws_emitter:
-                await ws_emitter.emit_to_user(user_id, message)
+                # Extraer el tipo del mensaje como evento
+                event_type = message.get("type", "warmup_status")
+                await ws_emitter.emit_to_user(user_id, event_type, message)
             else:
                 logger.warning(f"[WarmupEngine] WSEmitter no disponible para notificar usuario {user_id}")
         except Exception as e:

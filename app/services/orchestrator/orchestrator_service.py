@@ -50,6 +50,7 @@ from app.services.ai.fallback_response_service import FallbackResponseService  #
 
 from app.services.management.orchestrator_activation_guard import OrchestratorActivationGuard
 from app.services.management.system_readiness_manager import SystemReadinessManager
+from app.services.monitoring.readiness_metrics_service import ReadinessMetricsService
 
 if TYPE_CHECKING:
     from app.core.service_factory import ServiceFactory
@@ -84,6 +85,8 @@ class OrchestratorService:
         self.factory = factory
         self.activation_guard = OrchestratorActivationGuard(factory)
         self.system_readiness_manager = SystemReadinessManager(factory)
+        # AGREGAR SOLO ESTA LÍNEA:
+        self.readiness_metrics = ReadinessMetricsService(factory)
     
     async def handle_user_message(self, message: str, chat_id: str, user_id: str) -> Dict[str, Any]:
         """
@@ -163,7 +166,7 @@ class OrchestratorService:
     async def get_orchestrator_status(self, user_id: str) -> Dict[str, Any]:
         """
         Obtiene estado del orquestador para un usuario específico,
-        incluyendo readiness y capacidad de activación.
+        incluyendo readiness, capacidad de activación y métricas del sistema.
         """
         try:
             logger.info(f"Obteniendo estado del orquestador para usuario {user_id}")
@@ -171,11 +174,20 @@ class OrchestratorService:
             can_activate = await self.activation_guard.can_activate_orchestrator(user_id)
             readiness_status = await self.system_readiness_manager.get_detailed_readiness_status(user_id)
             
+            # AGREGAR SOLO ESTAS LÍNEAS PARA MÉTRICAS:
+            readiness_stats = await self.readiness_metrics.get_readiness_stats()
+            waiting_stats = await self.readiness_metrics.get_user_waiting_stats()
+            
             return {
                 "can_activate": can_activate,
                 "readiness_status": readiness_status,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "user_id": user_id
+                "user_id": user_id,
+                # NUEVAS MÉTRICAS (SIN ENDPOINTS ADICIONALES):
+                "system_metrics": {
+                    "readiness_stats": readiness_stats,
+                    "waiting_stats": waiting_stats
+                }
             }
             
         except Exception as e:
@@ -238,6 +250,39 @@ class OrchestratorService:
             return {
                 "error": str(e),
                 "user_id": user_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+    
+    async def get_system_metrics(self, user_id: str = None) -> Dict[str, Any]:
+        """
+        Obtiene métricas comprehensivas del sistema.
+        Útil para monitoreo y debugging interno.
+        """
+        try:
+            logger.info("Obteniendo métricas comprehensivas del sistema")
+            
+            # Obtener métricas comprehensivas
+            comprehensive_metrics = await self.readiness_metrics.get_comprehensive_metrics()
+            
+            # Agregar información del usuario si se proporciona
+            if user_id:
+                user_readiness = await self.system_readiness_manager.get_detailed_readiness_status(user_id)
+                comprehensive_metrics['user_specific'] = {
+                    'user_id': user_id,
+                    'readiness_status': user_readiness
+                }
+            
+            return {
+                "type": "success",
+                "system_metrics": comprehensive_metrics,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo métricas del sistema: {e}")
+            return {
+                "type": "error",
+                "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
 

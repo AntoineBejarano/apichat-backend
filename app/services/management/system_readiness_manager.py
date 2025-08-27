@@ -45,12 +45,13 @@ class SystemReadinessManager:
             # Verificar estado de las fases
             phase_status = await self._check_phase_status()
             
-            if phase_status["all_phases_ready"]:
+            if phase_status.get("all_phases_ready", False):
                 self.system_status = SystemStatus.READY
                 logger.info("[SystemReadinessManager] ✅ Sistema inicializado y listo")
             else:
                 self.system_status = SystemStatus.INITIALIZING
-                logger.info(f"[SystemReadinessManager] ⏳ Sistema inicializando: {phase_status['pending_phases']}")
+                pending_info = phase_status.get('pending_phases', ['fases pendientes'])
+                logger.info(f"[SystemReadinessManager] ⏳ Sistema inicializando: {pending_info}")
             
             # Registrar estado inicial
             await self._record_status_change("Sistema inicializado", self.system_status.value)
@@ -490,6 +491,11 @@ class SystemReadinessManager:
             
             # Obtener recursos pendientes
             pending_resources = await self.readiness_registry.get_pending_resources()
+            
+            # 🔧 VERIFICAR DISPONIBILIDAD DEL SERVICIO DE BACKGROUND
+            if not hasattr(self.factory, 'background'):
+                logger.warning(f"[SystemReadinessManager] ⚠️ Servicio de background no disponible, saltando preparación asíncrona")
+                return
             
             # Lanzar preparación en background
             preparation_service = self.factory.background.get_resource_preparation_service()

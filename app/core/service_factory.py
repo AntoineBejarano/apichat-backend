@@ -83,7 +83,7 @@ class ServiceFactory:
             
             # Inicializar servicios de gestión de fases
             from app.services.management import ReadinessRegistry, PhaseDependencyManager
-            self.readiness_registry = ReadinessRegistry()
+            self.readiness_registry = ReadinessRegistry(self)
             self.phase_manager = PhaseDependencyManager()
             
             # Marcar fase como completada
@@ -676,6 +676,24 @@ class ServiceFactory:
     def get_schema_performance_service(self):
         """Obtiene el servicio de performance de schemas"""
         return self.management.get_schema_performance_service()
+    
+    def get_resource_selection_service(self):
+        """Obtiene el servicio de selección de recursos prioritarios"""
+        try:
+            from app.services.management.resource_selection_service import ResourceSelectionService
+            return ResourceSelectionService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ResourceSelectionService: {e}")
+            return None
+
+    def get_environment_preparation_orchestrator(self):
+        """Obtiene el orquestador de preparación del entorno"""
+        try:
+            from app.services.management.environment_preparation_orchestrator import EnvironmentPreparationOrchestrator
+            return EnvironmentPreparationOrchestrator(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo EnvironmentPreparationOrchestrator: {e}")
+            return None
     
     # ─────────────────────────────────────────────
     #   🔄 BACKGROUND SERVICES (Delegación a BackgroundServicesFactory)

@@ -71,6 +71,10 @@ class PhaseDependencyManager:
         """Obtiene las fases completadas"""
         return self.completed_phases.copy()
     
+    async def is_phase_completed(self, phase: str) -> bool:
+        """Verifica si una fase específica está completada"""
+        return phase in self.completed_phases
+    
     async def get_pending_phases(self) -> List[str]:
         """Obtiene las fases pendientes de ejecución"""
         pending = []
