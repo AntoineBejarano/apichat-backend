@@ -272,6 +272,45 @@ class ServiceFactory:
         """Obtiene el servicio de OpenAI"""
         if not self._phase_1_core_ready:
             raise RuntimeError("Fase 1 (Core) no está lista. Llama a prepare_phase_1_core() primero")
+        
+        # 🔧 NUEVO: Preparar automáticamente las fases necesarias para OpenAI
+        try:
+            if not self._phase_2_ai_ready:
+                logger.info("[ServiceFactory] 🔧 Preparando automáticamente Fase 2 (AI) para OpenAI")
+                # Usar asyncio.run para ejecutar la función asíncrona en contexto síncrono
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Si ya hay un loop corriendo, usar create_task
+                        loop.create_task(self.prepare_phase_2_ai())
+                    else:
+                        # Si no hay loop, usar run
+                        asyncio.run(self.prepare_phase_2_ai())
+                except RuntimeError:
+                    # Si no hay loop, crear uno nuevo
+                    asyncio.run(self.prepare_phase_2_ai())
+            
+            if not self._phase_3_execution_ready:
+                logger.info("[ServiceFactory] 🔧 Preparando automáticamente Fase 3 (Execution) para OpenAI")
+                # Usar asyncio.run para ejecutar la función asíncrona en contexto síncrono
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Si ya hay un loop corriendo, usar create_task
+                        loop.create_task(self.prepare_phase_3_execution())
+                    else:
+                        # Si no hay loop, usar run
+                        asyncio.run(self.prepare_phase_3_execution())
+                except RuntimeError:
+                    # Si no hay loop, crear uno nuevo
+                    asyncio.run(self.prepare_phase_3_execution())
+                
+        except Exception as e:
+            logger.warning(f"[ServiceFactory] ⚠️ No se pudo preparar fases automáticamente para OpenAI: {e}")
+            # Continuar sin las fases adicionales
+        
         return self.core.get_openai_service()
     
     def get_orchestrator_service(self):

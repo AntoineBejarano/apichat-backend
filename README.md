@@ -1,366 +1,513 @@
-# 🚀 APIchat - Plataforma de Automatización Inteligente
+# 🚀 API Chat Backend - Sistema Inteligente de Chat con Base de Datos
 
-> **Connect your APIs and let AI handle the logic.**
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-APIchat es una plataforma avanzada de automatización que conecta APIs y permite que la IA maneje la lógica de forma inteligente. El proyecto ha evolucionado a través de **múltiples fases** con un enfoque en escalabilidad, performance y experiencia de usuario, culminando en la **migración completa al ReAct Orchestrator**.
+> **Sistema de chat inteligente que permite conversar con bases de datos usando lenguaje natural, con capacidades avanzadas de RAG (Retrieval-Augmented Generation) y análisis semántico.**
 
----
+## 📋 Tabla de Contenidos
 
-## 📊 **Estado del Proyecto**
+- [🎯 Características Principales](#-características-principales)
+- [🏗️ Arquitectura del Sistema](#️-arquitectura-del-sistema)
+- [🚀 Inicio Rápido](#-inicio-rápido)
+- [⚙️ Configuración](#️-configuración)
+- [📊 Variables de Entorno](#-variables-de-entorno)
+- [🔧 Instalación](#-instalación)
+- [📖 Uso](#-uso)
+- [🔍 API Endpoints](#-api-endpoints)
+- [🔄 Flujo de Datos](#-flujo-de-datos)
+- [🛠️ Troubleshooting](#️-troubleshooting)
+- [📈 Monitoreo y Métricas](#-monitoreo-y-métricas)
+- [🤝 Contribución](#-contribución)
+- [📄 Licencia](#-licencia)
 
-### **✅ Fases Completadas:**
+## 🎯 Características Principales
 
-#### **🎯 Fase 1-5: Base del Sistema** 
-- ✅ **DetailedSchemaCache**: Cache inteligente por capas
-- ✅ **SchemaExplorerService**: Exploración automática de esquemas
-- ✅ **VectorSearchService**: Búsqueda semántica instantánea
-- ✅ **BackgroundTaskService**: Procesamiento en background
-- ✅ **QueryValidationService**: Validación inteligente de queries
-- ✅ **Métricas**: 95% hit ratio, 10x mejor throughput
+### **🧠 Inteligencia Artificial**
+- **Chat Inteligente**: Conversación natural con bases de datos
+- **RAG Avanzado**: Retrieval-Augmented Generation con embeddings semánticos
+- **Análisis de Intención**: Router inteligente para clasificar consultas
+- **Planificación**: Generación de planes de ejecución estructurados
+- **SQL Generation**: Generación automática de consultas SQL
 
-#### **🎯 Fase 6: LangSmith Integration**
-- ✅ **LLM Runs Tracking**: Trazabilidad completa de llamadas LLM
-- ✅ **Performance Monitoring**: Métricas detalladas de rendimiento
-- ✅ **SQL Validation**: Prevención de respuestas explicativas del LLM
-- ✅ **Telemetría Avanzada**: KPIs y métricas de UX
+### **🔧 Sistema Provider-Agnóstico**
+- **Múltiples LLMs**: OpenAI, Anthropic (Claude), Google (Gemini), Cohere
+- **Vector Stores**: pgvector, Pinecone, Weaviate, Qdrant
+- **Cache Flexible**: Redis, Upstash (serverless)
+- **Configuración por ENV**: Cambio de proveedores sin modificar código
 
-#### **🎯 Fase 7: ReAct Orchestrator (MIGRACIÓN COMPLETADA)**
-- ✅ **ReAct Pattern**: Think → Act → Observe simplificado
-- ✅ **Orchestrator Simplificado**: De 15+ módulos a 1 coordinador
-- ✅ **Performance Mejorada**: 3-5x más rápido (1-3s vs 5-15s)
-- ✅ **Mantenibilidad**: Código 5x más simple y fácil de debuggear
+### **🛡️ Seguridad y Robustez**
+- **Políticas SQL Estrictas**: Solo SELECT, límites de filas y timeout
+- **Validación de Consultas**: Verificación de seguridad antes de ejecución
+- **Logs Estructurados**: Trazabilidad completa con JSON
+- **Manejo de Errores**: Mensajes claros y códigos de error estandarizados
 
-#### **🎯 Fase 8: Smart AI System (COMPLETADA)**
-- ✅ **SmartRephraseService**: Rephrase inteligente con mini-LLM y cache
-- ✅ **IntentRouterService**: Clasificación de intenciones y enrutamiento automático
-- ✅ **SmartAIOrchestrator**: Orquestador unificado que integra ambos servicios
-- ✅ **Cache Multi-nivel**: Memoria + Redis con TTL y fallback inteligente
-- ✅ **Batch Processing**: Procesamiento paralelo de múltiples consultas
-- ✅ **Sugerencias Inteligentes**: Basadas en similitud y confianza
-- ✅ **Integración con ExplorationGraph**: Nodo SmartAINode integrado en el flujo principal
-- ✅ **Enriquecimiento de Estado**: Estado enriquecido con resultados del Smart AI
-- ✅ **Workflow Inteligente**: Flujo optimizado con pre-procesamiento inteligente
+### **📊 Pipeline de Datos**
+- **Ingesta de Schemas**: Procesamiento automático de estructuras de BD
+- **Generación de Grafos**: Relaciones semánticas entre entidades
+- **Chunking Inteligente**: Fragmentación semántica de documentos
+- **Indexación Vectorial**: Embeddings para búsqueda semántica
 
----
-
-## 🏗️ **Arquitectura Actual (v2.0)**
+## 🏗️ Arquitectura del Sistema
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    🚀 APICHAT-BACKEND 2.0                  │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  🧠 ReAct Orchestrator (Coordinador Principal)             │
-│     ↓ Think → Act → Observe                                │
-│                                                             │
-│  ├── 🗄️ ExplorationGraph (Consultas Generales)            │
-│  ├── 🎯 GuidedGraph (Consultas Específicas)               │
-│  ├── ⚡ Fast Schema Path (Cache Inteligente)               │
-│  ├── 🔍 Detailed Schema Cache (Esquemas en Memoria)       │
-│  └── 🚀 Execution Engine (SQL Directo)                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Frontend      │    │   API Gateway   │    │   Load Balancer  │
+│   (React/Vue)   │◄──►│   (FastAPI)      │◄──►│   (Nginx/Traefik)│
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    CORE SERVICES LAYER                          │
+├─────────────────┬─────────────────┬─────────────────┬───────────┤
+│  Chat Service   │  Schema Service  │  Vector Service │  Cache    │
+│  (Intelligent)  │  (Pipeline)     │  (RAG)          │  (Redis)  │
+└─────────────────┴─────────────────┴─────────────────┴───────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    ADAPTERS LAYER                               │
+├─────────────────┬─────────────────┬─────────────────┬───────────┤
+│  LLM Adapter    │  Vector Adapter │  Cache Adapter  │  Embedding│
+│  (Provider-     │  (pgvector/     │  (Redis/        │  (OpenAI/ │
+│   agnóstico)    │   Pinecone)     │   Upstash)      │   Cohere) │
+└─────────────────┴─────────────────┴─────────────────┴───────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    EXTERNAL PROVIDERS                           │
+├─────────────────┬─────────────────┬─────────────────┬───────────┤
+│  OpenAI API     │  Anthropic API  │  Google AI      │  Cohere   │
+│  (GPT-4/3.5)    │  (Claude)       │  (Gemini)       │  (Command)│
+└─────────────────┴─────────────────┴─────────────────┴───────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    DATABASE LAYER                               │
+├─────────────────┬─────────────────┬─────────────────┬───────────┤
+│  PostgreSQL     │  Vector Store   │  Cache Store    │  Logs     │
+│  (Main Data)    │  (Embeddings)   │  (Session)      │  (JSON)   │
+└─────────────────┴─────────────────┴─────────────────┴───────────┘
 ```
 
-### **🎯 Características Clave:**
-- **🧠 ReAct Pattern**: Coordinación inteligente Think → Act → Observe
-- **⚡ Fast Schema Path**: Respuestas instantáneas <100ms sin LLM
-- **🗄️ Cache Multi-nivel**: Memoria, disco y base de datos
-- **📊 LangSmith Integration**: Trazabilidad completa de LLM runs
-- **🚀 Performance**: 3-5x más rápido que la versión anterior
-- **🧠 Smart AI System**: Rephrase inteligente y clasificación de intenciones
-- **🎯 Intent Routing**: Enrutamiento automático basado en clasificación
-- **💾 Cache Inteligente**: Multi-nivel con Redis y fallback automático
+## 🚀 Inicio Rápido
 
-### **🚀 Advanced Structured RAG Architecture:**
-- **🔍 Retrieval Inteligente**: Fast Schema Path + Vector Search + Lexical Index
-- **🧠 Augmentation Dinámica**: Contexto enriquecido con metadatos y relaciones
-- **🤖 Generation Ejecutable**: No solo texto, sino SQL + Funciones + Acciones
-- **⚡ Performance Superior**: Cache inteligente con 95% hit ratio
-- **🛡️ Seguridad Integrada**: Guardrails en cada capa de la arquitectura
-
-### **🧠 Smart AI System Architecture:**
-- **🔄 SmartRephraseService**: Normalización inteligente de consultas con mini-LLM
-- **🎯 IntentRouterService**: Clasificación automática en 6 tipos de intenciones optimizados
-- **🚀 SmartAIOrchestrator**: Coordinación unificada de rephrase + clasificación
-- **💾 Cache Multi-nivel**: Memoria local + Redis persistente con TTL
-- **🔄 Batch Processing**: Procesamiento paralelo para múltiples consultas
-- **💡 Sugerencias Inteligentes**: Basadas en similitud semántica y confianza
-- **🧠 SmartAINode**: Nodo integrado en ExplorationGraph para pre-procesamiento inteligente
-- **📊 Estado Enriquecido**: Campos adicionales para resultados del Smart AI
-- **🔄 Workflow Optimizado**: Flujo con pre-procesamiento inteligente antes de la inferencia
-
-#### **🎯 Tipos de Intención Soportados:**
-- **🔍 DB_QUERY**: Consultas de base de datos (SELECT, COUNT, etc.)
-- **🚀 API_FUNCTION**: APIs + MCP + Funciones (unificado y optimizado)
-- **💬 CHAT_GENERAL**: Conversación general y preguntas conceptuales
-- **📊 SCHEMA_ANALYSIS**: Análisis de estructura y esquemas de BD
-- **⚙️ SYSTEM_COMMAND**: Comandos de configuración y estado del sistema
-- **❓ UNKNOWN**: Intención no determinada o ambigua
-
-### **Stack Tecnológico:**
-
-#### **Backend Core:**
-- **FastAPI**: Framework principal
-- **SQLAlchemy**: ORM y migraciones
-- **Pydantic**: Validación de datos
-- **Uvicorn**: ASGI server
-
-#### **AI & ML:**
-- **OpenAI**: LLM integration
-- **LangChain**: Framework de AI
-- **FAISS**: Vector search
-- **Tiktoken**: Tokenización
-- **SmartRephraseService**: Rephrase inteligente con mini-LLM
-- **IntentRouterService**: Clasificación de intenciones automática
-- **SmartAIOrchestrator**: Orquestador unificado de servicios AI
-
-#### **Performance:**
-- **ThreadPoolExecutor**: Async processing
-- **ProcessPoolExecutor**: CPU intensive tasks
-- **PriorityQueue**: Task scheduling
-- **Redis**: Cache distribuido (preparado)
-
-#### **Monitoring:**
-- **PerformanceMonitoringService**: Métricas en tiempo real
-- **Logging**: Sistema de logs estructurado
-- **Error Handling**: Manejo robusto de errores
-
----
-
-## 🚀 **Roadmap Futuro**
-
-### **🎯 Fase 4: Escalabilidad Distribuida (Próxima)**
-
-#### **4.1 Redis Integration** 🔴
-- Cache distribuido por múltiples instancias
-- Session management con Redis
-- Pub/Sub para notificaciones
-- Rate limiting distribuido
-
-#### **4.2 Celery Integration** 🥬
-- Task queue distribuida
-- Worker scaling automático
-- Monitoring con Flower
-- Task scheduling avanzado
-
-#### **4.3 Microservices Architecture** 🏗️
-- Auth Service (autenticación)
-- Chat Service (conversaciones)
-- AI Service (procesamiento de IA)
-- Cache Service (gestión de cache)
-- Background Service (tareas en background)
-
-### **🎯 Fase 5: Estrategias Avanzadas**
-
-#### **5.1 Strategy Engine** 🧠
-- Strategy Builder (constructor visual)
-- Strategy Executor (ejecutor)
-- Strategy Optimizer (optimizador)
-- Strategy Analytics (análisis)
-
-#### **5.2 Workflow Engine** 🔄
-- Visual Workflow Builder
-- Conditional Logic
-- Error Handling
-- Monitoring & Analytics
-
-#### **5.3 AI-Powered Automation** 🤖
-- Auto-strategy generation
-- Intelligent routing
-- Predictive analytics
-- Self-optimization
-
-### **🎯 Fase 6: Enterprise Features**
-
-#### **6.1 Multi-tenancy** 🏢
-- Tenant isolation
-- Resource management
-- Billing per tenant
-- Admin dashboard
-
-#### **6.2 Advanced Security** 🔒
-- Role-based access control (RBAC)
-- API key management
-- Audit logging
-- Data encryption
-
-#### **6.3 Analytics & Reporting** 📊
-- Real-time dashboards
-- Custom reports
-- Data export
-- Business intelligence
-
----
-
-## 📈 **Métricas de Performance**
-
-### **🚀 ReAct Orchestrator (NUEVO):**
-- **Tiempo de Respuesta**: 1-3 segundos (vs 5-15s anterior)
-- **Complejidad de Código**: 5x reducida (1 coordinador vs 15+ módulos)
-- **Mantenibilidad**: 4x mejorada
-- **Debugging**: 3x más simple
-
-### **🧠 Smart AI System (NUEVO):**
-- **Tiempo de Procesamiento**: ~70ms por consulta completa
-- **Cache Hit Rate**: Optimizado con normalización inteligente
-- **Clasificación de Intenciones**: 8 tipos con enrutamiento automático
-- **Batch Processing**: Paralelo para múltiples consultas
-- **Sugerencias Inteligentes**: Basadas en similitud semántica
-
-### **⚡ Fast Schema Path:**
-- **Cache Hit**: <1ms (respuesta instantánea)
-- **Cache Miss + BD**: <100ms
-- **LLM Fallback**: 2-5 segundos
-- **Hit Ratio**: 95%
-
-### **🗄️ Cache Multi-nivel:**
-- **L1 (Redis)**: <1ms, TTL 1 hora
-- **L2 (Disk)**: <10ms, TTL 24 horas  
-- **L3 (Database)**: <100ms, TTL 7 días
-- **Memory Usage**: 80% optimizado
-
-### **🧠 Smart AI Cache:**
-- **Rephrase Cache**: `rephrase_v{n}:{lang}:{domain}:{query_hash}`
-- **Intent Cache**: `intent:{query_hash}:{user_id}:{session_id}`
-- **TTL Configurable**: 24h para rephrase, 1h para intents
-- **Fallback Automático**: Memoria local si Redis no está disponible
-
-### **📊 LangSmith Integration:**
-- **LLM Runs Tracking**: 100% trazabilidad
-- **Performance Monitoring**: Métricas en tiempo real
-- **SQL Validation**: Prevención de errores
-- **Telemetría**: KPIs completos
-
----
-
-## 🛠️ **Próximos Pasos Inmediatos**
-
-### **1. Testing en Producción (Semana 1-2)**
-```bash
-# Probar ReAct Orchestrator con casos reales
-- Monitorear métricas de rendimiento
-- Ajustar prompts del LLM según feedback
-- Optimizar lógica de decisión
-```
-
-### **2. Optimizaciones de ReAct (Semana 3-4)**
-```python
-# Mejorar el patrón ReAct
-- Ajustar número máximo de iteraciones
-- Optimizar prompts de THINK
-- Mejorar lógica de OBSERVE
-- Añadir más acciones especializadas
-```
-
-### **3. Smart AI Integration (Semana 5-6)**
-```python
-# Integrar sistema Smart AI con ExplorationGraph
-- Pre-procesamiento inteligente de consultas
-- Enrutamiento automático basado en intención
-- Cache inteligente con normalización
-- Sugerencias contextuales para usuarios
-```
-
-### **4. Vector Search Integration (Semana 7-8)**
-```python
-# Integrar búsqueda semántica con Smart AI
-- Vector search en esquemas de BD
-- Prompt engineering automático
-- Cache predictivo de consultas
-- Optimización semántica de contexto
-```
-
-### **5. Performance Monitoring (Ongoing)**
-```python
-# Monitoreo continuo
-- Métricas de ReAct (iteraciones, tiempo)
-- Smart AI performance (rephrase, intent classification)
-- Cache performance (hit/miss ratios)
-- LLM performance (tokens, latencia)
-- User experience metrics
-```
-
----
-
-## 📚 **Documentación**
-
-- **[Arquitectura Actual](docs/CURRENT_ARCHITECTURE.md)**: Documentación completa de la nueva arquitectura ReAct
-- **[Diagramas de Arquitectura](docs/ARCHITECTURE_DIAGRAM.md)**: Diagramas visuales del sistema
-- **[🚀 Advanced Structured RAG](docs/ADVANCED_STRUCTURED_RAG_ARCHITECTURE.md)**: **NUEVO**: Arquitectura RAG avanzada que va más allá del RAG tradicional
-- **[Resumen Ejecutivo RAG](docs/RAG_EXECUTIVE_SUMMARY.md)**: Resumen ejecutivo de la arquitectura RAG avanzada
-- **[Arquitectura y Roadmap](docs/ARCHITECTURE_ROADMAP.md)**: Roadmap futuro y evolución del sistema
-- **[Próximos Pasos Técnicos](docs/NEXT_STEPS_TECHNICAL.md)**: Guía detallada de implementación técnica
-- **[🧠 Smart AI System](docs/SMART_AI_SYSTEM.md)**: **NUEVO**: Documentación completa del sistema de rephrase inteligente y clasificación de intenciones
-- **[📋 Smart AI Executive Summary](docs/SMART_AI_EXECUTIVE_SUMMARY.md)**: **NUEVO**: Resumen ejecutivo del sistema Smart AI con métricas de negocio y roadmap
-- **[API Documentation](http://localhost:8000/docs)**: Documentación automática de la API
-
----
-
-## 🚀 **Quick Start**
-
-### **Requisitos:**
+### **Prerrequisitos**
 - Python 3.9+
-- PostgreSQL
-- Redis (opcional para Fase 4)
+- PostgreSQL 13+
+- Redis (opcional, para cache)
+- Docker (opcional)
 
-### **Instalación:**
+### **1. Clonar el Repositorio**
 ```bash
-# Clonar repositorio
-git clone https://github.com/your-username/apichat-backend.git
+git clone https://github.com/tu-usuario/apichat-backend.git
+cd apichat-backend
+```
+
+### **2. Configurar Variables de Entorno**
+```bash
+cp .env.example .env
+# Editar .env con tus configuraciones
+```
+
+### **3. Instalar Dependencias**
+```bash
+pip install -r requirements.txt
+```
+
+### **4. Configurar Base de Datos**
+```bash
+# Crear base de datos PostgreSQL
+createdb apichat_db
+
+# Ejecutar migraciones
+python -m alembic upgrade head
+```
+
+### **5. Iniciar el Servidor**
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### **6. Verificar Instalación**
+```bash
+curl http://localhost:8000/health
+```
+
+## ⚙️ Configuración
+
+### **Configuración Mínima**
+```bash
+# LLM Provider (requerido)
+LLM_PROVIDER=openai
+LLM_API_KEY=tu-api-key-openai
+
+# Database (requerido)
+DATABASE_URL=postgresql://user:pass@localhost:5432/apichat_db
+
+# Cache (opcional, usa Redis por defecto)
+CACHE_PROVIDER=redis
+CACHE_URL=redis://localhost:6379/0
+```
+
+### **Configuración Avanzada**
+```bash
+# Vector Store
+VECTOR_PROVIDER=pgvector
+VECTOR_URL=postgresql://user:pass@localhost:5432/vector_db
+
+# Embeddings
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-ada-002
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+```
+
+## 📊 Variables de Entorno
+
+### **🔑 Autenticación y APIs**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `LLM_PROVIDER` | Proveedor de LLM (openai/anthropic/google/cohere) | `openai` | ✅ |
+| `LLM_API_KEY` | API Key del proveedor LLM | - | ✅ |
+| `LLM_URL` | URL base del proveedor (para self-hosted) | - | ❌ |
+| `LLM_TIMEOUT` | Timeout en segundos para requests LLM | `60` | ❌ |
+| `LLM_MAX_RETRIES` | Máximo número de reintentos | `3` | ❌ |
+
+### **🗄️ Base de Datos**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `DATABASE_URL` | URL de conexión PostgreSQL | - | ✅ |
+| `DATABASE_POOL_SIZE` | Tamaño del pool de conexiones | `20` | ❌ |
+| `DATABASE_MAX_OVERFLOW` | Máximo overflow del pool | `30` | ❌ |
+
+### **🔍 Vector Store**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `VECTOR_PROVIDER` | Proveedor vectorial (pgvector/pinecone/weaviate/qdrant) | `pgvector` | ❌ |
+| `VECTOR_URL` | URL del vector store | `DATABASE_URL` | ❌ |
+| `VECTOR_API_KEY` | API Key del vector store | - | ❌ |
+| `VECTOR_NAMESPACE_STRATEGY` | Estrategia de namespaces | `tenant_app_db_snapshot` | ❌ |
+| `VECTOR_DIMENSION` | Dimensión de embeddings | `1536` | ❌ |
+
+### **💾 Cache**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `CACHE_PROVIDER` | Proveedor de cache (redis/upstash) | `redis` | ❌ |
+| `CACHE_URL` | URL del cache | `redis://localhost:6379/0` | ❌ |
+| `CACHE_API_KEY` | API Key del cache (Upstash) | - | ❌ |
+| `CACHE_TIMEOUT` | Timeout en segundos | `10` | ❌ |
+| `CACHE_MAX_RETRIES` | Máximo número de reintentos | `3` | ❌ |
+
+### **🔧 Embeddings**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `EMBEDDING_PROVIDER` | Proveedor de embeddings (openai/cohere/huggingface) | `openai` | ❌ |
+| `EMBEDDING_MODEL` | Modelo de embeddings | `text-embedding-ada-002` | ❌ |
+| `EMBEDDING_API_KEY` | API Key del proveedor | `LLM_API_KEY` | ❌ |
+| `BATCH_SIZE_EMBEDDINGS` | Tamaño de batch para embeddings | `100` | ❌ |
+
+### **📝 Logging**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `LOG_LEVEL` | Nivel de logging (DEBUG/INFO/WARNING/ERROR) | `INFO` | ❌ |
+| `LOG_FORMAT` | Formato de logs (json/text) | `json` | ❌ |
+| `LOG_FILE` | Archivo de logs (opcional) | - | ❌ |
+
+### **🛡️ Seguridad**
+| Variable | Descripción | Default | Requerido |
+|----------|-------------|---------|-----------|
+| `SQL_MAX_ROWS` | Máximo número de filas por consulta | `1000` | ❌ |
+| `SQL_TIMEOUT_SECONDS` | Timeout para consultas SQL | `30` | ❌ |
+| `SQL_ALLOWED_SCHEMAS` | Schemas permitidos (comma-separated) | `public` | ❌ |
+| `SQL_READ_ONLY` | Solo consultas SELECT | `true` | ❌ |
+
+## 🔧 Instalación
+
+### **Instalación con Docker (Recomendado)**
+
+```bash
+# 1. Clonar repositorio
+git clone https://github.com/tu-usuario/apichat-backend.git
 cd apichat-backend
 
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Configurar variables de entorno
+# 2. Configurar variables de entorno
 cp .env.example .env
 # Editar .env con tus configuraciones
 
-# Ejecutar migraciones
-alembic upgrade head
+# 3. Iniciar con Docker Compose
+docker-compose up -d
 
-# Iniciar servidor
+# 4. Verificar instalación
+curl http://localhost:8000/health
+```
+
+### **Instalación Manual**
+
+```bash
+# 1. Crear entorno virtual
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate  # Windows
+
+# 2. Instalar dependencias
+pip install -r requirements.txt
+
+# 3. Configurar base de datos
+createdb apichat_db
+python -m alembic upgrade head
+
+# 4. Iniciar servidor
 uvicorn app.main:app --reload
 ```
 
-### **Acceso:**
-- **API**: http://localhost:8000
-- **Documentación**: http://localhost:8000/docs
-- **Admin**: http://localhost:8000/admin
+## 📖 Uso
 
----
+### **1. Configurar Base de Datos**
+```bash
+# Agregar conexión de base de datos
+curl -X POST "http://localhost:8000/databases" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "mi_base_datos",
+    "host": "localhost",
+    "port": 5432,
+    "database": "mi_db",
+    "username": "usuario",
+    "password": "contraseña"
+  }'
+```
 
-## 🎉 **Conclusión**
+### **2. Procesar Schema**
+```bash
+# Iniciar procesamiento del schema
+curl -X POST "http://localhost:8000/schema/process/1" \
+  -H "Content-Type: application/json"
+```
 
-APIchat ha evolucionado de una aplicación básica a una **plataforma de clase mundial** con la migración completa al **ReAct Orchestrator**:
+### **3. Chat Inteligente**
+```bash
+# Hacer pregunta en lenguaje natural
+curl -X POST "http://localhost:8000/chat/ask" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "¿Cuántos usuarios tenemos registrados?",
+    "database_id": 1
+  }'
+```
 
-- ✅ **ReAct Pattern**: Coordinación inteligente Think → Act → Observe
-- ✅ **Performance Mejorada**: 3-5x más rápido (1-3s vs 5-15s)
-- ✅ **Mantenibilidad**: Código 5x más simple y fácil de debuggear
-- ✅ **Cache Inteligente**: Fast Schema Path con respuestas <100ms
-- ✅ **Trazabilidad Completa**: LangSmith integration para observabilidad
-- ✅ **Arquitectura Híbrida**: ReAct + Grafos Especializados + Cache
-- ✅ **Smart AI System**: Rephrase inteligente y clasificación de intenciones
-- ✅ **Intent Routing**: Enrutamiento automático basado en clasificación
-- ✅ **Cache Multi-nivel**: Redis persistente con fallback automático
+## 🔍 API Endpoints
 
-La migración al **ReAct Orchestrator** ha transformado completamente el sistema, eliminando la complejidad innecesaria y manteniendo toda la funcionalidad. El **Smart AI System** añade inteligencia adicional con rephrase automático y clasificación de intenciones. El roadmap futuro se enfoca en **integración del Smart AI**, **optimizaciones de ReAct**, **integración de vector search** y **features avanzadas** para seguir siendo líder en el mercado.
+### **🏥 Health Check**
+```http
+GET /health
+```
+**Respuesta:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "version": "1.0.0",
+  "services": {
+    "database": "healthy",
+    "cache": "healthy",
+    "llm": "healthy",
+    "vector_store": "healthy"
+  }
+}
+```
 
-**¡La migración está completada y el sistema es ahora más rápido, simple y mantenible que nunca!** 🚀
+### **🗄️ Databases**
+```http
+GET /databases                    # Listar bases de datos
+POST /databases                   # Crear conexión
+GET /databases/{id}              # Obtener detalles
+PUT /databases/{id}              # Actualizar conexión
+DELETE /databases/{id}           # Eliminar conexión
+```
 
----
+### **📊 Schema**
+```http
+GET /schema/status/{db_id}        # Estado del schema
+POST /schema/process/{db_id}     # Procesar schema
+GET /schema/graph/{db_id}        # Obtener grafo de relaciones
+POST /schema/retry/{db_id}       # Reintentar procesamiento
+```
 
-## 📄 **Licencia**
+### **💬 Chat**
+```http
+POST /chat/ask                   # Pregunta inteligente
+GET /chat/history/{session_id}   # Historial de chat
+POST /chat/clear/{session_id}    # Limpiar historial
+```
+
+### **🔍 Vector Search**
+```http
+POST /vector/search              # Búsqueda semántica
+GET /vector/status              # Estado del vector store
+POST /vector/reindex/{db_id}    # Reindexar embeddings
+```
+
+## 🔄 Flujo de Datos
+
+### **1. Ingesta de Schema**
+```
+Base de Datos → Schema Service → Pipeline de Estados → Grafo de Relaciones
+     ↓              ↓                    ↓                    ↓
+  Conexión    Extracción de    Procesamiento por    Generación de
+  PostgreSQL   Metadatos       Stages (0-100%)      Nodos y Aristas
+```
+
+### **2. Procesamiento de Chunks**
+```
+Documentos → Chunking Service → Embeddings → Vector Store
+     ↓              ↓              ↓            ↓
+  Metadata    Fragmentación    OpenAI API   pgvector/
+  Semántica   Inteligente      Cohere       Pinecone
+```
+
+### **3. Chat Inteligente**
+```
+Usuario → Intent Router → Grounding → Planificación → SQL Generation → Validación → Ejecución
+   ↓           ↓            ↓           ↓              ↓              ↓           ↓
+Pregunta   Clasificación   Contexto   Plan de      Consulta SQL   Verificación  Resultado
+Natural    de Intención   Semántico   Acciones     Generada       de Seguridad  Formateado
+```
+
+## 🛠️ Troubleshooting
+
+### **Problemas Comunes**
+
+#### **1. Error de Conexión a Base de Datos**
+```bash
+# Error: "connection refused"
+# Solución:
+- Verificar que PostgreSQL esté ejecutándose
+- Verificar DATABASE_URL en .env
+- Verificar credenciales de usuario
+```
+
+#### **2. Error de API Key de LLM**
+```bash
+# Error: "The api_key client option must be set"
+# Solución:
+- Verificar LLM_API_KEY en .env
+- Verificar que la API key sea válida
+- Verificar límites de uso de la API
+```
+
+#### **3. Error de Vector Store**
+```bash
+# Error: "vector extension not available"
+# Solución:
+- Instalar extensión pgvector: CREATE EXTENSION vector;
+- Verificar VECTOR_PROVIDER en .env
+- Verificar conexión al vector store
+```
+
+#### **4. Error de Cache**
+```bash
+# Error: "Redis connection failed"
+# Solución:
+- Verificar que Redis esté ejecutándose
+- Verificar CACHE_URL en .env
+- Cambiar a CACHE_PROVIDER=upstash si no tienes Redis local
+```
+
+### **Logs y Debugging**
+
+#### **Verificar Logs**
+```bash
+# Logs en formato JSON
+tail -f logs/app.log | jq '.'
+
+# Logs de errores específicos
+grep "ERROR" logs/app.log | jq '.'
+```
+
+#### **Health Check Detallado**
+```bash
+# Verificar estado de todos los servicios
+curl http://localhost:8000/health | jq '.'
+```
+
+#### **Métricas de Performance**
+```bash
+# Ver métricas de adapters
+curl http://localhost:8000/metrics | jq '.'
+```
+
+## 📈 Monitoreo y Métricas
+
+### **Métricas Disponibles**
+- **Requests por minuto**
+- **Latencia promedio**
+- **Tasa de éxito/error**
+- **Uso de tokens LLM**
+- **Tiempo de respuesta vector search**
+- **Estado de health checks**
+
+### **Alertas Recomendadas**
+- Latencia > 5 segundos
+- Tasa de error > 5%
+- Health check fallido
+- Uso de API keys > 80%
+
+### **Dashboards Sugeridos**
+- Grafana para métricas en tiempo real
+- Prometheus para recolección de métricas
+- ELK Stack para análisis de logs
+
+## 🤝 Contribución
+
+### **1. Fork del Repositorio**
+```bash
+git clone https://github.com/tu-usuario/apichat-backend.git
+cd apichat-backend
+```
+
+### **2. Crear Rama de Feature**
+```bash
+git checkout -b feature/nueva-funcionalidad
+```
+
+### **3. Desarrollar y Testear**
+```bash
+# Instalar dependencias de desarrollo
+pip install -r requirements-dev.txt
+
+# Ejecutar tests
+python -m pytest tests/
+
+# Ejecutar linting
+flake8 app/
+black app/
+```
+
+### **4. Crear Pull Request**
+- Describir cambios realizados
+- Incluir tests si aplica
+- Verificar que todos los tests pasen
+- Actualizar documentación si es necesario
+
+## 📄 Licencia
 
 Este proyecto está bajo la Licencia MIT. Ver el archivo [LICENSE](LICENSE) para más detalles.
 
 ---
 
-## 🤝 **Contribuir**
+## 🆘 Soporte
 
-Las contribuciones son bienvenidas. Por favor, lee las [guías de contribución](CONTRIBUTING.md) antes de enviar un pull request.
+- **Documentación**: [docs/](docs/)
+- **Guía de Variables de Entorno**: [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)
+- **Guía de Troubleshooting**: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- **Issues**: [GitHub Issues](https://github.com/tu-usuario/apichat-backend/issues)
+- **Discusiones**: [GitHub Discussions](https://github.com/tu-usuario/apichat-backend/discussions)
+- **Email**: soporte@apichat.com
 
 ---
 
-**¡Gracias por usar APIchat!** 🚀
+**¿Te gustó el proyecto? ¡Dale una ⭐ en GitHub!**

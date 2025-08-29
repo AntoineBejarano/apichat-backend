@@ -14,6 +14,10 @@ from app.services.management.orchestrator_activation_guard import OrchestratorAc
 from app.services.orchestrator.orchestrator_service import OrchestratorService
 from app.services.background.resource_upload_trigger import ResourceUploadTrigger
 from app.services.monitoring.readiness_metrics_service import ReadinessMetricsService
+from app.services.management.system_readiness_manager import SystemReadinessManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TestCompleteSystemIntegration:
@@ -319,6 +323,50 @@ class TestCompleteSystemIntegration:
         
         # El usuario debería poder usar el orquestador inmediatamente
         assert can_activate is True
+
+    # @pytest.mark.asyncio
+    # async def test_system_initialization_logic_correction(self):
+    #     """Test que verifica que la nueva lógica de inicialización del sistema funciona correctamente"""
+    #     # 🔧 NUEVO: Test para la lógica corregida de inicialización
+    #     
+    #     # 1. Verificar que el sistema NO se marca como READY prematuramente
+    #     system_manager = SystemReadinessManager(self.mock_factory)
+    #     init_result = await system_manager.initialize_system()
+    #     
+    #     assert init_result["success"] is True
+    #     assert init_result["system_status"] == "initializing"
+    #     assert "Servicios core verificados" in init_result["message"]
+    #     
+    #     # 2. Verificar que el estado inicial es INITIALIZING, no READY
+    #     system_status = await system_manager.get_system_status()
+    #     assert system_status["system_status"] == "initializing"
+    #     
+    #     # 3. Verificar que se puede marcar como READY manualmente
+    #     ready_result = await system_manager.mark_system_ready("Test de recursos preparados")
+    #     assert ready_result["success"] is True
+    #     assert ready_result["previous_status"] == "initializing"
+    #     assert ready_result["new_status"] == "ready"
+    #     
+    #     # 4. Verificar que el estado cambió a READY
+    #     updated_status = await system_manager.get_system_status()
+    #     assert updated_status["system_status"] == "ready"
+    #     
+    #     # 5. Verificar que se puede marcar como DEGRADED si es necesario
+    #     degraded_result = await system_manager.mark_system_degraded("Test de degradación")
+    #     assert degraded_result["success"] is True
+    #     assert degraded_result["previous_status"] == "ready"
+    #     assert degraded_result["new_status"] == "degraded"
+    #     
+    #     # 6. Verificar que el historial de cambios se registra correctamente
+    #     status_history = await system_manager.get_status_history()
+    #     assert len(status_history) >= 3  # initialize, ready, degraded
+    #     
+    #     # Verificar que el último cambio fue a degraded
+    #     last_change = status_history[-1]
+    #     assert last_change["new_status"] == "degraded"
+    #     assert "Test de degradación" in last_change["reason"]
+    #     
+    #     logger.info("✅ Test de lógica de inicialización del sistema completado exitosamente")
 
 
 class TestPerformanceOptimization:

@@ -99,6 +99,136 @@ class BackgroundServicesFactory(BaseServiceFactory):
             logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo ResourcePreparationService: {e}")
             return None
     
+    def get_schema_pipeline_service(self):
+        """🔧 FASE 1: Obtiene el servicio del pipeline de schema"""
+        try:
+            from app.services.background.schema_pipeline_service import SchemaPipelineService
+            return self._get_or_create_service(SchemaPipelineService, "schema_pipeline")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SchemaPipelineService: {e}")
+            return None
+    
+    def get_schema_graph_service(self):
+        """🔧 FASE 2: Obtiene el servicio del grafo de schema"""
+        try:
+            from app.services.background.schema_graph_service import SchemaGraphService
+            return self._get_or_create_service(SchemaGraphService, "schema_graph")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SchemaGraphService: {e}")
+            return None
+    
+    # 🔧 FASE 5: Servicios del Chat Inteligente
+    def get_context_resolver_service(self):
+        """🔧 FASE 5: Obtiene el servicio de resolución de contexto"""
+        try:
+            from app.services.chat.context_resolver_service import ContextResolverService
+            return self._get_or_create_service(ContextResolverService, "context_resolver")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo ContextResolverService: {e}")
+            return None
+    
+    def get_grounding_service(self):
+        """🔧 FASE 5: Obtiene el servicio de grounding"""
+        try:
+            from app.services.chat.grounding_service import GroundingService
+            return self._get_or_create_service(GroundingService, "grounding")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo GroundingService: {e}")
+            return None
+    
+    def get_planner_service(self):
+        """🔧 FASE 5: Obtiene el servicio de planificación"""
+        try:
+            from app.services.chat.planner_service import PlannerService
+            return self._get_or_create_service(PlannerService, "planner")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo PlannerService: {e}")
+            return None
+    
+    def get_sql_generator_service(self):
+        """🔧 FASE 5: Obtiene el servicio de generación SQL"""
+        try:
+            from app.services.chat.sql_generator_service import SQLGeneratorService
+            return self._get_or_create_service(SQLGeneratorService, "sql_generator")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SQLGeneratorService: {e}")
+            return None
+    
+    def get_sql_validator_service(self):
+        """🔧 FASE 5: Obtiene el servicio de validación SQL"""
+        try:
+            from app.services.chat.sql_validator_service import SQLValidatorService
+            return self._get_or_create_service(SQLValidatorService, "sql_validator")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SQLValidatorService: {e}")
+            return None
+    
+    def get_sql_executor_service(self):
+        """🔧 FASE 5: Obtiene el servicio de ejecución SQL"""
+        try:
+            from app.services.chat.sql_executor_service import SQLExecutorService
+            return self._get_or_create_service(SQLExecutorService, "sql_executor")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SQLExecutorService: {e}")
+            return None
+    
+    def get_explanation_service(self):
+        """🔧 FASE 5: Obtiene el servicio de explicación"""
+        try:
+            from app.services.chat.explanation_service import ExplanationService
+            return self._get_or_create_service(ExplanationService, "explanation")
+        except Exception as e:
+            logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo ExplanationService: {e}")
+            return None
+    
+            # 🔧 FASE 4: Vector Store Agnóstico
+        def get_vector_service(self):
+            """🔧 FASE 4: Obtiene el servicio de vector store agnóstico"""
+            try:
+                from app.services.vector.vector_service import VectorService
+                return self._get_or_create_service(VectorService, "vector")
+            except Exception as e:
+                logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo VectorService: {e}")
+                return None
+        
+        # 🛡️ FASE 7: Seguridad, Políticas y Observabilidad
+        def get_sql_policy_service(self):
+            """🛡️ FASE 7: Obtiene el servicio de políticas SQL"""
+            try:
+                from app.services.security.sql_policy_service import SQLPolicyService
+                return self._get_or_create_service(SQLPolicyService, "sql_policy")
+            except Exception as e:
+                logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo SQLPolicyService: {e}")
+                return None
+        
+        def get_structured_logger_service(self):
+            """📊 FASE 7: Obtiene el servicio de logs estructurados"""
+            try:
+                from app.services.observability.structured_logger_service import StructuredLoggerService
+                return self._get_or_create_service(StructuredLoggerService, "structured_logger")
+            except Exception as e:
+                logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo StructuredLoggerService: {e}")
+                return None
+        
+        def get_user_message_service(self):
+            """💬 FASE 7: Obtiene el servicio de mensajes estándar"""
+            try:
+                from app.services.security.user_message_service import UserMessageService
+                return self._get_or_create_service(UserMessageService, "user_message")
+            except Exception as e:
+                logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo UserMessageService: {e}")
+                return None
+        
+        # 📝 FASE 8: Sistema de Prompts Configurable
+        def get_prompt_template_service(self):
+            """📝 FASE 8: Obtiene el servicio de templates de prompts"""
+            try:
+                from app.services.prompts.prompt_template_service import PromptTemplateService
+                return self._get_or_create_service(PromptTemplateService, "prompt_template")
+            except Exception as e:
+                logger.error(f"[BackgroundServicesFactory] ❌ Error obteniendo PromptTemplateService: {e}")
+                return None
+    
     def get_upload_trigger_service(self):
         """Obtiene el servicio de triggers automáticos tras upload"""
         try:

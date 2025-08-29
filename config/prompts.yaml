@@ -1,0 +1,308 @@
+# 📝 FASE 8: Configuración de Prompts Configurables
+# ─────────────────────────────────────────────────────────
+# Archivo de configuración para el sistema de prompts
+# Permite personalización por entorno y tenant
+
+# Configuración global
+global:
+  environment: production
+  default_version: v1
+  cache_ttl_seconds: 300
+  fallback_enabled: true
+  versioning_enabled: true
+
+# Prompts del sistema organizados por funcionalidad
+prompts:
+  
+  # 🔧 FASE 1: Pipeline de Ingesta
+  schema_extraction:
+    description: "Extrae y analiza el esquema de una base de datos"
+    default: |
+      Analiza el esquema de la base de datos {db_name} y extrae la siguiente información:
+
+      **ESTRUCTURA DE TABLAS:**
+      - Nombre de cada tabla
+      - Columnas y sus tipos de datos
+      - Claves primarias y foráneas
+      - Índices y constraints
+
+      **RELACIONES:**
+      - Dependencias entre tablas
+      - Cardinalidad de relaciones
+      - Integridad referencial
+
+      **CONTEXTO:**
+      Base de datos: {connection_info}
+      Nivel de detalle: {extraction_level}
+      Contexto de negocio: {business_context}
+
+      Genera un análisis estructurado y detallado del esquema.
+    
+    versions:
+      v2: |
+        [VERSIÓN MEJORADA] Analiza el esquema de la base de datos {db_name} con enfoque en:
+        
+        **ANÁLISIS ESTRUCTURAL:**
+        - Mapeo completo de tablas y columnas
+        - Análisis de tipos de datos y constraints
+        - Identificación de patrones de diseño
+        
+        **ANÁLISIS RELACIONAL:**
+        - Grafo de dependencias entre entidades
+        - Análisis de integridad referencial
+        - Optimización de consultas potenciales
+        
+        **CONTEXTO TÉCNICO:**
+        Base de datos: {connection_info}
+        Nivel de detalle: {extraction_level}
+        Contexto de negocio: {business_context}
+        Patrones de uso: {usage_patterns}
+        
+        Proporciona un análisis técnico profundo y recomendaciones de optimización.
+      
+      v3: |
+        [VERSIÓN AVANZADA] Análisis completo del esquema {db_name} con IA avanzada:
+        
+        **ANÁLISIS MULTIDIMENSIONAL:**
+        - Estructura física y lógica
+        - Patrones de normalización
+        - Oportunidades de optimización
+        
+        **INTELIGENCIA DE NEGOCIO:**
+        - Mapeo de entidades de negocio
+        - Análisis de flujos de datos
+        - Recomendaciones de arquitectura
+        
+        **CONTEXTO COMPLETO:**
+        Base de datos: {connection_info}
+        Nivel de detalle: {extraction_level}
+        Contexto de negocio: {business_context}
+        Patrones de uso: {usage_patterns}
+        Requisitos de performance: {performance_requirements}
+        
+        Genera un análisis empresarial completo con roadmap de optimización.
+
+  graph_building:
+    description: "Construye el grafo de relaciones del esquema"
+    default: |
+      Construye un grafo de relaciones para el esquema de {db_name}:
+
+      **ENTRADA:**
+      - Estructura de tablas: {tables_structure}
+      - Relaciones identificadas: {identified_relations}
+      - Constraints de integridad: {integrity_constraints}
+
+      **OBJETIVO:**
+      Crear un grafo dirigido donde:
+      - Nodos = Tablas
+      - Aristas = Relaciones (FK, PK, M2M)
+      - Peso = Cardinalidad y tipo de relación
+
+      **SALIDA:**
+      - Matriz de adyacencia
+      - Lista de nodos y aristas
+      - Métricas de conectividad
+      - Análisis de cliques y componentes
+
+  chunk_generation:
+    description: "Genera chunks de texto para embeddings"
+    default: |
+      Genera chunks de texto optimizados para embeddings del esquema {db_name}:
+
+      **CONTEXTO:**
+      - Esquema extraído: {schema_info}
+      - Relaciones del grafo: {graph_relations}
+      - Configuración de chunks: {chunk_config}
+
+      **REGLAS DE GENERACIÓN:**
+      - Tamaño máximo: {max_chunk_size} caracteres
+      - Solapamiento: {overlap_percentage}%
+      - Preservar contexto relacional
+      - Incluir metadatos relevantes
+
+      **FORMATO:**
+      Cada chunk debe contener:
+      - Descripción de la entidad
+      - Relaciones principales
+      - Constraints y reglas
+      - Ejemplos de uso
+
+  # 💬 FASE 5: Chat Inteligente
+  intent_classification:
+    description: "Clasifica la intención de una consulta del usuario"
+    default: |
+      Clasifica la intención de la siguiente consulta del usuario:
+
+      **CONSULTA:**
+      {user_query}
+
+      **CONTEXTO DISPONIBLE:**
+      - Esquema de base de datos: {schema_context}
+      - Historial de consultas: {query_history}
+      - Contexto de la sesión: {session_context}
+
+      **CATEGORÍAS POSIBLES:**
+      1. **STRUCTURED**: Consulta específica sobre datos estructurados
+      2. **DIFFUSE**: Consulta general o conversacional
+      3. **ANALYTICAL**: Consulta analítica o de reportes
+      4. **EXPLORATORY**: Exploración del esquema o datos
+
+      **RESPUESTA:**
+      Proporciona la categoría más apropiada y justifica tu elección con confianza 0-1.
+
+  sql_generation:
+    description: "Genera consultas SQL seguras basadas en consultas naturales"
+    default: |
+      Genera una consulta SQL SELECT segura y eficiente para la siguiente consulta:
+
+      **CONSULTA DEL USUARIO:**
+      {user_query}
+
+      **ESQUEMA DISPONIBLE:**
+      {schema_info}
+
+      **REGLAS DE SEGURIDAD:**
+      - Solo operaciones SELECT permitidas
+      - Límite máximo: {max_rows} filas
+      - Timeout: {timeout_seconds} segundos
+      - Schemas permitidos: {allowed_schemas}
+
+      **ESTILO PREFERIDO:**
+      {preferred_style}
+
+      **REQUISITOS:**
+      - SQL válido y sintácticamente correcto
+      - Optimizado para performance
+      - Incluir LIMIT y comentarios de seguridad
+      - Explicar la lógica de la consulta
+
+      Genera SQL válido, seguro y optimizado.
+
+  sql_explanation:
+    description: "Explica los resultados de una consulta SQL"
+    default: |
+      Explica los resultados de la siguiente consulta SQL de manera clara y útil:
+
+      **CONSULTA EJECUTADA:**
+      {executed_sql}
+
+      **RESULTADOS OBTENIDOS:**
+      - Número de filas: {row_count}
+      - Tiempo de ejecución: {execution_time_ms}ms
+      - Campos retornados: {returned_fields}
+
+      **EXPLICACIÓN REQUERIDA:**
+      - ¿Qué datos representan estos resultados?
+      - ¿Cómo se relacionan con la consulta original?
+      - ¿Hay patrones o insights interesantes?
+      - ¿Qué limitaciones o consideraciones hay?
+
+      Proporciona una explicación clara, concisa y accionable.
+
+  # 🛡️ FASE 7: Seguridad y Validación
+  sql_validation:
+    description: "Valida consultas SQL contra políticas de seguridad"
+    default: |
+      Valida la siguiente consulta SQL contra las políticas de seguridad:
+
+      **CONSULTA A VALIDAR:**
+      {sql_query}
+
+      **POLÍTICAS DE SEGURIDAD:**
+      - Operaciones permitidas: {allowed_operations}
+      - Schemas permitidos: {allowed_schemas}
+      - Límites de filas: {row_limits_max}
+      - Timeouts: {timeout_limits_max}
+      - Patrones prohibidos: {forbidden_patterns}
+
+      **ANÁLISIS REQUERIDO:**
+      1. ¿La consulta cumple con las políticas?
+      2. ¿Qué modificaciones son necesarias?
+      3. ¿Hay riesgos de seguridad?
+      4. ¿Se requieren ajustes de performance?
+
+      Proporciona un análisis detallado y recomendaciones de seguridad.
+
+  error_explanation:
+    description: "Explica errores de manera clara para el usuario"
+    default: |
+      Explica el siguiente error de manera clara y útil para el usuario:
+
+      **ERROR OCURRIDO:**
+      - Código: {error_code}
+      - Mensaje: {error_message}
+      - Contexto: {error_context}
+      - Stack trace: {stack_trace}
+
+      **EXPLICACIÓN REQUERIDA:**
+      1. ¿Qué significa este error en términos simples?
+      2. ¿Cuál es la causa probable?
+      3. ¿Qué puede hacer el usuario para resolverlo?
+      4. ¿Cuándo debe contactar al soporte?
+
+      **FORMATO:**
+      - Título claro y conciso
+      - Explicación en lenguaje no técnico
+      - Pasos de resolución específicos
+      - Información de contacto si es necesario
+
+      Genera una explicación amigable y accionable.
+
+  # 🔄 FASE 4: Vector Store
+  vector_search:
+    description: "Optimiza búsquedas vectoriales para consultas"
+    default: |
+      Optimiza la búsqueda vectorial para la siguiente consulta:
+
+      **CONSULTA:**
+      {user_query}
+
+      **CONTEXTO VECTORIAL:**
+      - Embeddings disponibles: {available_embeddings}
+      - Metadatos indexados: {indexed_metadata}
+      - Configuración de búsqueda: {search_config}
+
+      **OPTIMIZACIÓN REQUERIDA:**
+      1. Ajustar parámetros de similitud
+      2. Filtrar por metadatos relevantes
+      3. Optimizar el número de resultados
+      4. Balancear precisión vs. recall
+
+      **SALIDA:**
+      - Parámetros de búsqueda optimizados
+      - Filtros de metadatos recomendados
+      - Estrategia de ranking sugerida
+
+  # 📊 FASE 2: GraphRack
+  graph_analysis:
+    description: "Analiza el grafo de relaciones del esquema"
+    default: |
+      Analiza el grafo de relaciones del esquema {db_name}:
+
+      **GRAFO DISPONIBLE:**
+      - Nodos: {node_count} tablas
+      - Aristas: {edge_count} relaciones
+      - Matriz de adyacencia: {adjacency_matrix}
+
+      **ANÁLISIS REQUERIDO:**
+      1. **Conectividad**: Componentes conectados, cliques
+      2. **Centralidad**: Tablas más importantes
+      3. **Patrones**: Estructuras recurrentes
+      4. **Optimización**: Oportunidades de mejora
+
+      **SALIDA:**
+      - Métricas de conectividad
+      - Identificación de hubs y hojas
+      - Recomendaciones de optimización
+      - Análisis de dependencias
+
+# Configuraciones por defecto
+defaults:
+  extraction_level: "detailed"
+  max_chunk_size: 1000
+  overlap_percentage: 20
+  preferred_style: "clear_and_concise"
+  max_rows: 1000
+  timeout_seconds: 30
+  allowed_schemas: ["public", "app_"]
+  allowed_operations: ["SELECT"]

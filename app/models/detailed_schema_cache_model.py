@@ -42,6 +42,7 @@ class DetailedSchemaCache(BaseTable):
     snapshot = Column(JSONB, nullable=False)            # Schema detallado completo
     compact = Column(Text, nullable=False)              # Schema compacto para AI
     cleaned_schema = Column(Text, nullable=True)        # Schema optimizado y limpio para AI
+    graph_schema = Column(JSONB, nullable=True)         # 🚀 Graph RAG Pro schema enriquecido
     
     # ⚡ Metadatos de performance
     table_count = Column(Integer, nullable=False, default=0)
@@ -87,6 +88,7 @@ class DetailedSchemaCacheCreate(BaseModel):
     snapshot: SchemaSnapshot
     compact: str
     cleaned_schema: Optional[str] = None  # Schema optimizado y limpio
+    graph_schema: Optional[Dict[str, Any]] = None  # 🚀 Graph RAG Pro schema
     table_count: int = 0
     total_columns: int = 0
     enrichment_level: EnrichmentLevel = EnrichmentLevel.BASIC
@@ -102,6 +104,7 @@ class DetailedSchemaCacheResponse(BaseModel):
     snapshot: SchemaSnapshot
     cleaned_schema: Optional[str] = None  # Schema optimizado y limpio
     compact: str
+    graph_schema: Optional[Dict[str, Any]] = None  # 🚀 Graph RAG Pro schema
     table_count: int
     total_columns: int
     enrichment_level: EnrichmentLevel
@@ -120,6 +123,7 @@ class DetailedSchemaCacheUpdate(BaseModel):
     fingerprint_light: Optional[str] = None
     snapshot: Optional[SchemaSnapshot] = None
     compact: Optional[str] = None
+    graph_schema: Optional[Dict[str, Any]] = None  # 🚀 Graph RAG Pro schema
     table_count: Optional[int] = None
     total_columns: Optional[int] = None
     enrichment_level: Optional[EnrichmentLevel] = None

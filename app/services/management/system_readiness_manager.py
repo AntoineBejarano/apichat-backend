@@ -32,6 +32,7 @@ class SystemReadinessManager:
     async def initialize_system(self) -> Dict[str, Any]:
         """
         Inicializa el sistema y verifica el estado inicial.
+        NOTA: NO marca como READY hasta que los recursos estén preparados.
         """
         try:
             logger.info("[SystemReadinessManager] 🚀 Inicializando sistema...")
@@ -42,24 +43,18 @@ class SystemReadinessManager:
                 self.system_status = SystemStatus.ERROR
                 return {"success": False, "error": "Servicios core no disponibles"}
             
-            # Verificar estado de las fases
-            phase_status = await self._check_phase_status()
-            
-            if phase_status.get("all_phases_ready", False):
-                self.system_status = SystemStatus.READY
-                logger.info("[SystemReadinessManager] ✅ Sistema inicializado y listo")
-            else:
-                self.system_status = SystemStatus.INITIALIZING
-                pending_info = phase_status.get('pending_phases', ['fases pendientes'])
-                logger.info(f"[SystemReadinessManager] ⏳ Sistema inicializando: {pending_info}")
+            # 🔧 CORREGIDO: NO marcar como READY aquí
+            # Solo verificar que los servicios core estén disponibles
+            self.system_status = SystemStatus.INITIALIZING
+            logger.info("[SystemReadinessManager] ⏳ Sistema inicializando - servicios core verificados")
             
             # Registrar estado inicial
-            await self._record_status_change("Sistema inicializado", self.system_status.value)
+            await self._record_status_change("Sistema inicializando - servicios core verificados", self.system_status.value)
             
             return {
                 "success": True,
                 "system_status": self.system_status.value,
-                "phase_status": phase_status
+                "message": "Servicios core verificados, esperando preparación de recursos"
             }
             
         except Exception as e:
@@ -108,20 +103,8 @@ class SystemReadinessManager:
             # Verificar recursos activos
             active_resources = await self._get_active_resources()
             
-            # Determinar estado del sistema
-            if phase_status.get("all_phases_ready", False) and active_resources["total"] > 0:
-                if self.system_status != SystemStatus.READY:
-                    self.system_status = SystemStatus.READY
-                    await self._record_status_change("Sistema listo", self.system_status.value)
-            elif phase_status.get("ready_count", 0) > 0:
-                if self.system_status != SystemStatus.DEGRADED:
-                    self.system_status = SystemStatus.DEGRADED
-                    await self._record_status_change("Sistema degradado", self.system_status.value)
-            else:
-                if self.system_status != SystemStatus.INITIALIZING:
-                    self.system_status = SystemStatus.INITIALIZING
-                    await self._record_status_change("Sistema inicializando", self.system_status.value)
-            
+            # 🔧 CORREGIDO: NO cambiar estado automáticamente durante inicialización
+            # Solo retornar el estado actual y la información
             return {
                 "system_status": self.system_status.value,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -532,3 +515,61 @@ class SystemReadinessManager:
         except Exception as e:
             logger.error(f"[SystemReadinessManager] ❌ Error verificando readiness general: {e}")
             return False
+
+    async def mark_system_ready(self, reason: str = "Recursos preparados") -> Dict[str, Any]:
+        """
+        Marca el sistema como READY cuando los recursos estén preparados.
+        """
+        try:
+            if self.system_status != SystemStatus.READY:
+                previous_status = self.system_status.value
+                self.system_status = SystemStatus.READY
+                await self._record_status_change(reason, self.system_status.value)
+                logger.info(f"[SystemReadinessManager] ✅ Sistema marcado como READY: {reason}")
+                
+                return {
+                    "success": True,
+                    "previous_status": previous_status,
+                    "new_status": self.system_status.value,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": "Sistema ya está en estado READY",
+                    "current_status": self.system_status.value
+                }
+                
+        except Exception as e:
+            logger.error(f"[SystemReadinessManager] ❌ Error marcando sistema como READY: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def mark_system_degraded(self, reason: str = "Recursos no disponibles") -> Dict[str, Any]:
+        """
+        Marca el sistema como DEGRADED cuando sea necesario.
+        """
+        try:
+            if self.system_status != SystemStatus.DEGRADED:
+                previous_status = self.system_status.value
+                self.system_status = SystemStatus.DEGRADED
+                await self._record_status_change(reason, self.system_status.value)
+                logger.info(f"[SystemReadinessManager] ⚠️ Sistema marcado como DEGRADED: {reason}")
+                
+                return {
+                    "success": True,
+                    "previous_status": previous_status,
+                    "new_status": self.system_status.value,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": "Sistema ya está en estado DEGRADED",
+                    "current_status": self.system_status.value
+                }
+                
+        except Exception as e:
+            logger.error(f"[SystemReadinessManager] ❌ Error marcando sistema como DEGRADED: {e}")
+            return {"success": False, "error": str(e)}

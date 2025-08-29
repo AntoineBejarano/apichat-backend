@@ -127,6 +127,67 @@ class DatabaseService:
             
         except Exception as e:
             logger.error(f"[DatabaseService] ❌ Error lanzando generación de schema: {e}")
+    
+    def _test_connection_immediately(self, data: DatabaseConnectionCreate) -> bool:
+        """
+        Test INMEDIATO de conexión antes de crear el registro.
+        
+        Args:
+            data: Datos de la conexión a testear
+            
+        Returns:
+            True si la conexión es exitosa, False en caso contrario
+        """
+        try:
+            logger.info("[DatabaseService] 🧪 Iniciando test inmediato de conexión...")
+            
+            # Crear URI temporal para test
+            test_uri = build_sqlalchemy_uri(data)
+            logger.debug("[DatabaseService] 🔗 URI de test: %s", test_uri.replace(data.password, "***"))
+            
+            # Crear engine temporal con timeout corto
+            test_engine = sqlalchemy.create_engine(
+                test_uri, 
+                connect_timeout=10,  # 10 segundos máximo
+                pool_pre_ping=True   # Verificar conexión antes de usar
+            )
+            
+            # Test de conexión
+            with test_engine.connect() as conn:
+                # Query simple para verificar conectividad
+                result = conn.execute(sqlalchemy.text("SELECT 1 as test"))
+                test_value = result.scalar()
+                
+                if test_value == 1:
+                    logger.info("[DatabaseService] ✅ Test de conexión exitoso")
+                    return True
+                else:
+                    logger.warning("[DatabaseService] ⚠️ Test de conexión falló - resultado inesperado")
+                    return False
+                    
+        except sqlalchemy.exc.OperationalError as e:
+            # Errores de conexión (host, puerto, credenciales)
+            logger.error("[DatabaseService] ❌ Error operacional de conexión: %s", e)
+            return False
+            
+        except sqlalchemy.exc.AuthenticationFailed as e:
+            # Error de autenticación
+            logger.error("[DatabaseService] ❌ Error de autenticación: %s", e)
+            return False
+            
+        except Exception as e:
+            # Otros errores
+            logger.error("[DatabaseService] ❌ Error inesperado durante test de conexión: %s", e)
+            return False
+            
+        finally:
+            # Limpiar recursos
+            try:
+                if 'test_engine' in locals():
+                    test_engine.dispose()
+                    logger.debug("[DatabaseService] 🧹 Engine de test limpiado")
+            except Exception as cleanup_error:
+                logger.warning("[DatabaseService] ⚠️ Error limpiando engine de test: %s", cleanup_error)
 
     def get_sql_database_by_id(self, db_id: Union[int, str, "UUID"]) -> Optional[SQLDatabase]:
         logger.info("[DatabaseService] 🔄 Obteniendo SQLDatabase para DB id=%s", db_id)
@@ -209,3 +270,68 @@ class DatabaseService:
     def health_check_connections(self) -> dict:
         """Realiza health check de todas las conexiones del pool"""
         return self.connection_pool.health_check()
+
+    def _clear_database_cache(self, db_id: Union[int, str, "UUID"]) -> None:
+        """
+        Limpia todo el cache relacionado con una base de datos específica.
+        
+        Args:
+            db_id: ID de la base de datos
+        """
+        try:
+            logger.info("[DatabaseService] 🧹 Limpiando cache para DB id=%s", db_id)
+            
+            # 🔧 NUEVO: Preparar Fase 4 (Orchestrator) para acceso a cache
+            try:
+                # Usar asyncio.run para ejecutar la función asíncrona en contexto síncrono
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.factory.prepare_for_orchestrator())
+                loop.close()
+                logger.debug("[DatabaseService] ✅ Fase 4 (Orchestrator) preparada para cache")
+            except Exception as e:
+                logger.warning("[DatabaseService] ⚠️ No se pudo preparar Fase 4 para cache: %s", e)
+                return
+            
+            # 1. Limpiar cache Redis (L1)
+            try:
+                # 🔧 CORREGIDO: Usar el método correcto del factory
+                redis_cache = self.factory.get_redis_schema_cache()
+                if redis_cache:
+                    redis_cache.invalidate_schema(self.user.id, db_id)
+                    logger.info("[DatabaseService] ✅ Cache Redis limpiado para DB %s", db_id)
+                else:
+                    logger.warning("[DatabaseService] ⚠️ Redis cache no disponible")
+            except Exception as e:
+                logger.warning("[DatabaseService] ⚠️ Error limpiando cache Redis: %s", e)
+            
+            # 2. Limpiar cache detallado (L2)
+            try:
+                # 🔧 CORREGIDO: Usar el método correcto del factory
+                detailed_cache = self.factory.get_detailed_schema_cache_service()
+                if detailed_cache:
+                    detailed_cache.invalidate_cache(self.user.id, db_id)
+                    logger.info("[DatabaseService] ✅ Cache detallado limpiado para DB %s", db_id)
+                else:
+                    logger.warning("[DatabaseService] ⚠️ Cache detallado no disponible")
+            except Exception as e:
+                logger.warning("[DatabaseService] ⚠️ Error limpiando cache detallado: %s", e)
+            
+            # 3. Limpiar cache en memoria (L3)
+            try:
+                # Buscar y eliminar entradas de cache en memoria relacionadas con esta DB
+                from app.services.data.redis_cache_service import RedisCacheService
+                redis_cache_service = RedisCacheService()
+                cleared_count = redis_cache_service.clear_db_cache(str(db_id))
+                if cleared_count > 0:
+                    logger.info("[DatabaseService] ✅ Cache en memoria limpiado para DB %s (%d entradas)", db_id, cleared_count)
+                else:
+                    logger.info("[DatabaseService] ℹ️ No se encontraron entradas de cache en memoria para DB %s", db_id)
+            except Exception as e:
+                logger.warning("[DatabaseService] ⚠️ Error limpiando cache en memoria: %s", e)
+                
+            logger.info("[DatabaseService] 🧹 Limpieza de cache completada para DB %s", db_id)
+            
+        except Exception as e:
+            logger.error("[DatabaseService] ❌ Error general limpiando cache de DB %s: %s", db_id, e)

@@ -58,7 +58,8 @@ class CacheServicesFactory(BaseServiceFactory):
         """Obtiene el cache de Redis para esquemas"""
         try:
             from app.services.cache.redis_schema_cache import RedisSchemaCache
-            return self._get_or_create_service(RedisSchemaCache, "redis_schema_cache")
+            # 🔧 FIX: RedisSchemaCache no toma argumentos en su constructor
+            return self._get_or_create_service(RedisSchemaCache, "redis_schema_cache", use_factory=False)
         except Exception as e:
             logger.error(f"[CacheServicesFactory] ❌ Error obteniendo RedisSchemaCache: {e}")
             return None

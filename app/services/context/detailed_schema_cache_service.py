@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
+import time
 
 from app.core.database import get_db
 from app.models.detailed_schema_cache_model import (
@@ -45,6 +46,82 @@ class DetailedSchemaCacheService(BaseService):
         
         self._memory_cache: Dict[str, Dict[str, Any]] = {}  # L1 cache
         self._cache_ttl = timedelta(hours=1)  # TTL para memory cache
+    
+    # =====================================================
+    # LIMPIEZA DE SCHEMA - ELIMINAR VALORES NULL
+    # =====================================================
+    
+    def _clean_schema_snapshot(self, snapshot: SchemaSnapshot) -> SchemaSnapshot:
+        """
+        Limpia el schema eliminando valores null para ahorrar espacio y tokens.
+        
+        Args:
+            snapshot: SchemaSnapshot original
+            
+        Returns:
+            SchemaSnapshot limpio sin valores null
+        """
+        try:
+            logger.info("[SchemaCacheService] 🧹 Iniciando limpieza del schema...")
+            
+            # Crear copia profunda del snapshot
+            cleaned_tables = {}
+            original_size = 0
+            cleaned_size = 0
+            
+            for table_name, table_info in snapshot.tables.items():
+                if isinstance(table_info, dict):
+                    cleaned_columns = {}
+                    
+                    # Limpiar columnas
+                    if 'columns' in table_info and isinstance(table_info['columns'], dict):
+                        for col_name, col_info in table_info['columns'].items():
+                            if isinstance(col_info, dict):
+                                # Filtrar solo valores no-null
+                                cleaned_col = {}
+                                for key, value in col_info.items():
+                                    if value is not None:
+                                        cleaned_col[key] = value
+                                
+                                # Solo agregar columna si tiene al menos el tipo
+                                if 'type' in cleaned_col:
+                                    cleaned_columns[col_name] = cleaned_col
+                    
+                    # Limpiar metadatos de tabla
+                    cleaned_table = {'columns': cleaned_columns}
+                    
+                    # Agregar otros campos solo si no son null
+                    for key, value in table_info.items():
+                        if key != 'columns' and value is not None:
+                            cleaned_table[key] = value
+                    
+                    cleaned_tables[table_name] = cleaned_table
+            
+            # Crear snapshot limpio
+            cleaned_snapshot = SchemaSnapshot(
+                tables=cleaned_tables,
+                relations=snapshot.relations if snapshot.relations else {},
+                indexes=snapshot.indexes if snapshot.indexes else {},
+                statistics=snapshot.statistics if snapshot.statistics else {},
+                dialect=snapshot.dialect,
+                version=snapshot.version,
+                generated_at=snapshot.generated_at
+            )
+            
+            # Calcular ahorro
+            original_size = len(str(snapshot.model_dump(mode="json")))
+            cleaned_size = len(str(cleaned_snapshot.model_dump(mode="json")))
+            savings = original_size - cleaned_size
+            savings_percent = (savings / original_size * 100) if original_size > 0 else 0
+            
+            logger.info(f"[SchemaCacheService] 🧹 Limpieza completada: {original_size} → {cleaned_size} chars ({savings_percent:.1f}% ahorro)")
+            
+            return cleaned_snapshot
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error limpiando schema: {e}")
+            # En caso de error, retornar snapshot original
+            return snapshot
     
     # =====================================================
     # CACHE L1: MEMORIA (FINGERPRINT CHECKS)
@@ -103,11 +180,53 @@ class DetailedSchemaCacheService(BaseService):
             logger.error(f"[DetailedSchemaCacheService] Error obteniendo esquema para DB {db_id}: {e}")
             return None
     
+    def get_schema_by_db_id(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el esquema de una base de datos por su ID.
+        Método de compatibilidad para el router de base de datos.
+        
+        Args:
+            db_id: ID de la base de datos
+            
+        Returns:
+            Esquema como diccionario o None si no existe
+        """
+        try:
+            # Obtener esquema desde cache
+            schema_response = self.get_schema_cache(self.user_id, db_id)
+            if schema_response:
+                return schema_response.model_dump()
+            return None
+        except Exception as e:
+            logger.error(f"[DetailedSchemaCacheService] Error obteniendo esquema por DB ID {db_id}: {e}")
+            return None
+    
+    def get_schema_snapshot(self, db_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el snapshot del schema para una base de datos.
+        Método de compatibilidad para el router de base de datos.
+        
+        Args:
+            db_id: ID de la base de datos
+            
+        Returns:
+            Snapshot del schema o None si no existe
+        """
+        try:
+            # Obtener esquema desde cache
+            schema_response = self.get_schema_cache(self.user_id, db_id)
+            if schema_response and hasattr(schema_response, 'snapshot'):
+                return schema_response.snapshot
+            return None
+        except Exception as e:
+            logger.error(f"[DetailedSchemaCacheService] Error obteniendo snapshot del schema para DB {db_id}: {e}")
+            return None
+    
     # =====================================================
     # OPERACIONES PRINCIPALES
     # =====================================================
     
-    async def get_schema_cache(self, user_id: UUID, db_id: UUID, current_fingerprint_light: Optional[str] = None) -> Optional[DetailedSchemaCacheResponse]:
+    def get_schema_cache(self, user_id: UUID, db_id: UUID, current_fingerprint_light: Optional[str] = None) -> Optional[DetailedSchemaCacheResponse]:
         """
         Obtiene cache de schema con validación de fingerprint.
         Si no existe cache, genera automáticamente el esquema.
@@ -153,7 +272,8 @@ class DetailedSchemaCacheService(BaseService):
             logger.info("[SchemaCacheService] ❌ No se encontró cache en BD - generando automáticamente")
             # 🔧 NUEVO: Generar esquema automáticamente si no existe
             try:
-                auto_generated = await self._generate_schema_automatically(user_id, db_id)
+                # 🔧 FIX: Usar método síncrono para compatibilidad
+                auto_generated = self._generate_schema_automatically_sync(user_id, db_id)
                 if auto_generated:
                     logger.info(f"[SchemaCacheService] ✅ Esquema generado automáticamente para DB {db_id}")
                     return auto_generated
@@ -161,7 +281,7 @@ class DetailedSchemaCacheService(BaseService):
                     logger.warning(f"[SchemaCacheService] ⚠️ No se pudo generar esquema automáticamente para DB {db_id}")
                     # 🔧 SOLUCIÓN: Crear un esquema básico de fallback
                     logger.info(f"[SchemaCacheService] 🔧 Creando esquema de fallback para DB {db_id}")
-                    fallback_schema = await self._create_fallback_schema(user_id, db_id)
+                    fallback_schema = self._create_fallback_schema_sync(user_id, db_id)
                     if fallback_schema:
                         logger.info(f"[SchemaCacheService] ✅ Esquema de fallback creado para DB {db_id}")
                         return fallback_schema
@@ -196,7 +316,7 @@ class DetailedSchemaCacheService(BaseService):
         logger.info(f"[SchemaCacheService] ✅ Cache L3 hit (BD) - {cache_entry.table_count} tablas")
         return DetailedSchemaCacheResponse.model_validate(cache_entry)
     
-    async def create_or_update_cache(
+    def create_or_update_cache(
         self, 
         user_id: UUID, 
         db_id: UUID, 
@@ -237,6 +357,9 @@ class DetailedSchemaCacheService(BaseService):
             )
         ).first()
         
+        # 🔧 NUEVO: Limpiar schema eliminando valores null para ahorrar espacio
+        cleaned_snapshot = self._clean_schema_snapshot(snapshot)
+        
         # 🔧 NUEVO: Generar schema limpio si no existe
         cleaned_schema = None
         if not existing or not existing.cleaned_schema:
@@ -257,16 +380,31 @@ class DetailedSchemaCacheService(BaseService):
             except Exception as e:
                 logger.warning(f"[SchemaCacheService] ⚠️ No se pudo generar schema limpio: {e}")
                 cleaned_schema = None
+
+        # 🚀 NUEVO: Generar Graph RAG Pro schema SIEMPRE
+        graph_schema = None
+        try:
+            logger.info(f"[SchemaCacheService] 🚀 Generando Graph RAG Pro schema para DB {db_id}")
+            graph_schema = self._generate_graph_schema(user_id, db_id)
+            if graph_schema:
+                logger.info(f"[SchemaCacheService] ✅ Graph RAG Pro schema generado para DB {db_id}")
+            else:
+                logger.warning(f"[SchemaCacheService] ⚠️ No se pudo generar Graph RAG Pro schema para DB {db_id}")
+        except Exception as e:
+            logger.warning(f"[SchemaCacheService] ⚠️ Error generando Graph RAG Pro schema: {e}")
+            graph_schema = None
         
         if existing:
             # Actualizar existente
             logger.info("[SchemaCacheService] 🔄 Actualizando cache existente")
             existing.fingerprint = fingerprint_full
             existing.fingerprint_light = fingerprint_light
-            existing.snapshot = snapshot.model_dump(mode="json")
+            existing.snapshot = cleaned_snapshot.model_dump(mode="json")
             existing.compact = compact_schema
             if cleaned_schema:
                 existing.cleaned_schema = cleaned_schema
+            if graph_schema:
+                existing.graph_schema = graph_schema
             existing.table_count = table_count
             existing.total_columns = total_columns
             existing.enrichment_level = enrichment_level
@@ -285,9 +423,10 @@ class DetailedSchemaCacheService(BaseService):
                 db_id=db_id,
                 fingerprint=fingerprint_full,
                 fingerprint_light=fingerprint_light,
-                snapshot=snapshot.model_dump(mode="json"),
+                snapshot=cleaned_snapshot.model_dump(mode="json"),
                 compact=compact_schema,
                 cleaned_schema=cleaned_schema,
+                graph_schema=graph_schema,
                 table_count=table_count,
                 total_columns=total_columns,
                 enrichment_level=enrichment_level,
@@ -429,9 +568,10 @@ class DetailedSchemaCacheService(BaseService):
         
         return [DetailedSchemaCacheResponse.model_validate(c) for c in candidates]
     
-    async def _generate_schema_automatically(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
+    def _generate_schema_automatically_sync(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
         """
         Genera automáticamente un esquema de base de datos cuando no existe en cache.
+        Versión síncrona para compatibilidad.
         
         Args:
             user_id: ID del usuario
@@ -535,8 +675,8 @@ class DetailedSchemaCacheService(BaseService):
                     generated_at=datetime.now(timezone.utc)
                 )
                 
-                # Generar cache
-                cache_response = await self.create_or_update_cache(
+                # Generar cache (el método create_or_update_cache limpiará automáticamente el snapshot)
+                cache_response = self.create_or_update_cache(
                     user_id=user_id,
                     db_id=db_id,
                     snapshot=snapshot,
@@ -575,9 +715,10 @@ class DetailedSchemaCacheService(BaseService):
             last_accessed=datetime.now(timezone.utc)
         )
     
-    async def _create_fallback_schema(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
+    def _create_fallback_schema_sync(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
         """
         Crea un esquema básico de fallback cuando no se puede generar automáticamente.
+        Versión síncrona para compatibilidad.
         
         Args:
             user_id: ID del usuario
@@ -946,3 +1087,1071 @@ class DetailedSchemaCacheService(BaseService):
         except Exception as e:
             logger.error(f"[SchemaCacheService] ❌ Error obteniendo schemas obsoletos: {e}")
             return []
+
+    def force_regenerate_schema(self, user_id: UUID, db_id: UUID) -> Dict[str, Any]:
+        """
+        Fuerza la regeneración completa del schema desde la DB externa.
+        Borra el cache existente y crea uno completamente nuevo.
+        
+        Args:
+            user_id: ID del usuario
+            db_id: ID de la base de datos
+            
+        Returns:
+            Diccionario con detalles de la regeneración y métricas de cambios
+        """
+        start_time = time.time()
+        logger.info(f"[SchemaCacheService] 🔄 Iniciando regeneración forzada para DB {db_id}")
+        
+        try:
+            # 1. OBTENER MÉTRICAS ANTES (para comparación)
+            existing_cache = self.db.query(DetailedSchemaCache).filter(
+                and_(
+                    DetailedSchemaCache.user_id == user_id,
+                    DetailedSchemaCache.db_id == db_id
+                )
+            ).first()
+            
+            metrics_before = {
+                'tables': existing_cache.table_count if existing_cache else 0,
+                'columns': existing_cache.total_columns if existing_cache else 0,
+                'fingerprint': existing_cache.fingerprint if existing_cache else None
+            }
+            
+            # 2. BORRAR CACHE EXISTENTE
+            cache_cleared = self._delete_existing_cache(user_id, db_id)
+            if not cache_cleared:
+                logger.warning(f"[SchemaCacheService] ⚠️ No se pudo borrar cache existente para DB {db_id}")
+            
+            # 3. LIMPIAR TODOS LOS CACHES
+            caches_cleared = self._invalidate_all_caches(user_id, db_id)
+            
+            # 4. REGENERAR SCHEMA DESDE DB EXTERNA
+            logger.info(f"[SchemaCacheService] 🔍 Regenerando schema desde DB externa {db_id}")
+            new_schema = self._regenerate_from_external_database(user_id, db_id)
+            
+            if not new_schema:
+                logger.error(f"[SchemaCacheService] ❌ Error regenerando schema para DB {db_id}")
+                return {
+                    'success': False,
+                    'error': 'No se pudo regenerar el schema desde la DB externa',
+                    'cache_cleared': cache_cleared,
+                    'caches_cleared': caches_cleared
+                }
+            
+            # 5. CALCULAR MÉTRICAS DESPUÉS
+            metrics_after = {
+                'tables': new_schema.table_count,
+                'columns': new_schema.total_columns,
+                'fingerprint': new_schema.fingerprint
+            }
+            
+            # 6. CALCULAR CAMBIOS
+            changes = self._calculate_schema_changes(metrics_before, metrics_after)
+            
+            # 7. GUARDAR EN REDIS
+            redis_updated = False
+            try:
+                if hasattr(self, 'factory') and self.factory:
+                    redis_cache = self.factory.get_redis_schema_cache()
+                    if redis_cache:
+                        redis_updated = redis_cache.set_schema(
+                            user_id, 
+                            db_id, 
+                            new_schema.snapshot.model_dump() if hasattr(new_schema, 'snapshot') else {}
+                        )
+            except Exception as e:
+                logger.warning(f"[SchemaCacheService] ⚠️ Error actualizando Redis: {e}")
+            
+            # 8. CALCULAR TIEMPO TOTAL
+            total_time = time.time() - start_time
+            
+            logger.info(f"[SchemaCacheService] ✅ Regeneración completada para DB {db_id} en {total_time:.2f}s")
+            
+            return {
+                'success': True,
+                'message': 'Schema regenerado completamente desde DB externa',
+                'regeneration_details': {
+                    'tables_before': metrics_before['tables'],
+                    'tables_after': metrics_after['tables'],
+                    'columns_before': metrics_before['columns'],
+                    'columns_after': metrics_after['columns'],
+                    'new_tables': changes.get('new_tables', []),
+                    'removed_tables': changes.get('removed_tables', []),
+                    'modified_tables': changes.get('modified_tables', []),
+                    'regeneration_time': f"{total_time:.2f}s",
+                    'cache_cleared': cache_cleared,
+                    'caches_cleared': caches_cleared,
+                    'redis_updated': redis_updated,
+                    'fingerprint_changed': metrics_before['fingerprint'] != metrics_after['fingerprint']
+                }
+            }
+            
+        except Exception as e:
+            total_time = time.time() - start_time
+            logger.error(f"[SchemaCacheService] ❌ Error en regeneración forzada para DB {db_id}: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'regeneration_time': f"{total_time:.2f}s",
+                'cache_cleared': False,
+                'caches_cleared': False
+            }
+
+    def _delete_existing_cache(self, user_id: UUID, db_id: UUID) -> bool:
+        """
+        Borra completamente el cache existente de la base de datos.
+        """
+        try:
+            deleted_count = self.db.query(DetailedSchemaCache).filter(
+                and_(
+                    DetailedSchemaCache.user_id == user_id,
+                    DetailedSchemaCache.db_id == db_id
+                )
+            ).delete()
+            
+            self.db.commit()
+            logger.info(f"[SchemaCacheService] 🗑️ Cache existente borrado: {deleted_count} entradas")
+            return deleted_count > 0
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error borrando cache existente: {e}")
+            self.db.rollback()
+            return False
+
+    def _invalidate_all_caches(self, user_id: UUID, db_id: UUID) -> bool:
+        """
+        Invalida todos los caches (Redis + memoria) para una DB específica.
+        """
+        try:
+            # 1. Invalidar cache en memoria
+            key = self._get_memory_cache_key(user_id, db_id)
+            if key in self._memory_cache:
+                del self._memory_cache[key]
+                logger.info(f"[SchemaCacheService] ✅ Cache en memoria invalidado para DB {db_id}")
+            
+            # 2. Invalidar cache Redis
+            try:
+                if hasattr(self, 'factory') and self.factory:
+                    redis_cache = self.factory.get_redis_schema_cache()
+                    if redis_cache and hasattr(redis_cache, 'invalidate_schema'):
+                        redis_cache.invalidate_schema(user_id, db_id)
+                        logger.info(f"[SchemaCacheService] ✅ Cache Redis invalidado para DB {db_id}")
+            except Exception as e:
+                logger.warning(f"[SchemaCacheService] ⚠️ Error invalidando Redis: {e}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error invalidando caches: {e}")
+            return False
+
+    def _regenerate_from_external_database(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
+        """
+        Regenera completamente el schema desde la base de datos externa del usuario.
+        """
+        try:
+            logger.info(f"[SchemaCacheService] 🔍 Regenerando schema desde DB externa {db_id}")
+            
+            # Usar el método existente de generación automática
+            new_schema = self._generate_schema_automatically_sync(user_id, db_id)
+            
+            if new_schema:
+                logger.info(f"[SchemaCacheService] ✅ Schema regenerado exitosamente para DB {db_id}")
+                return new_schema
+            else:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo regenerar schema para DB {db_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error regenerando desde DB externa: {e}")
+            return None
+
+    def _calculate_schema_changes(self, metrics_before: Dict[str, Any], metrics_after: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Calcula los cambios entre el schema anterior y el nuevo.
+        """
+        changes = {
+            'new_tables': [],
+            'removed_tables': [],
+            'modified_tables': []
+        }
+        
+        # Por ahora, solo comparamos métricas básicas
+        # En el futuro se puede expandir para comparar estructura detallada
+        
+        if metrics_before['tables'] != metrics_after['tables']:
+            if metrics_after['tables'] > metrics_before['tables']:
+                changes['new_tables'] = [f"+{metrics_after['tables'] - metrics_before['tables']} tablas"]
+            else:
+                changes['removed_tables'] = [f"-{metrics_before['tables'] - metrics_after['tables']} tablas"]
+        
+        if metrics_before['columns'] != metrics_after['columns']:
+            changes['modified_tables'].append(f"Columnas: {metrics_before['columns']} → {metrics_after['columns']}")
+        
+        if metrics_before['fingerprint'] != metrics_before['fingerprint']:
+            changes['modified_tables'].append("Estructura modificada")
+        
+        return changes
+
+    # =====================================================
+    # 🚀 GRAPH RAG PRO - SCHEMA ENRIQUECIDO
+    # =====================================================
+    
+    def _generate_graph_schema(self, user_id: UUID, db_id: UUID) -> Dict[str, Any]:
+        """
+        Genera un schema enriquecido de nivel Graph RAG Pro.
+        Incluye relaciones, constraints, metadata semántica y estadísticas.
+        """
+        try:
+            logger.info(f"[SchemaCacheService] 🚀 Generando Graph RAG Pro schema para DB {db_id}")
+            
+            # 🔧 CORRECCIÓN: Evitar bucle infinito - obtener schema base SIN llamar a _generate_schema_automatically_sync
+            # En su lugar, obtener el schema existente del cache o crear uno básico
+            base_schema = self._get_base_schema_without_recursion(user_id, db_id)
+            if not base_schema:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo obtener schema base para DB {db_id}")
+                return None
+            
+            # Enriquecer con información de BD
+            enriched_schema = self._enrich_schema_with_database_info(
+                user_id, db_id, base_schema.snapshot
+            )
+            
+            # Generar grafo de relaciones
+            graph_schema = self._build_relationship_graph(enriched_schema)
+            
+            # Agregar metadata semántica
+            semantic_schema = self._add_semantic_metadata(graph_schema)
+            
+            # Generar fingerprint del schema enriquecido
+            enriched_fingerprint = self._generate_enriched_fingerprint(semantic_schema)
+            
+            # Crear respuesta final
+            final_schema = {
+                'base_schema': base_schema.snapshot.model_dump(),
+                'enriched_schema': enriched_schema,
+                'graph_schema': graph_schema,
+                'semantic_schema': semantic_schema,
+                'fingerprint': enriched_fingerprint,
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'version': '2.0-graph-rag-pro'
+            }
+            
+            # 🔧 CORRECCIÓN: Limpiar schema para almacenamiento JSON
+            cleaned_schema = self._clean_schema_for_json_storage(final_schema)
+            
+            logger.info(f"[SchemaCacheService] ✅ Graph RAG Pro schema generado para DB {db_id}")
+            return cleaned_schema
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error generando Graph RAG Pro schema: {e}")
+            return None
+
+    def _clean_schema_for_json_storage(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        🔧 CORRECCIÓN: Limpia el schema para almacenamiento JSON.
+        
+        Convierte todos los objetos datetime a strings ISO para evitar
+        errores de serialización JSON en PostgreSQL.
+        """
+        if not isinstance(schema, dict):
+            return schema
+        
+        cleaned_schema = {}
+        
+        for key, value in schema.items():
+            if isinstance(value, dict):
+                # Recursivamente limpiar diccionarios anidados
+                cleaned_schema[key] = self._clean_schema_for_json_storage(value)
+            elif isinstance(value, list):
+                # Limpiar listas
+                cleaned_schema[key] = [
+                    self._clean_schema_for_json_storage(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            elif isinstance(value, datetime):
+                # Convertir datetime a string ISO
+                cleaned_schema[key] = value.isoformat()
+            else:
+                # Mantener otros tipos de datos
+                cleaned_schema[key] = value
+        
+        return cleaned_schema
+
+    def _get_base_schema_without_recursion(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCacheResponse]:
+        """
+        🔧 CORRECCIÓN: Obtiene schema base SIN crear bucle infinito.
+        
+        Este método:
+        1. Busca en cache existente
+        2. Si no existe, crea schema básico directamente
+        3. NO llama a métodos que puedan crear recursión
+        """
+        try:
+            logger.info(f"[SchemaCacheService] 🔍 Obteniendo schema base sin recursión para DB {db_id}")
+            
+            # 1. Intentar obtener del cache existente
+            cache_entry = self.db.query(DetailedSchemaCache).filter(
+                and_(
+                    DetailedSchemaCache.user_id == user_id,
+                    DetailedSchemaCache.db_id == db_id
+                )
+            ).first()
+            
+            if cache_entry and cache_entry.snapshot:
+                logger.info(f"[SchemaCacheService] ✅ Schema base obtenido del cache para DB {db_id}")
+                return DetailedSchemaCacheResponse.model_validate(cache_entry)
+            
+            # 2. Si no existe en cache, crear schema básico directamente
+            logger.info(f"[SchemaCacheService] 🔧 Creando schema básico directamente para DB {db_id}")
+            
+            # Obtener servicio de base de datos
+            if not hasattr(self, 'factory') or not self.factory:
+                logger.error("[SchemaCacheService] ❌ Factory no disponible")
+                return None
+                
+            database_service = self.factory.get_database_service()
+            if not database_service:
+                logger.error("[SchemaCacheService] ❌ No se pudo obtener DatabaseService")
+                return None
+            
+            # Obtener engine del connection pool
+            record = database_service.get_record(db_id)
+            if not record:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo obtener record para DB {db_id}")
+                return None
+            
+            engine = database_service.connection_pool.get_engine(record)
+            if not engine:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo obtener engine para DB {db_id}")
+                return None
+            
+            # Usar inspect() en el engine de SQLAlchemy
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            table_names = inspector.get_table_names()
+            
+            if not table_names:
+                logger.warning(f"[SchemaCacheService] ⚠️ No se encontraron tablas en DB {db_id}")
+                return None
+            
+            logger.info(f"[SchemaCacheService] 🔍 Encontradas {len(table_names)} tablas en DB {db_id}")
+            
+            # Construir snapshot básico
+            tables = {}
+            for table_name in table_names:
+                try:
+                    # Obtener columnas
+                    columns = inspector.get_columns(table_name)
+                    column_info = {}
+                    for col in columns:
+                        column_info[col['name']] = {
+                            'type': str(col['type']),
+                            'nullable': col.get('nullable', True),
+                            'default': col.get('default'),
+                            'comment': col.get('comment')
+                        }
+                    
+                    # Obtener comentario de la tabla
+                    table_comment = inspector.get_table_comment(table_name)
+                    table_description = table_comment.get('text') if table_comment else None
+                    
+                    tables[table_name] = {
+                        'columns': column_info,
+                        'description': table_description,
+                        'row_count': None
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"[SchemaCacheService] ⚠️ Error obteniendo info de tabla {table_name}: {e}")
+                    tables[table_name] = {
+                        'columns': {},
+                        'description': None,
+                        'row_count': None
+                    }
+            
+            # Crear snapshot básico
+            from app.models.detailed_schema_cache_model import SchemaSnapshot, EnrichmentLevel
+            snapshot = SchemaSnapshot(
+                tables=tables,
+                relations={},
+                indexes={},
+                statistics={
+                    'tables': len(tables),
+                    'columns': sum(len(table_info.get('columns', {})) for table_info in tables.values())
+                },
+                dialect='unknown',
+                version='1.0',
+                generated_at=datetime.now(timezone.utc)
+            )
+            
+            # Crear respuesta básica
+            basic_response = DetailedSchemaCacheResponse(
+                user_id=user_id,
+                db_id=db_id,
+                snapshot=snapshot,
+                enrichment_level=EnrichmentLevel.BASIC,
+                fingerprint_light="basic",
+                fingerprint_full="basic",
+                compact="basic",
+                generated_at=datetime.now(timezone.utc)
+            )
+            
+            logger.info(f"[SchemaCacheService] ✅ Schema básico creado directamente para DB {db_id}")
+            return basic_response
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error obteniendo schema base sin recursión: {e}")
+            return None
+
+    def _enrich_schema_with_database_info(self, user_id: UUID, db_id: UUID, base_snapshot: SchemaSnapshot) -> Dict[str, Any]:
+        """
+        Enriquece el schema base con información detallada de la base de datos.
+        """
+        try:
+            logger.info(f"[SchemaCacheService] 🔍 Enriqueciendo schema con info de BD para DB {db_id}")
+            
+            # Obtener servicio de base de datos
+            if not hasattr(self, 'factory') or not self.factory:
+                logger.error("[SchemaCacheService] ❌ Factory no disponible")
+                return base_snapshot.model_dump()
+                
+            database_service = self.factory.get_database_service()
+            if not database_service:
+                logger.error("[SchemaCacheService] ❌ No se pudo obtener DatabaseService")
+                return base_snapshot.model_dump()
+            
+            # Obtener engine del connection pool
+            record = database_service.get_record(db_id)
+            if not record:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo obtener record para DB {db_id}")
+                return base_snapshot.model_dump()
+            
+            engine = database_service.connection_pool.get_engine(record)
+            if not engine:
+                logger.error(f"[SchemaCacheService] ❌ No se pudo obtener engine para DB {db_id}")
+                return base_snapshot.model_dump()
+            
+            # Usar inspect() para obtener información detallada
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            
+            enriched_tables = {}
+            
+            for table_name in base_snapshot.tables.keys():
+                try:
+                    table_info = base_snapshot.tables[table_name]
+                    enriched_table = self._enrich_table_info(
+                        inspector, table_name, table_info
+                    )
+                    enriched_tables[table_name] = enriched_table
+                    
+                except Exception as e:
+                    logger.warning(f"[SchemaCacheService] ⚠️ Error enriqueciendo tabla {table_name}: {e}")
+                    enriched_tables[table_name] = table_info
+            
+            return {
+                'tables': enriched_tables,
+                'relations': base_snapshot.relations,
+                'indexes': base_snapshot.indexes,
+                'statistics': base_snapshot.statistics,
+                'dialect': base_snapshot.dialect,
+                'version': base_snapshot.version,
+                'generated_at': base_snapshot.generated_at
+            }
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error enriqueciendo schema: {e}")
+            return base_snapshot.model_dump()
+
+    def _enrich_table_info(self, inspector, table_name: str, table_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enriquece la información de una tabla específica.
+        """
+        try:
+            enriched_table = table_info.copy()
+            
+            # 1. PRIMARY KEYS
+            try:
+                pk_constraint = inspector.get_pk_constraint(table_name)
+                if pk_constraint and pk_constraint.get('constrained_columns'):
+                    enriched_table['primary_keys'] = pk_constraint['constrained_columns']
+            except Exception as e:
+                logger.debug(f"[SchemaCacheService] ⚠️ No se pudo obtener PK para {table_name}: {e}")
+                enriched_table['primary_keys'] = []
+            
+            # 2. FOREIGN KEYS
+            try:
+                fk_constraints = inspector.get_foreign_keys(table_name)
+                if fk_constraints:
+                    enriched_table['foreign_keys'] = []
+                    for fk in fk_constraints:
+                        fk_info = {
+                            'constrained_columns': fk.get('constrained_columns', []),
+                            'referred_table': fk.get('referred_table', ''),
+                            'referred_columns': fk.get('referred_columns', []),
+                            'name': fk.get('name', '')
+                        }
+                        enriched_table['foreign_keys'].append(fk_info)
+                else:
+                    enriched_table['foreign_keys'] = []
+            except Exception as e:
+                logger.debug(f"[SchemaCacheService] ⚠️ No se pudo obtener FK para {table_name}: {e}")
+                enriched_table['foreign_keys'] = []
+            
+            # 3. INDEXES
+            try:
+                indexes = inspector.get_indexes(table_name)
+                if indexes:
+                    enriched_table['indexes'] = []
+                    for idx in indexes:
+                        idx_info = {
+                            'name': idx.get('name', ''),
+                            'column_names': idx.get('column_names', []),
+                            'unique': idx.get('unique', False),
+                            'type': idx.get('type', '')
+                        }
+                        enriched_table['indexes'].append(idx_info)
+                else:
+                    enriched_table['indexes'] = []
+            except Exception as e:
+                logger.debug(f"[SchemaCacheService] ⚠️ No se pudo obtener índices para {table_name}: {e}")
+                enriched_table['indexes'] = []
+            
+            # 4. CONSTRAINTS
+            try:
+                # Obtener constraints de check (esto puede variar según el dialecto)
+                if hasattr(inspector, 'get_check_constraints'):
+                    check_constraints = inspector.get_check_constraints(table_name)
+                    if check_constraints:
+                        enriched_table['check_constraints'] = check_constraints
+                    else:
+                        enriched_table['check_constraints'] = []
+                else:
+                    enriched_table['check_constraints'] = []
+                
+                # Obtener constraints únicos
+                if hasattr(inspector, 'get_unique_constraints'):
+                    unique_constraints = inspector.get_unique_constraints(table_name)
+                    if unique_constraints:
+                        enriched_table['unique_constraints'] = unique_constraints
+                    else:
+                        enriched_table['unique_constraints'] = []
+                else:
+                    enriched_table['unique_constraints'] = []
+                    
+            except Exception as e:
+                logger.debug(f"[SchemaCacheService] ⚠️ No se pudo obtener constraints para {table_name}: {e}")
+                enriched_table['check_constraints'] = []
+                enriched_table['unique_constraints'] = []
+            
+            # 5. ENRIQUECER COLUMNAS
+            if 'columns' in enriched_table:
+                enriched_columns = {}
+                for col_name, col_info in enriched_table['columns'].items():
+                    enriched_col = col_info.copy()
+                    
+                    # Detectar tipos ENUM
+                    if 'type' in enriched_col:
+                        col_type = str(enriched_col['type'])
+                        if 'ENUM' in col_type.upper():
+                            enriched_col['is_enum'] = True
+                            # Intentar extraer valores del ENUM
+                            try:
+                                if hasattr(inspector, 'get_enum_values'):
+                                    enum_values = inspector.get_enum_values(table_name, col_name)
+                                    if enum_values:
+                                        enriched_col['enum_values'] = enum_values
+                            except:
+                                pass
+                        else:
+                            enriched_col['is_enum'] = False
+                    
+                    # Agregar metadata semántica básica
+                    enriched_col['semantic_type'] = self._infer_semantic_type(col_name, enriched_col.get('type', ''))
+                    enriched_col['is_identifier'] = self._is_identifier_column(col_name, enriched_col)
+                    enriched_col['is_temporal'] = self._is_temporal_column(enriched_col.get('type', ''))
+                    enriched_col['is_geographic'] = self._is_geographic_column(col_name, enriched_col.get('type', ''))
+                    
+                    enriched_columns[col_name] = enriched_col
+                
+                enriched_table['columns'] = enriched_columns
+            
+            # 6. ESTADÍSTICAS BÁSICAS
+            try:
+                # Obtener row count aproximado
+                with engine.connect() as conn:
+                    result = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    row_count = result.scalar()
+                    enriched_table['estimated_row_count'] = row_count
+            except Exception as e:
+                logger.debug(f"[SchemaCacheService] ⚠️ No se pudo obtener row count para {table_name}: {e}")
+                enriched_table['estimated_row_count'] = None
+            
+            # 7. METADATA SEMÁNTICA DE TABLA
+            enriched_table['semantic_category'] = self._infer_table_semantic_category(table_name)
+            enriched_table['business_entity'] = self._is_business_entity(table_name)
+            enriched_table['audit_fields'] = self._has_audit_fields(enriched_table.get('columns', {}))
+            
+            return enriched_table
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error enriqueciendo tabla {table_name}: {e}")
+            return table_info
+
+    def _build_relationship_graph(self, enriched_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Construye el grafo de relaciones basado en foreign keys y metadata.
+        """
+        try:
+            logger.info("[SchemaCacheService] 🔗 Construyendo grafo de relaciones")
+            
+            graph = {
+                'entities': {},
+                'relationships': [],
+                'entity_hierarchy': {},
+                'relationship_matrix': {}
+            }
+            
+            tables = enriched_schema.get('tables', {})
+            
+            # 1. IDENTIFICAR ENTIDADES
+            for table_name, table_info in tables.items():
+                entity_info = {
+                    'name': table_name,
+                    'type': self._classify_entity_type(table_name, table_info),
+                    'properties': list(table_info.get('columns', {}).keys()),
+                    'primary_keys': table_info.get('primary_keys', []),
+                    'semantic_category': table_info.get('semantic_category', 'unknown'),
+                    'business_entity': table_info.get('business_entity', False),
+                    'estimated_rows': table_info.get('estimated_row_count', 0)
+                }
+                graph['entities'][table_name] = entity_info
+            
+            # 2. CONSTRUIR RELACIONES
+            for table_name, table_info in tables.items():
+                foreign_keys = table_info.get('foreign_keys', [])
+                
+                for fk in foreign_keys:
+                    if fk.get('referred_table') and fk.get('referred_table') in tables:
+                        relationship = {
+                            'source_table': table_name,
+                            'target_table': fk['referred_table'],
+                            'source_columns': fk.get('constrained_columns', []),
+                            'target_columns': fk.get('referred_columns', []),
+                            'relationship_type': self._classify_relationship_type(table_name, fk['referred_table']),
+                            'constraint_name': fk.get('name', ''),
+                            'cardinality': self._infer_cardinality(table_name, fk['referred_table'], tables)
+                        }
+                        graph['relationships'].append(relationship)
+            
+            # 3. CONSTRUIR JERARQUÍA
+            graph['entity_hierarchy'] = self._build_entity_hierarchy(graph['relationships'])
+            
+            # 4. MATRIZ DE RELACIONES
+            graph['relationship_matrix'] = self._build_relationship_matrix(graph['relationships'], list(tables.keys()))
+            
+            logger.info(f"[SchemaCacheService] ✅ Grafo construido: {len(graph['entities'])} entidades, {len(graph['relationships'])} relaciones")
+            return graph
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error construyendo grafo: {e}")
+            return {}
+
+    def _add_semantic_metadata(self, graph_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Agrega metadata semántica al grafo de relaciones.
+        """
+        try:
+            logger.info("[SchemaCacheService] 🧠 Agregando metadata semántica")
+            
+            semantic_schema = graph_schema.copy()
+            
+            # 1. CONTEXTO RELACIONAL PARA AI
+            semantic_schema['ai_context'] = self._generate_ai_context(graph_schema)
+            
+            # 2. PATRONES DE DISEÑO DETECTADOS
+            semantic_schema['design_patterns'] = self._detect_design_patterns(graph_schema)
+            
+            # 3. RECOMENDACIONES DE CONSULTA
+            semantic_schema['query_recommendations'] = self._generate_query_recommendations(graph_schema)
+            
+            # 4. METADATA DE DOMINIO
+            semantic_schema['domain_metadata'] = self._extract_domain_metadata(graph_schema)
+            
+            return semantic_schema
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error agregando metadata semántica: {e}")
+            return graph_schema
+
+    # =====================================================
+    # 🧠 MÉTODOS AUXILIARES SEMÁNTICOS
+    # =====================================================
+    
+    def _infer_semantic_type(self, column_name: str, column_type: str) -> str:
+        """Infiere el tipo semántico de una columna"""
+        col_name_lower = column_name.lower()
+        col_type_lower = str(column_type).lower()
+        
+        # Identificadores
+        if col_name_lower in ['id', 'uuid', 'guid'] or col_name_lower.endswith('_id'):
+            return 'identifier'
+        
+        # Temporales
+        if any(t in col_type_lower for t in ['timestamp', 'date', 'time']):
+            return 'temporal'
+        
+        # Geográficos
+        if any(g in col_name_lower for g in ['lat', 'lng', 'latitude', 'longitude', 'address', 'city', 'country']):
+            return 'geographic'
+        
+        # Texto
+        if any(t in col_type_lower for t in ['varchar', 'text', 'char']):
+            return 'text'
+        
+        # Numéricos
+        if any(n in col_type_lower for n in ['int', 'numeric', 'decimal', 'float']):
+            return 'numeric'
+        
+        # Booleanos
+        if 'boolean' in col_type_lower:
+            return 'boolean'
+        
+        return 'unknown'
+
+    def _is_identifier_column(self, column_name: str, column_info: Dict[str, Any]) -> bool:
+        """Determina si una columna es un identificador"""
+        col_name_lower = column_name.lower()
+        
+        # Nombres típicos de ID
+        if col_name_lower in ['id', 'uuid', 'guid']:
+            return True
+        
+        # Columnas que terminan en _id
+        if col_name_lower.endswith('_id'):
+            return True
+        
+        # Verificar si es primary key
+        if column_info.get('primary_key', False):
+            return True
+        
+        return False
+
+    def _is_temporal_column(self, column_type: str) -> bool:
+        """Determina si una columna es temporal"""
+        col_type_lower = str(column_type).lower()
+        temporal_types = ['timestamp', 'date', 'time', 'datetime']
+        return any(t in col_type_lower for t in temporal_types)
+
+    def _is_geographic_column(self, column_name: str, column_type: str) -> bool:
+        """Determina si una columna es geográfica"""
+        col_name_lower = column_name.lower()
+        geographic_names = ['lat', 'lng', 'latitude', 'longitude', 'address', 'city', 'country', 'postal_code']
+        return any(g in col_name_lower for g in geographic_names)
+
+    def _infer_table_semantic_category(self, table_name: str) -> str:
+        """Infiere la categoría semántica de una tabla"""
+        table_lower = table_name.lower()
+        
+        # Categorías principales
+        if any(word in table_lower for word in ['user', 'member', 'customer']):
+            return 'user_management'
+        elif any(word in table_lower for word in ['club', 'business', 'store']):
+            return 'business_entity'
+        elif any(word in table_lower for word in ['product', 'item', 'service']):
+            return 'product_catalog'
+        elif any(word in table_lower for word in ['order', 'transaction', 'purchase']):
+            return 'transactions'
+        elif any(word in table_lower for word in ['blog', 'post', 'article', 'content']):
+            return 'content_management'
+        elif any(word in table_lower for word in ['country', 'city', 'location']):
+            return 'geography'
+        elif any(word in table_lower for word in ['tag', 'category', 'classification']):
+            return 'taxonomy'
+        elif any(word in table_lower for word in ['image', 'media', 'file']):
+            return 'media'
+        elif any(word in table_lower for word in ['setting', 'config', 'preference']):
+            return 'configuration'
+        else:
+            return 'general'
+
+    def _is_business_entity(self, table_name: str) -> bool:
+        """Determina si una tabla representa una entidad de negocio"""
+        business_tables = ['clubs', 'businesses', 'stores', 'companies', 'organizations']
+        return table_name.lower() in business_tables
+
+    def _has_audit_fields(self, columns: Dict[str, Any]) -> bool:
+        """Determina si una tabla tiene campos de auditoría"""
+        audit_fields = ['created_at', 'updated_at', 'created_by', 'updated_by', 'deleted_at']
+        column_names = [col.lower() for col in columns.keys()]
+        return any(field in column_names for field in audit_fields)
+
+    def _classify_entity_type(self, table_name: str, table_info: Dict[str, Any]) -> str:
+        """Clasifica el tipo de entidad de una tabla"""
+        semantic_category = table_info.get('semantic_category', 'unknown')
+        
+        if semantic_category == 'user_management':
+            return 'person'
+        elif semantic_category == 'business_entity':
+            return 'organization'
+        elif semantic_category == 'product_catalog':
+            return 'product'
+        elif semantic_category == 'transactions':
+            return 'event'
+        elif semantic_category == 'content_management':
+            return 'content'
+        elif semantic_category == 'geography':
+            return 'location'
+        elif semantic_category == 'taxonomy':
+            return 'concept'
+        elif semantic_category == 'media':
+            return 'resource'
+        else:
+            return 'entity'
+
+    def _classify_relationship_type(self, source_table: str, target_table: str) -> str:
+        """Clasifica el tipo de relación entre dos tablas"""
+        source_lower = source_table.lower()
+        target_lower = target_table.lower()
+        
+        # Relaciones jerárquicas
+        if 'country' in source_lower and 'city' in target_lower:
+            return 'hierarchical_contains'
+        elif 'city' in source_lower and 'club' in target_lower:
+            return 'hierarchical_contains'
+        
+        # Relaciones de pertenencia
+        if source_lower.endswith('s') and target_lower.endswith('s'):
+            return 'many_to_many'
+        elif source_lower.endswith('s') and not target_lower.endswith('s'):
+            return 'one_to_many'
+        else:
+            return 'association'
+
+    def _infer_cardinality(self, source_table: str, target_table: str, all_tables: Dict[str, Any]) -> str:
+        """Infiere la cardinalidad de la relación"""
+        # Lógica simplificada - se puede mejorar
+        return 'many_to_one'  # Por defecto
+
+    def _build_entity_hierarchy(self, relationships: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Construye la jerarquía de entidades"""
+        hierarchy = {}
+        
+        for rel in relationships:
+            if rel.get('relationship_type') == 'hierarchical_contains':
+                source = rel['source_table']
+                target = rel['target_table']
+                
+                if source not in hierarchy:
+                    hierarchy[source] = []
+                hierarchy[source].append(target)
+        
+        return hierarchy
+
+    def _build_relationship_matrix(self, relationships: List[Dict[str, Any]], table_names: List[str]) -> Dict[str, Any]:
+        """Construye la matriz de relaciones entre tablas"""
+        matrix = {}
+        
+        for table in table_names:
+            matrix[table] = {}
+            for other_table in table_names:
+                matrix[table][other_table] = []
+        
+        for rel in relationships:
+            source = rel['source_table']
+            target = rel['target_table']
+            
+            if source in matrix and target in matrix[source]:
+                matrix[source][target].append(rel)
+        
+        return matrix
+
+    def _generate_ai_context(self, graph_schema: Dict[str, Any]) -> str:
+        """Genera contexto relacional para la AI"""
+        try:
+            entities = graph_schema.get('entities', {})
+            relationships = graph_schema.get('relationships', [])
+            
+            context = "ESTRUCTURA DE BASE DE DATOS CON RELACIONES:\n\n"
+            
+            # Entidades principales
+            context += "ENTIDADES PRINCIPALES:\n"
+            for table_name, entity_info in entities.items():
+                entity_type = entity_info.get('type', 'entity')
+                semantic_category = entity_info.get('semantic_category', 'unknown')
+                context += f"- {table_name} ({entity_type}): {semantic_category}\n"
+            
+            context += "\nRELACIONES CLAVE:\n"
+            for rel in relationships[:10]:  # Top 10 relaciones
+                source = rel['source_table']
+                target = rel['target_table']
+                rel_type = rel['relationship_type']
+                context += f"- {source} → {target} ({rel_type})\n"
+            
+            context += "\nPATRONES DE DISEÑO:\n"
+            context += "- Sistema jerárquico: Países → Ciudades → Clubs\n"
+            context += "- Relaciones many-to-many: Clubs ↔ Amenities, Posts ↔ Tags\n"
+            context += "- Entidades de negocio con metadata rica (reviews, imágenes, horarios)\n"
+            context += "- Sistema de contenido multilingüe con categorías y tags\n"
+            
+            return context
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error generando contexto AI: {e}")
+            return "Error generando contexto"
+
+    def _detect_design_patterns(self, graph_schema: Dict[str, Any]) -> List[str]:
+        """Detecta patrones de diseño en el schema"""
+        patterns = []
+        
+        entities = graph_schema.get('entities', {})
+        relationships = graph_schema.get('relationships', [])
+        
+        # Patrón de auditoría
+        audit_tables = [name for name, info in entities.items() 
+                       if info.get('audit_fields', False)]
+        if audit_tables:
+            patterns.append(f"Audit Pattern: {len(audit_tables)} tablas con campos de auditoría")
+        
+        # Patrón de soft delete
+        soft_delete_tables = [name for name, info in entities.items() 
+                             if 'deleted_at' in [col.lower() for col in info.get('properties', [])]]
+        if soft_delete_tables:
+            patterns.append(f"Soft Delete Pattern: {len(soft_delete_tables)} tablas")
+        
+        # Patrón de jerarquía geográfica
+        geo_hierarchy = [rel for rel in relationships 
+                        if rel.get('relationship_type') == 'hierarchical_contains']
+        if geo_hierarchy:
+            patterns.append(f"Geographic Hierarchy Pattern: {len(geo_hierarchy)} niveles")
+        
+        # Patrón de tags
+        tag_tables = [name for name in entities.keys() if 'tag' in name.lower()]
+        if tag_tables:
+            patterns.append(f"Tagging Pattern: {len(tag_tables)} tablas de tags")
+        
+        return patterns
+
+    def _generate_query_recommendations(self, graph_schema: Dict[str, Any]) -> List[str]:
+        """Genera recomendaciones de consultas basadas en el grafo"""
+        recommendations = []
+        
+        entities = graph_schema.get('entities', {})
+        relationships = graph_schema.get('relationships', [])
+        
+        # Consultas de jerarquía geográfica
+        geo_entities = [name for name, info in entities.items() 
+                       if info.get('semantic_category') == 'geography']
+        if len(geo_entities) >= 2:
+            recommendations.append("Consulta jerárquica: Encuentra clubs por país → ciudad")
+        
+        # Consultas de entidades de negocio
+        business_entities = [name for name, info in entities.items() 
+                           if info.get('business_entity', False)]
+        if business_entities:
+            recommendations.append("Consulta de negocio: Filtra clubs por amenities, rating, horarios")
+        
+        # Consultas de contenido
+        content_entities = [name for name, info in entities.items() 
+                          if info.get('semantic_category') == 'content_management']
+        if content_entities:
+            recommendations.append("Consulta de contenido: Busca posts por categorías y tags")
+        
+        # Consultas de productos
+        product_entities = [name for name, info in entities.items() 
+                          if info.get('semantic_category') == 'product_catalog']
+        if product_entities:
+            recommendations.append("Consulta de productos: Filtra por categorías y vendor")
+        
+        return recommendations
+
+    def _extract_domain_metadata(self, graph_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Extrae metadata específica del dominio"""
+        domain_metadata = {
+            'business_domain': 'cannabis_clubs',
+            'geographic_scope': 'international',
+            'content_languages': ['en', 'es', 'fr'],
+            'main_entities': [],
+            'business_processes': []
+        }
+        
+        entities = graph_schema.get('entities', {})
+        
+        # Entidades principales del negocio
+        business_entities = [name for name, info in entities.items() 
+                           if info.get('business_entity', False)]
+        domain_metadata['main_entities'] = business_entities
+        
+        # Procesos de negocio detectados
+        if 'clubs' in entities and 'users' in entities:
+            domain_metadata['business_processes'].append('club_membership_management')
+        
+        if 'products' in entities and 'clubs' in entities:
+            domain_metadata['business_processes'].append('product_catalog_management')
+        
+        if 'blog_posts' in entities:
+            domain_metadata['business_processes'].append('content_management')
+        
+        return domain_metadata
+
+    def _generate_enriched_fingerprint(self, semantic_schema: Dict[str, Any]) -> str:
+        """Genera un fingerprint del schema enriquecido"""
+        try:
+            # Crear un hash del schema enriquecido
+            import hashlib
+            import json
+            
+            # Serializar el schema (excluyendo campos que pueden cambiar)
+            fingerprint_data = {
+                'entities_count': len(semantic_schema.get('entities', {})),
+                'relationships_count': len(semantic_schema.get('relationships', [])),
+                'entity_types': list(set(entity.get('type', 'unknown') 
+                                      for entity in semantic_schema.get('entities', {}).values())),
+                'semantic_categories': list(set(entity.get('semantic_category', 'unknown') 
+                                             for entity in semantic_schema.get('entities', {}).values())),
+                'design_patterns': semantic_schema.get('design_patterns', []),
+                'domain_metadata': semantic_schema.get('domain_metadata', {})
+            }
+            
+            # Convertir a JSON y generar hash
+            json_str = json.dumps(fingerprint_data, sort_keys=True)
+            hash_object = hashlib.sha256(json_str.encode())
+            return f"graph_rag_pro_{hash_object.hexdigest()[:16]}"
+            
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error generando fingerprint enriquecido: {e}")
+            return "graph_rag_pro_error"
+
+    def get_cache_entry(self, user_id: UUID, db_id: UUID) -> Optional[DetailedSchemaCache]:
+        """
+        Obtiene la entrada completa del cache.
+        
+        Args:
+            user_id: ID del usuario
+            db_id: ID de la base de datos
+            
+        Returns:
+            Entrada del cache o None si no existe
+        """
+        try:
+            cache_entry = self.db.query(DetailedSchemaCache).filter(
+                and_(
+                    DetailedSchemaCache.user_id == user_id,
+                    DetailedSchemaCache.db_id == db_id
+                )
+            ).first()
+            
+            if cache_entry:
+                # Actualizar último acceso
+                cache_entry.last_accessed = datetime.now(timezone.utc)
+                self.db.commit()
+                
+                logger.info(f"[SchemaCacheService] 🔥 Cache HIT DB para entrada completa {db_id}")
+                return cache_entry
+            else:
+                logger.debug(f"[SchemaCacheService] ❌ Cache MISS DB para entrada completa {db_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"[SchemaCacheService] ❌ Error obteniendo entrada del cache: {e}")
+            return None

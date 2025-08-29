@@ -37,6 +37,8 @@ class User(Base):
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     apps = relationship("App", back_populates="user", cascade="all, delete-orphan")
     databases = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
+    schema_pipelines = relationship("SchemaPipeline", back_populates="user", cascade="all, delete-orphan")
+    schema_graphs = relationship("SchemaGraph", back_populates="user", cascade="all, delete-orphan")
     strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
     integrations = relationship("Integration", back_populates="user", cascade="all, delete-orphan")
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")

@@ -153,7 +153,7 @@ async def websocket_chat(
     # El usuario ya está validado arriba, continuar con la lógica del WebSocket
 
     # 🔧 NUEVO: Definir funciones auxiliares ANTES de usarlas
-    async def prepare_user_environment_proactively(websocket, user_id, factory, priority_resources):
+    async def prepare_user_environment_proactively(websocket, user_id, factory, priority_resources, system_readiness_manager):
         """Prepara entorno del usuario ANTES del primer mensaje"""
         
         try:
@@ -178,7 +178,7 @@ async def websocket_chat(
                 env_orchestrator = factory.get_environment_preparation_orchestrator()
                 if env_orchestrator:
                     asyncio.create_task(
-                        prepare_environment_background(user_id, priority_resources, websocket, env_orchestrator)
+                        prepare_environment_background(user_id, priority_resources, websocket, env_orchestrator, system_readiness_manager)
                     )
                     logger.info(f"[ChatWS] 🚀 Preparación proactiva iniciada para usuario {user_id} con {resources_summary}")
                 else:
@@ -190,6 +190,8 @@ async def websocket_chat(
                     "message": "ℹ️ No hay recursos específicos para preparar",
                     "timestamp": datetime.now().isoformat()
                 })
+                # 🔧 NUEVO: Marcar como READY si no hay recursos
+                await system_readiness_manager.mark_system_ready("No hay recursos para preparar - sistema listo")
             
             return priority_resources
             
@@ -203,7 +205,7 @@ async def websocket_chat(
             })
             return {"db_ids": [], "app_ids": []}
 
-    async def prepare_environment_background(user_id: str, resources: Dict, websocket, env_orchestrator):
+    async def prepare_environment_background(user_id: str, resources: Dict, websocket, env_orchestrator, system_readiness_manager):
         """Prepara entorno en background y envía notificaciones"""
         
         try:
@@ -225,6 +227,18 @@ async def websocket_chat(
                 )
                 
                 if ready_result.get("ready"):
+                    # 🔧 NUEVO: Marcar sistema como READY cuando los recursos estén preparados
+                    await system_readiness_manager.mark_system_ready("Recursos del usuario preparados exitosamente")
+                    
+                    # 🔧 NUEVO: Enviar estado actualizado del sistema
+                    updated_system_status = await system_readiness_manager.get_system_status()
+                    await websocket.send_json({
+                        "type": "system.status",
+                        "data": updated_system_status,
+                        "message": "✅ Sistema completamente listo - recursos preparados",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
                     await websocket.send_json({
                         "type": "environment.ready_proactive",
                         "message": "✅ Tu entorno está listo para usar",
@@ -234,13 +248,59 @@ async def websocket_chat(
                     })
                     logger.info(f"[ChatWS] ✅ Entorno preparado proactivamente para usuario {user_id}")
                 else:
-                    await websocket.send_json({
-                        "type": "environment.preparation_timeout",
-                        "message": "⏰ Preparación del entorno tardó más de lo esperado",
-                        "resources": resources,
-                        "timestamp": datetime.now().isoformat()
-                    })
-            else:
+                    # 🔧 NUEVO: Verificar si hay errores específicos de validación
+                    if ready_result.get("database_corrupted", False):
+                        # 🔧 NUEVO: DB corrupta detectada - enviar mensaje específico
+                        corruption_details = ready_result.get("corruption_details", {})
+                        await websocket.send_json({
+                            "type": "environment.corrupted_database",
+                            "message": "⚠️ Base de datos corrupta detectada",
+                            "details": corruption_details,
+                            "problem": corruption_details.get("problem", "Esquema incompleto o corrupto"),
+                            "solution": corruption_details.get("solution", "Borrar y recrear la base de datos"),
+                            "reason": corruption_details.get("reason", "DB creada antes del sistema de esquemas"),
+                            "resources": resources,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        logger.warning(f"[ChatWS] ⚠️ DB corrupta detectada para usuario {user_id}: {corruption_details}")
+                        
+                    elif ready_result.get("validation_errors", []):
+                        # 🔧 NUEVO: Otros errores de validación
+                        validation_errors = ready_result.get("validation_errors", [])
+                        await websocket.send_json({
+                            "type": "environment.validation_errors",
+                            "message": f"❌ Errores de validación detectados: {len(validation_errors)} problemas",
+                            "errors": validation_errors,
+                            "user_action_required": ready_result.get("user_action_required", False),
+                            "resources": resources,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        logger.warning(f"[ChatWS] ⚠️ Errores de validación para usuario {user_id}: {validation_errors}")
+                        
+                    elif ready_result.get("max_retries_reached", False):
+                        # 🔧 NUEVO: Máximo de reintentos alcanzado
+                        await websocket.send_json({
+                            "type": "environment.max_retries",
+                            "message": "⏰ Máximo de reintentos alcanzado - el sistema no pudo preparar tu entorno",
+                            "retry_count": ready_result.get("retry_count", 0),
+                            "elapsed_seconds": ready_result.get("elapsed_seconds", 0),
+                            "resources": resources,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        logger.warning(f"[ChatWS] ⚠️ Máximo de reintentos alcanzado para usuario {user_id}")
+                        
+                    else:
+                        # 🔧 NUEVO: Timeout genérico (fallback)
+                        await websocket.send_json({
+                            "type": "environment.preparation_timeout",
+                            "message": "⏰ Preparación del entorno tardó más de lo esperado",
+                            "resources": resources,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    
+                    # 🔧 NUEVO: Marcar sistema como DEGRADED en todos los casos de fallo
+                    await system_readiness_manager.mark_system_degraded("Error en preparación de recursos del usuario")
+                
                 await websocket.send_json({
                     "type": "environment.preparation_failed",
                     "message": "❌ Error preparando entorno",
@@ -279,12 +339,12 @@ async def websocket_chat(
         # Inicializar EnvironmentPreparationOrchestrator
         env_prep_orchestrator = EnvironmentPreparationOrchestrator(factory)
         
-        # Enviar estado inicial del sistema
+        # 🔧 CORREGIDO: Enviar estado inicial del sistema (INITIALIZING, no READY)
         system_status = await system_readiness_manager.get_system_status()
         await websocket.send_json({
             "type": "system.status",
             "data": system_status,
-            "message": "🔍 Verificando estado del sistema...",
+            "message": "⏳ Sistema inicializando - verificando servicios core...",
             "timestamp": datetime.now().isoformat()
         })
         
@@ -306,9 +366,11 @@ async def websocket_chat(
             # Iniciar preparación proactiva si hay recursos
             if any(len(resource_list) > 0 for resource_list in priority_resources.values()):
                 logger.info(f"[ChatWS] 🚀 Iniciando preparación proactiva con recursos: {priority_resources}")
-                await prepare_user_environment_proactively(websocket, str(real_user.id), factory, priority_resources)
+                await prepare_user_environment_proactively(websocket, str(real_user.id), factory, priority_resources, system_readiness_manager)
             else:
                 logger.info(f"[ChatWS] ℹ️ No hay recursos prioritarios en headers para preparación proactiva")
+                # 🔧 NUEVO: Si no hay recursos, marcar como READY inmediatamente
+                await system_readiness_manager.mark_system_ready("No hay recursos para preparar - sistema listo")
                 
         except Exception as proactive_error:
             logger.warning(f"[ChatWS] ⚠️ Error en preparación proactiva: {proactive_error}")

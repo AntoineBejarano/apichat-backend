@@ -21,15 +21,16 @@ class DatabaseConnectionCreate(DatabaseConnectionBase):
     pass
 
 class DatabaseConnectionUpdate(BaseModel):
-    name: Optional[str]
-    db_type: Optional[str]
-    host: Optional[str]
-    port: Optional[int]
-    database: Optional[str]
-    username: Optional[str]
-    password: Optional[str]
+    # 🔧 CORREGIDO: Todos los campos son opcionales para permitir actualizaciones parciales
+    name: Optional[str] = None
+    db_type: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    database: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     # 🔧 NUEVO: Campo para actualizar estado del schema
-    schema_status: Optional[str]
+    schema_status: Optional[str] = None
 
     model_config = {
         "from_attributes": False
@@ -44,4 +45,18 @@ class DatabaseConnectionOut(DatabaseConnectionBase):
 
     model_config = {
         "from_attributes": True
+    }
+
+class DatabaseConnectionCreateResponse(BaseModel):
+    """
+    Respuesta del endpoint de creación de conexión.
+    Incluye la conexión creada y información sobre el proceso de generación de schema.
+    """
+    connection: DatabaseConnectionOut
+    message: str
+    schema_status: str
+    estimated_time: str
+
+    model_config = {
+        "from_attributes": False
     }

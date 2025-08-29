@@ -52,12 +52,14 @@ class SemanticValidator:
             validation_errors = []
             
             # 1. Verificar que las tablas tienen sentido
-            tables = schema_dict.get('tables', [])
+            # 🔧 FIX: Usar las tablas del snapshot
+            snapshot = schema_dict.get('snapshot', {}) if isinstance(schema_dict, dict) else {}
+            tables = snapshot.get('tables', []) if isinstance(snapshot, dict) else []
             
             # 🔧 VALIDACIÓN INTELIGENTE: Detectar DBs corruptas/inconsistentes
             if not tables:
                 # Verificar si es un esquema básico de Redis (solo metadata)
-                if schema_dict.get('dialect') or schema_dict.get('generated_at'):
+                if isinstance(schema_dict, dict) and (schema_dict.get('dialect') or schema_dict.get('generated_at')):
                     # 🔧 PROBLEMA REAL: DB antigua sin esquema completo en Redis
                     logger.warning(f"[SemanticValidator] ⚠️ DB {db_uuid} tiene esquema básico de Redis pero sin tablas")
                     return ValidationResult(
@@ -82,9 +84,6 @@ class SemanticValidator:
                         referenced_table = column['foreign_key'].get('table')
                         if referenced_table not in [t['name'] for t in tables]:
                             validation_errors.append(f"Referencia a tabla inexistente: {referenced_table}")
-            
-            # 🔧 FIX: Eliminar validación duplicada
-            # La validación de tablas ya se hizo arriba
             
             # 3. Verificar que las columnas tienen tipos válidos
             valid_types = ['varchar', 'int', 'timestamp', 'boolean', 'text', 'decimal', 'float', 'date']

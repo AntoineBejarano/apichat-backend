@@ -71,10 +71,16 @@ class BaseServiceFactory:
             # Crear nueva instancia
             logger.info(f"[{self.__class__.__name__}] 🔨 Creando servicio '{service_name}'")
             
-            if args or kwargs:
+            # 🔧 FIX: Verificar si el servicio necesita el factory
+            use_factory = kwargs.pop('use_factory', True)
+            
+            if use_factory and (args or kwargs):
                 service_instance = service_class(self.main_factory, *args, **kwargs)
-            else:
+            elif use_factory:
                 service_instance = service_class(self.main_factory)
+            else:
+                # 🔧 FIX: Servicios que no necesitan factory (como RedisSchemaCache)
+                service_instance = service_class(*args, **kwargs)
             
             # Almacenar en cache
             self._services[service_name] = service_instance
