@@ -47,7 +47,7 @@ def setup_logging(
     _configure_module_loggers()
     
     logger = logging.getLogger(__name__)
-    logger.info(f"🔧 FASE 9: Logging configurado con nivel {level}")
+    logger.info(f"🔧 Logging configurado con nivel {level}")
 
 
 def _configure_module_loggers() -> None:

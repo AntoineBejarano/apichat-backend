@@ -27,6 +27,7 @@ class App(Base):
     functions = relationship("Function", back_populates="app", cascade="all, delete-orphan")
     chats = relationship("Chat", back_populates="app", cascade="all, delete-orphan")
     agent_links = relationship("AgentAppLink", back_populates="app", cascade="all, delete-orphan")
+    api_triggering_configs = relationship("APITriggeringConfig", back_populates="app", cascade="all, delete-orphan")
 
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

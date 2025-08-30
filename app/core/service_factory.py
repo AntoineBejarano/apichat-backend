@@ -564,6 +564,10 @@ class ServiceFactory:
         """Obtiene el servicio de rephrase inteligente"""
         return self.ai.get_smart_rephrase_service()
     
+    def get_smart_ai_orchestrator(self):
+        """Obtiene el orquestador de Smart AI"""
+        return self.ai.get_smart_ai_orchestrator()
+    
     def get_execution_planner_service(self):
         """Obtiene el servicio de planificación de ejecución"""
         return self.ai.get_execution_planner_service()
@@ -735,6 +739,55 @@ class ServiceFactory:
             return None
     
     # ─────────────────────────────────────────────
+    #   🚀 API TRIGGERING SERVICES (Nuevos servicios)
+    # ─────────────────────────────────────────────
+    
+    def get_api_triggering_config_service(self):
+        """Obtiene el servicio de configuración de triggering de APIs"""
+        try:
+            from app.services.management.api_triggering_config_service import APITriggeringConfigService
+            return APITriggeringConfigService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo APITriggeringConfigService: {e}")
+            return None
+    
+    def get_extensible_embedding_service(self):
+        """Obtiene el servicio de embeddings extensible"""
+        try:
+            from app.services.context.extensible_embedding_service import ExtensibleEmbeddingService
+            return ExtensibleEmbeddingService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo ExtensibleEmbeddingService: {e}")
+            return None
+    
+    def get_unified_vector_search_service(self):
+        """Obtiene el servicio de búsqueda vectorial unificada"""
+        try:
+            from app.services.context.unified_vector_search_service import UnifiedVectorSearchService
+            return UnifiedVectorSearchService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo UnifiedVectorSearchService: {e}")
+            return None
+    
+    def get_api_triggering_service(self):
+        """Obtiene el servicio de triggering automático de APIs"""
+        try:
+            from app.services.ai.api_triggering_service import APITriggeringService
+            return APITriggeringService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo APITriggeringService: {e}")
+            return None
+    
+    def get_unified_chat_service(self):
+        """Obtiene el servicio de chat unificado"""
+        try:
+            from app.services.ai.unified_chat_service import UnifiedChatService
+            return UnifiedChatService(self)
+        except Exception as e:
+            logger.error(f"[ServiceFactory] ❌ Error obteniendo UnifiedChatService: {e}")
+            return None
+    
+    # ─────────────────────────────────────────────
     #   🔄 BACKGROUND SERVICES (Delegación a BackgroundServicesFactory)
     # ─────────────────────────────────────────────
     
@@ -827,6 +880,112 @@ class ServiceFactory:
         except Exception as e:
             logger.error(f"[ServiceFactory] ❌ Error reseteando factories: {e}")
     
+    # ─────────────────────────────────────────────
+    #   🚀 MÉTODOS PARA API TRIGGERING SYSTEM
+    # ─────────────────────────────────────────────
+    
+    def get_api_triggering_config_service(self):
+        """Obtiene el servicio de configuración de API triggering"""
+        from app.services.management.api_triggering_config_service import APITriggeringConfigService
+        return APITriggeringConfigService(self)
+    
+    def get_extensible_embedding_service(self):
+        """Obtiene el servicio de embeddings extensible"""
+        from app.services.context.extensible_embedding_service import ExtensibleEmbeddingService
+        return ExtensibleEmbeddingService(self)
+    
+    def get_unified_vector_search_service(self):
+        """Obtiene el servicio de búsqueda vectorial unificada"""
+        from app.services.context.unified_vector_search_service import UnifiedVectorSearchService
+        return UnifiedVectorSearchService(self)
+    
+    def get_api_triggering_service(self):
+        """Obtiene el servicio de API triggering"""
+        from app.services.ai.api_triggering_service import APITriggeringService
+        return APITriggeringService(self)
+    
+    def get_unified_chat_service(self):
+        """Obtiene el servicio de chat unificado"""
+        from app.services.ai.unified_chat_service import UnifiedChatService
+        return UnifiedChatService(self)
+    
+    def get_embedding_adapter(self):
+        """Obtiene el adaptador de embeddings"""
+        return self.core.get_embedding_adapter()
+    
+    def get_vector_service(self):
+        """Obtiene el servicio vectorial"""
+        return self.data.get_vector_service()
+    
+    def get_function_executor_service(self):
+        """Obtiene el servicio de ejecución de funciones"""
+        return self.ai.get_function_executor_service()
+    
+    # ===== SERVICIOS DE PLANES Y TO-DOS =====
+    
+    def get_plan_generation_service(self):
+        """Obtiene el servicio de generación de planes largos."""
+        if not hasattr(self, '_plan_generation_service'):
+            from app.services.ai.plan_generation_service import PlanGenerationService
+            self._plan_generation_service = PlanGenerationService(self)
+        return self._plan_generation_service
+    
+    def get_plan_detection_service(self):
+        """Obtiene el servicio de detección de tipo de plan."""
+        if not hasattr(self, '_plan_detection_service'):
+            from app.services.ai.plan_detection_service import PlanDetectionService
+            self._plan_detection_service = PlanDetectionService(self)
+        return self._plan_detection_service
+    
+    def get_plan_service(self):
+        """Obtiene el servicio de gestión de planes."""
+        if not hasattr(self, '_plan_service'):
+            from app.services.management.plan_service import PlanService
+            self._plan_service = PlanService(self.db)
+        return self._plan_service
+    
+    def get_plan_execution_service(self):
+        """Obtiene el servicio de ejecución de planes."""
+        if not hasattr(self, '_plan_execution_service'):
+            from app.services.execution.plan_execution_service import PlanExecutionService
+            self._plan_execution_service = PlanExecutionService(self)
+        return self._plan_execution_service
+    
+    def get_plan_realtime_tracker(self):
+        """Obtiene el servicio de seguimiento en tiempo real de planes."""
+        if not hasattr(self, '_plan_realtime_tracker'):
+            from app.services.execution.plan_realtime_tracker import PlanRealtimeTracker
+            self._plan_realtime_tracker = PlanRealtimeTracker(self)
+        return self._plan_realtime_tracker
+    
+    def get_plan_chat_integration_service(self):
+        """Obtiene el servicio de integración de planes con chat."""
+        if not hasattr(self, '_plan_chat_integration_service'):
+            from app.services.chat.plan_chat_integration_service import PlanChatIntegrationService
+            self._plan_chat_integration_service = PlanChatIntegrationService(self)
+        return self._plan_chat_integration_service
+    
+    def get_plan_chat_commands_service(self):
+        """Obtiene el servicio de comandos de chat para planes."""
+        if not hasattr(self, '_plan_chat_commands_service'):
+            from app.services.chat.plan_chat_commands_service import PlanChatCommandsService
+            self._plan_chat_commands_service = PlanChatCommandsService(self)
+        return self._plan_chat_commands_service
+    
+    def get_plan_outcome_service(self):
+        """Obtiene el servicio de resultados de planes."""
+        if not hasattr(self, '_plan_outcome_service'):
+            from app.services.execution.plan_outcome_service import PlanOutcomeService
+            self._plan_outcome_service = PlanOutcomeService(self)
+        return self._plan_outcome_service
+    
+    def get_plan_recommendation_service(self):
+        """Obtiene el servicio de recomendaciones de planes."""
+        if not hasattr(self, '_plan_recommendation_service'):
+            from app.services.ai.plan_recommendation_service import PlanRecommendationService
+            self._plan_recommendation_service = PlanRecommendationService(self)
+        return self._plan_recommendation_service
+    
     def __repr__(self):
         """Representación string del ServiceFactory"""
         return f"<ServiceFactory(user_id={self.user.id}, sub_factories=6)>"
@@ -834,3 +993,22 @@ class ServiceFactory:
     def __str__(self):
         """String representation del ServiceFactory"""
         return f"ServiceFactory for user {self.user.id} with 6 sub-factories"
+
+
+# ─────────────────────────────────────────────
+#   🌐 FUNCIÓN GLOBAL PARA DEPENDENCIAS
+# ─────────────────────────────────────────────
+
+def get_factory() -> ServiceFactory:
+    """
+    Función de dependencia para FastAPI que crea una instancia de ServiceFactory
+    para el usuario actual de la sesión.
+    """
+    # TODO: Implementar lógica para obtener el usuario actual de la sesión
+    # Por ahora, creamos una instancia básica
+    from app.models.user_model import User
+    from uuid import uuid4
+    
+    # Crear un usuario temporal para testing
+    temp_user = User(id=uuid4(), email="temp@example.com")
+    return ServiceFactory(user=temp_user)

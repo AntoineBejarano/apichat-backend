@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-from app.schemas.plan_schema import PlanModel
+from app.schemas.plan_schema import UserPlanOut
 from app.utils.performance_monitor import monitor_performance, performance_context
 from app.utils.profiler import profile_function, profile_context
 

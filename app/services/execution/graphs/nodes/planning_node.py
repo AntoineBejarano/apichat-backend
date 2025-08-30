@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 from uuid import UUID
 
 from app.core.service_factory import ServiceFactory
-from app.schemas.plan_schema import PlanModel
+from app.schemas.plan_schema import UserPlanOut
 from ..state.exploration_state import ExplorationState
 from ..utils.performance_metrics import PerformanceMetrics
 from ..utils.resource_proposal import ResourceProposalHelper

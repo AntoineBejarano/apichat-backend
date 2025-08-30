@@ -12,9 +12,13 @@ from app.routers import (
     mcp_integration_router, meta_router, session_router, user_role_router, role_router,
     billing_router, integration_router, permission_router, usage_router, event_definition_router,
     event_trigger_router, trigger_router, app_router, performance_router, cache_router,
-    notification_router,  # 🔧 FASE 5: Router de notificaciones
-    api_cache_router,  # 🔧 FASE 7: Router de cache de APIs
-    # telemetry_router,  # 🎯 FASE 13: Router de telemetría (comentado temporalmente para tests)
+    notification_router,  # 🔔 Router de notificaciones
+    api_cache_router,  # 🔧 Router de cache de APIs
+    plan_router,  # 📋 Router de planes y to-dos
+    plan_ws_router,  # ⚡ Router WebSocket de planes
+    plan_chat_router,  # 💬 Router de chat con planes
+    plan_recommendation_router,  # 🎯 Router de recomendaciones de planes
+    # telemetry_router,  # 📊 Router de telemetría (comentado temporalmente para tests)
     # background_task_router  # Comentado temporalmente para tests
 )
 # from app.routers.error_handler_router import router as error_handler_router
@@ -34,14 +38,14 @@ from app.core.config import settings
 tprint("APIchat", font="slant")
 
 # ────────────────────────────────
-# 🔧 FASE 9: Logging configuration centralizada
+# 🔧 Logging configuration centralizada
 # ────────────────────────────────
 from app.utils.logging_config import setup_logging
 
-# 🔧 FASE 9: Usar configuración centralizada
+# 🔧 Usar configuración centralizada
 setup_logging(level="INFO")
 logger = logging.getLogger("APIchat")
-logger.info("🔧 FASE 9: Aplicación iniciada con logging centralizado")
+logger.info("🔧 Aplicación iniciada con logging centralizado")
 
 # ────────────────────────────────
 # Lifespan Event (Startup/Shutdown)
@@ -132,6 +136,12 @@ app.include_router(database_router.router); logger.info("🗄️ Database router
 app.include_router(functions_router.router); logger.info("🧠 Functions router loaded.")
 app.include_router(openapi_router.router); logger.info("📂 OpenAPI router loaded.")
 app.include_router(strategy_router.router); logger.info("📊 Strategies router loaded.")
+
+# 🚀 API Triggering routers
+from app.routers import api_triggering_config_router, api_triggering_router, unified_chat_router
+app.include_router(api_triggering_config_router.router); logger.info("🔧 API Triggering Config router loaded.")
+app.include_router(api_triggering_router.router); logger.info("🚀 API Triggering router loaded.")
+app.include_router(unified_chat_router.router); logger.info("💬 Unified Chat router loaded.")
 app.include_router(user_router.router); logger.info("👤 User router loaded.")
 app.include_router(proxy_router.router); logger.info("🔌 Proxy router loaded.")
 app.include_router(mcp_integration_router.router); logger.info("🔌 MCP Integration router loaded.")
@@ -147,9 +157,13 @@ app.include_router(event_trigger_router.router); logger.info("📡 EventTrigger 
 app.include_router(trigger_router.router); logger.info("🎯 Trigger router loaded")
 app.include_router(performance_router.router); logger.info("📊 Performance router loaded")
 app.include_router(cache_router.router); logger.info("🗄️ Cache router loaded")
-app.include_router(notification_router.router); logger.info("🔔 FASE 5: Notification router loaded.")
-app.include_router(api_cache_router.router); logger.info("🔧 FASE 7: API Cache router loaded.")
-# app.include_router(telemetry_router.router); logger.info("🎯 FASE 13: Telemetría router loaded")  # Comentado temporalmente para tests
+app.include_router(notification_router.router); logger.info("🔔 Notification router loaded.")
+app.include_router(api_cache_router.router); logger.info("🔧 API Cache router loaded.")
+app.include_router(plan_router.router); logger.info("📋 Plan Management router loaded.")
+app.include_router(plan_ws_router.router); logger.info("⚡ Plan WebSocket router loaded.")
+app.include_router(plan_chat_router.router); logger.info("💬 Plan Chat Integration router loaded.")
+app.include_router(plan_recommendation_router.router); logger.info("🎯 Plan Recommendations router loaded.")
+# app.include_router(telemetry_router.router); logger.info("📊 Telemetry router loaded")  # Comentado temporalmente para tests
 # app.include_router(error_handler_router); logger.info("🎯 Error Handler router loaded")
 # app.include_router(background_task_router.router); logger.info("🚀 Background Task router loaded") # Comentado temporalmente para tests
 

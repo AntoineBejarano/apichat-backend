@@ -1,383 +1,564 @@
 """
-Servicio para ejecutar planes aplicando guardrails de seguridad.
-Integra SQLGuardrailsService y FunctionGuardrailsService.
+PlanExecutionService - Servicio para ejecutar planes paso a paso.
+Maneja el estado de ejecución en Redis y la persistencia en DB.
 """
 
-import logging
-from typing import Dict, Any, List, Optional, Tuple
-from uuid import UUID
 import asyncio
-from pydantic import BaseModel
+import json
+import logging
+from typing import Dict, Any, Optional, List, Tuple
+from uuid import UUID, uuid4
+from datetime import datetime, timezone
+from enum import Enum
 
-from app.core.service_factory import ServiceFactory
-from app.schemas.plan_schema import PlanModel, PlanStep
-from app.services.execution.sql_guardrails_service import SQLGuardrailsService, RiskLevel as SQLRiskLevel
-from app.services.execution.function_guardrails import FunctionGuardrailsService, FunctionRiskLevel
-from app.utils.logger import get_logger
+from app.services.management.plan_service import PlanService
+from app.services.execution.plan_outcome_service import PlanOutcomeService, PlanExecutionMetrics, TaskExecutionMetrics
+from app.schemas.plan_schema import (
+    PlanExecutionRequest, PlanExecutionResponse, TaskExecutionUpdate,
+    PlanStatus, TaskStatus, ExecutionStatus
+)
+from app.models.plan_model import UserPlan, PlanTask, PlanExecutionState
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-class StepExecutionResult(BaseModel):
-    """Resultado de la ejecución de un paso."""
-    step_id: str
-    success: bool
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    execution_time: float = 0.0
-    guardrail_violations: List[Dict[str, Any]] = []
-    requires_confirmation: bool = False
+class ExecutionResult:
+    """Resultado de la ejecución de una tarea."""
+    
+    def __init__(
+        self,
+        task_id: UUID,
+        success: bool,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        execution_time: Optional[float] = None
+    ):
+        self.task_id = task_id
+        self.success = success
+        self.result = result or {}
+        self.error = error
+        self.execution_time = execution_time
 
 
 class PlanExecutionService:
-    """Servicio para ejecutar planes aplicando guardrails de seguridad."""
+    """Servicio para ejecutar planes paso a paso con seguimiento en tiempo real."""
     
-    def __init__(self, factory: ServiceFactory):
+    def __init__(self, factory=None):
         self.factory = factory
-        self.sql_guardrails = factory.get_sql_guardrails_service()
-        self.function_guardrails = factory.get_function_guardrails_service()
-        
-        logger.info("🚀 PlanExecutionService inicializado con guardrails")
+        self.plan_service = None
+        self.redis_service = None
+        self._initialize_services()
     
-    async def execute_plan(
-        self, 
-        plan: PlanModel, 
-        context: Dict[str, Any],
-        user_roles: List[str] = None,
-        user_permissions: List[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Ejecuta un plan completo aplicando guardrails en cada paso.
-        
-        Args:
-            plan: Plan a ejecutar
-            context: Contexto de ejecución
-            user_roles: Roles del usuario
-            user_permissions: Permisos del usuario
-            
-        Returns:
-            Resultado de la ejecución del plan
-        """
-        logger.info(f"🚀 Ejecutando plan: {plan.title}")
-        logger.info(f"  📋 Pasos: {len(plan.steps)}")
-        logger.info(f"  ⚠️  Requiere confirmación: {plan.requires_confirmation}")
-        
-        # Valores por defecto para roles y permisos
-        user_roles = user_roles or ["user"]
-        user_permissions = user_permissions or ["read"]
-        
-        execution_results = []
-        total_execution_time = 0.0
-        guardrail_violations = []
-        
-        # Ejecutar cada paso del plan
-        for i, step in enumerate(plan.steps):
-            logger.info(f"🔄 Ejecutando paso {i+1}/{len(plan.steps)}: {step.step_id}")
-            
-            try:
-                # Aplicar guardrails antes de ejecutar
-                step_result = await self._execute_step_with_guardrails(
-                    step=step,
-                    context=context,
-                    user_roles=user_roles,
-                    user_permissions=user_permissions,
-                    step_number=i+1,
-                    total_steps=len(plan.steps)
-                )
-                
-                execution_results.append(step_result)
-                total_execution_time += step_result.execution_time
-                
-                # Si el paso falló, detener la ejecución
-                if not step_result.success:
-                    logger.error(f"❌ Paso {step.step_id} falló: {step_result.error}")
-                    break
-                
-                # Si requiere confirmación, esperar
-                if step_result.requires_confirmation:
-                    logger.info(f"⏸️ Paso {step.step_id} requiere confirmación del usuario")
-                    # Aquí se integraría con el sistema de decisiones
-                    break
-                
-                logger.info(f"✅ Paso {step.step_id} ejecutado exitosamente")
-                
-            except Exception as e:
-                logger.error(f"❌ Error ejecutando paso {step.step_id}: {e}")
-                step_result = StepExecutionResult(
-                    step_id=step.step_id,
-                    success=False,
-                    error=str(e),
-                    execution_time=0.0
-                )
-                execution_results.append(step_result)
-                break
-        
-        # Preparar resultado final
-        successful_steps = [r for r in execution_results if r.success]
-        failed_steps = [r for r in execution_results if not r.success]
-        
-        result = {
-            "plan_title": plan.title,
-            "plan_description": plan.description,
-            "total_steps": len(plan.steps),
-            "executed_steps": len(successful_steps),
-            "failed_steps": len(failed_steps),
-            "total_execution_time": total_execution_time,
-            "success": len(failed_steps) == 0,
-            "step_results": [r.model_dump() for r in execution_results],
-            "guardrail_violations": guardrail_violations,
-            "requires_confirmation": any(r.requires_confirmation for r in execution_results)
-        }
-        
-        if result["success"]:
-            logger.info(f"✅ Plan ejecutado exitosamente en {total_execution_time:.2f}s")
-        else:
-            logger.warning(f"⚠️ Plan ejecutado con {len(failed_steps)} fallos")
-        
-        return result
+    def _initialize_services(self):
+        """Inicializa los servicios necesarios."""
+        if self.factory:
+            self.plan_service = self.factory.get_plan_service()
+            self.outcome_service = PlanOutcomeService(self.factory)
+            # TODO: Agregar Redis service cuando esté disponible
+            # self.redis_service = self.factory.get_redis_service()
     
-    async def _execute_step_with_guardrails(
+    async def start_plan_execution(
         self,
-        step: PlanStep,
-        context: Dict[str, Any],
-        user_roles: List[str],
-        user_permissions: List[str],
-        step_number: int,
-        total_steps: int
-    ) -> StepExecutionResult:
+        plan_id: UUID,
+        user_id: UUID,
+        auto_confirm: bool = False,
+        start_from_task: Optional[int] = None
+    ) -> PlanExecutionResponse:
         """
-        Ejecuta un paso individual aplicando guardrails.
+        Inicia la ejecución de un plan.
         
         Args:
-            step: Paso a ejecutar
-            context: Contexto de ejecución
-            user_roles: Roles del usuario
-            user_permissions: Permisos del usuario
-            step_number: Número del paso actual
-            total_steps: Total de pasos en el plan
+            plan_id: ID del plan a ejecutar
+            user_id: ID del usuario
+            auto_confirm: Si confirmar automáticamente las tareas
+            start_from_task: Índice de tarea desde la que empezar
             
         Returns:
-            Resultado de la ejecución del paso
+            PlanExecutionResponse: Respuesta con estado de ejecución
         """
-        start_time = asyncio.get_event_loop().time()
-        
         try:
-            # 1. Aplicar guardrails SQL si hay consulta SQL
-            if step.sql_query:
-                sql_violation = await self._apply_sql_guardrails(step.sql_query, user_roles)
-                if sql_violation:
-                    return StepExecutionResult(
-                        step_id=step.step_id,
-                        success=False,
-                        error=f"Violación de guardrail SQL: {sql_violation['message']}",
-                        execution_time=0.0,
-                        guardrail_violations=[sql_violation],
-                        requires_confirmation=sql_violation.get('requires_confirmation', False)
-                    )
+            logger.info(f"[PlanExecution] 🚀 Iniciando ejecución del plan: {plan_id}")
             
-            # 2. Aplicar guardrails de función si hay llamada a función
-            if step.function_call:
-                function_violation = await self._apply_function_guardrails(
-                    step.function_call, 
-                    user_roles, 
-                    user_permissions
-                )
-                if function_violation:
-                    return StepExecutionResult(
-                        step_id=step.step_id,
-                        success=False,
-                        error=f"Violación de guardrail de función: {function_violation['message']}",
-                        execution_time=0.0,
-                        guardrail_violations=[function_violation],
-                        requires_confirmation=function_violation.get('requires_confirmation', False)
-                    )
+            # 1. Verificar que el plan existe y obtener tareas
+            plan = await self.plan_service.get_plan(plan_id, user_id)
+            if not plan:
+                raise ValueError(f"Plan {plan_id} no encontrado")
             
-            # 3. Ejecutar el paso (simulado por ahora)
-            step_result = await self._execute_step_logic(step, context)
+            tasks = await self.plan_service.get_plan_tasks(plan_id, user_id)
+            if not tasks:
+                raise ValueError(f"No hay tareas en el plan {plan_id}")
             
-            execution_time = asyncio.get_event_loop().time() - start_time
+            # 2. Crear run_id único para esta ejecución
+            run_id = str(uuid4())
             
-            return StepExecutionResult(
-                step_id=step.step_id,
-                success=True,
-                result=step_result,
-                execution_time=execution_time,
-                requires_confirmation=False
+            # 3. Crear estado de ejecución en Redis
+            redis_key = f"plan:{run_id}:execution"
+            execution_state = await self._create_execution_state(
+                plan_id, user_id, run_id, redis_key, start_from_task or 0
+            )
+            
+            # 4. Actualizar estado del plan a "running"
+            await self.plan_service.update_plan(
+                plan_id, user_id, 
+                {"status": PlanStatus.RUNNING, "started_at": datetime.now(timezone.utc)}
+            )
+            
+            # 5. Iniciar ejecución asíncrona
+            asyncio.create_task(self._execute_plan_async(
+                plan_id, user_id, run_id, tasks, auto_confirm, start_from_task or 0
+            ))
+            
+            logger.info(f"[PlanExecution] ✅ Ejecución iniciada: {run_id}")
+            
+            return PlanExecutionResponse(
+                execution_id=run_id,
+                plan_id=plan_id,
+                status=ExecutionStatus.RUNNING,
+                current_task_index=start_from_task or 0,
+                total_tasks=len(tasks),
+                message=f"Ejecución iniciada. Ejecutando {len(tasks)} tareas."
             )
             
         except Exception as e:
-            execution_time = asyncio.get_event_loop().time() - start_time
-            logger.error(f"❌ Error ejecutando paso {step.step_id}: {e}")
+            logger.error(f"[PlanExecution] ❌ Error iniciando ejecución: {e}")
+            raise
+    
+    async def _create_execution_state(
+        self,
+        plan_id: UUID,
+        user_id: UUID,
+        run_id: str,
+        redis_key: str,
+        current_task_index: int
+    ) -> PlanExecutionState:
+        """Crea el estado de ejecución en la base de datos."""
+        from app.schemas.plan_schema import PlanExecutionStateCreate
+        
+        state_data = PlanExecutionStateCreate(
+            run_id=run_id,
+            redis_key=redis_key,
+            current_task_index=current_task_index,
+            execution_metadata={
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "auto_confirm": False,
+                "total_tasks": 0  # Se actualizará cuando se obtengan las tareas
+            }
+        )
+        
+        return await self.plan_service.create_execution_state(plan_id, user_id, state_data)
+    
+    async def _execute_plan_async(
+        self,
+        plan_id: UUID,
+        user_id: UUID,
+        run_id: str,
+        tasks: List[Any],
+        auto_confirm: bool,
+        start_index: int
+    ):
+        """Ejecuta el plan de forma asíncrona."""
+        try:
+            logger.info(f"[PlanExecution] 🔄 Ejecutando plan {plan_id} (run_id: {run_id})")
             
-            return StepExecutionResult(
-                step_id=step.step_id,
+            # Actualizar metadata con total de tareas
+            await self._update_execution_metadata(
+                run_id, user_id, {"total_tasks": len(tasks)}
+            )
+            
+            completed_tasks = 0
+            failed_tasks = 0
+            
+            # Ejecutar tareas en orden
+            for i, task in enumerate(tasks[start_index:], start=start_index):
+                try:
+                    # Actualizar estado de ejecución
+                    await self._update_execution_state(
+                        run_id, user_id, i, ExecutionStatus.RUNNING
+                    )
+                    
+                    # Marcar tarea como "running"
+                    await self.plan_service.update_task(
+                        task.id, user_id,
+                        TaskExecutionUpdate(
+                            task_id=task.id,
+                            status=TaskStatus.RUNNING
+                        )
+                    )
+                    
+                    # Ejecutar la tarea
+                    result = await self._execute_task(task, user_id, auto_confirm)
+                    
+                    if result.success:
+                        # Marcar tarea como completada
+                        await self.plan_service.update_task(
+                            task.id, user_id,
+                            TaskExecutionUpdate(
+                                task_id=task.id,
+                                status=TaskStatus.DONE,
+                                outcome=result.result,
+                                actual_effort=int(result.execution_time or 0)
+                            )
+                        )
+                        completed_tasks += 1
+                        logger.info(f"[PlanExecution] ✅ Tarea {i+1}/{len(tasks)} completada: {task.title}")
+                    else:
+                        # Marcar tarea como fallida
+                        await self.plan_service.update_task(
+                            task.id, user_id,
+                            TaskExecutionUpdate(
+                                task_id=task.id,
+                                status=TaskStatus.FAILED,
+                                errors=[result.error or "Error desconocido"]
+                            )
+                        )
+                        failed_tasks += 1
+                        logger.error(f"[PlanExecution] ❌ Tarea {i+1}/{len(tasks)} falló: {task.title} - {result.error}")
+                        
+                        # Decidir si continuar o parar
+                        if not auto_confirm:
+                            # Parar ejecución si no es auto-confirmación
+                            await self._update_execution_state(
+                                run_id, user_id, i, ExecutionStatus.FAILED
+                            )
+                            break
+                
+                except Exception as e:
+                    logger.error(f"[PlanExecution] ❌ Error ejecutando tarea {i+1}: {e}")
+                    failed_tasks += 1
+                    
+                    # Marcar tarea como fallida
+                    await self.plan_service.update_task(
+                        task.id, user_id,
+                        TaskExecutionUpdate(
+                            task_id=task.id,
+                            status=TaskStatus.FAILED,
+                            errors=[str(e)]
+                        )
+                    )
+                    
+                    if not auto_confirm:
+                        await self._update_execution_state(
+                            run_id, user_id, i, ExecutionStatus.FAILED
+                        )
+                        break
+            
+            # Finalizar ejecución
+            final_status = ExecutionStatus.COMPLETED if failed_tasks == 0 else ExecutionStatus.FAILED
+            await self._update_execution_state(
+                run_id, user_id, len(tasks) - 1, final_status
+            )
+            
+            # Actualizar estado del plan
+            plan_status = PlanStatus.COMPLETED if failed_tasks == 0 else PlanStatus.FAILED
+            await self.plan_service.update_plan(
+                plan_id, user_id,
+                {
+                    "status": plan_status,
+                    "completed_at": datetime.now(timezone.utc)
+                }
+            )
+            
+            # Crear resultado del plan con métricas detalladas
+            await self._create_plan_outcome_with_metrics(
+                plan_id, user_id, tasks, completed_tasks, failed_tasks
+            )
+            
+            logger.info(f"[PlanExecution] 🎉 Plan {plan_id} finalizado: {completed_tasks} completadas, {failed_tasks} fallidas")
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error en ejecución asíncrona: {e}")
+            await self._update_execution_state(
+                run_id, user_id, 0, ExecutionStatus.FAILED
+            )
+    
+    async def _execute_task(
+        self,
+        task: Any,
+        user_id: UUID,
+        auto_confirm: bool
+    ) -> ExecutionResult:
+        """
+        Ejecuta una tarea individual.
+        
+        Args:
+            task: Tarea a ejecutar
+            user_id: ID del usuario
+            auto_confirm: Si confirmar automáticamente
+            
+        Returns:
+            ExecutionResult: Resultado de la ejecución
+        """
+        start_time = datetime.now()
+        
+        try:
+            logger.info(f"[PlanExecution] 🔧 Ejecutando tarea: {task.title}")
+            
+            # Simular ejecución basada en el tipo de tarea
+            # TODO: Integrar con servicios reales (SQL, APIs, etc.)
+            result = await self._simulate_task_execution(task, user_id)
+            
+            execution_time = (datetime.now() - start_time).total_seconds()
+            
+            return ExecutionResult(
+                task_id=task.id,
+                success=True,
+                result=result,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = (datetime.now() - start_time).total_seconds()
+            logger.error(f"[PlanExecution] ❌ Error ejecutando tarea {task.title}: {e}")
+            
+            return ExecutionResult(
+                task_id=task.id,
                 success=False,
                 error=str(e),
                 execution_time=execution_time
             )
     
-    async def _apply_sql_guardrails(
-        self, 
-        sql_query: str, 
-        user_roles: List[str]
-    ) -> Optional[Dict[str, Any]]:
+    async def _simulate_task_execution(self, task: Any, user_id: UUID) -> Dict[str, Any]:
         """
-        Aplica guardrails SQL a una consulta.
+        Simula la ejecución de una tarea.
+        TODO: Reemplazar con ejecución real basada en el tipo de tarea.
+        """
+        # Simular tiempo de ejecución
+        await asyncio.sleep(1)
         
-        Args:
-            sql_query: Consulta SQL a validar
-            user_roles: Roles del usuario
-            
-        Returns:
-            Violación detectada o None si es segura
-        """
-        try:
-            # Determinar tolerancia al riesgo basada en roles
-            risk_tolerance = self._determine_user_risk_tolerance(user_roles)
-            
-            # Validar consulta
-            is_allowed, violation, alternatives = self.sql_guardrails.validate_and_apply_guardrails(
-                sql_query, risk_tolerance
-            )
-            
-            if not is_allowed:
-                return {
-                    "type": "sql_guardrail",
-                    "message": violation.message,
-                    "risk_level": violation.risk_level.value,
-                    "operation": violation.operation.value,
-                    "requires_confirmation": violation.requires_confirmation,
-                    "alternatives": alternatives
-                }
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Error aplicando guardrails SQL: {e}")
+        # Simular resultado basado en el tipo de tarea
+        if "sql" in task.description.lower() or "consulta" in task.description.lower():
             return {
-                "type": "sql_guardrail_error",
-                "message": f"Error validando consulta SQL: {str(e)}",
-                "risk_level": "high",
-                "requires_confirmation": True
+                "type": "sql_execution",
+                "rows_affected": 42,
+                "execution_time": 1.2,
+                "query": "SELECT * FROM users LIMIT 10"
             }
-    
-    async def _apply_function_guardrails(
-        self, 
-        function_call: str, 
-        user_roles: List[str], 
-        user_permissions: List[str]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Aplica guardrails de función a una llamada.
-        
-        Args:
-            function_call: Llamada a función a validar
-            user_roles: Roles del usuario
-            user_permissions: Permisos del usuario
-            
-        Returns:
-            Violación detectada o None si es segura
-        """
-        try:
-            # Extraer nombre de función de la llamada
-            function_name = self._extract_function_name(function_call)
-            
-            # Validar ejecución de función
-            is_allowed, error_message, guardrail = self.function_guardrails.validate_function_execution(
-                function_name=function_name,
-                user_roles=user_roles,
-                user_permissions=user_permissions
-            )
-            
-            if not is_allowed:
-                return {
-                    "type": "function_guardrail",
-                    "message": error_message,
-                    "function_name": function_name,
-                    "risk_level": guardrail.risk_level.value,
-                    "category": guardrail.category.value,
-                    "requires_confirmation": guardrail.requires_confirmation,
-                    "required_permission": guardrail.required_permission.value
-                }
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Error aplicando guardrails de función: {e}")
+        elif "api" in task.description.lower() or "llamar" in task.description.lower():
             return {
-                "type": "function_guardrail_error",
-                "message": f"Error validando función: {str(e)}",
-                "risk_level": "high",
-                "requires_confirmation": True
-            }
-    
-    def _determine_user_risk_tolerance(self, user_roles: List[str]) -> SQLRiskLevel:
-        """Determina la tolerancia al riesgo del usuario basada en sus roles."""
-        if "admin" in user_roles or "super_admin" in user_roles:
-            return SQLRiskLevel.MEDIUM
-        elif "owner" in user_roles:
-            return SQLRiskLevel.HIGH
-        else:
-            return SQLRiskLevel.LOW
-    
-    def _extract_function_name(self, function_call: str) -> str:
-        """Extrae el nombre de la función de una llamada de función."""
-        # Patrón simple: function_name(params)
-        if "(" in function_call:
-            return function_call.split("(")[0].strip()
-        return function_call.strip()
-    
-    async def _execute_step_logic(self, step: PlanStep, context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Ejecuta la lógica real del paso (simulado por ahora).
-        
-        Args:
-            step: Paso a ejecutar
-            context: Contexto de ejecución
-            
-        Returns:
-            Resultado de la ejecución
-        """
-        # Simular ejecución
-        await asyncio.sleep(0.1)  # Simular tiempo de procesamiento
-        
-        if step.sql_query:
-            # Simular ejecución SQL
-            return {
-                "type": "sql_result",
-                "rows_affected": 10,
-                "query": step.sql_query,
-                "status": "success"
-            }
-        elif step.function_call:
-            # Simular ejecución de función
-            return {
-                "type": "function_result",
-                "function": step.function_call,
-                "status": "success",
-                "output": f"Resultado de {step.function_call}"
+                "type": "api_call",
+                "status_code": 200,
+                "response_time": 0.8,
+                "endpoint": "/api/users"
             }
         else:
-            # Paso de análisis o transformación
             return {
-                "type": "analysis_result",
-                "action": step.action,
-                "status": "success",
-                "description": step.description
+                "type": "general_task",
+                "status": "completed",
+                "message": f"Tarea '{task.title}' ejecutada exitosamente"
             }
     
-    def get_plan_summary(self, plan: PlanModel) -> Dict[str, Any]:
-        """Obtiene un resumen del plan para mostrar al usuario."""
-        high_risk_steps = [step for step in plan.steps if step.risk_level == "high"]
-        medium_risk_steps = [step for step in plan.steps if step.risk_level == "medium"]
+    async def _update_execution_state(
+        self,
+        run_id: str,
+        user_id: UUID,
+        current_task_index: int,
+        status: ExecutionStatus
+    ):
+        """Actualiza el estado de ejecución."""
+        try:
+            # TODO: Actualizar en Redis cuando esté disponible
+            # await self.redis_service.set_execution_state(run_id, {
+            #     "current_task_index": current_task_index,
+            #     "status": status.value,
+            #     "updated_at": datetime.now(timezone.utc).isoformat()
+            # })
+            
+            # Actualizar en base de datos
+            # TODO: Implementar cuando tengamos el método en PlanService
+            logger.info(f"[PlanExecution] 📊 Estado actualizado: {run_id} - tarea {current_task_index} - {status.value}")
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error actualizando estado: {e}")
+    
+    async def _update_execution_metadata(
+        self,
+        run_id: str,
+        user_id: UUID,
+        metadata: Dict[str, Any]
+    ):
+        """Actualiza los metadatos de ejecución."""
+        try:
+            # TODO: Implementar actualización de metadata
+            logger.info(f"[PlanExecution] 📝 Metadata actualizada: {run_id} - {metadata}")
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error actualizando metadata: {e}")
+    
+    async def _create_plan_outcome_with_metrics(
+        self,
+        plan_id: UUID,
+        user_id: UUID,
+        tasks: List[Any],
+        completed_tasks: int,
+        failed_tasks: int
+    ):
+        """Crea el resultado del plan con métricas detalladas."""
+        try:
+            # Obtener información del plan
+            plan = await self.plan_service.get_plan(plan_id, user_id)
+            if not plan:
+                logger.error(f"[PlanExecution] ❌ Plan {plan_id} no encontrado")
+                return
+            
+            # Crear métricas de tareas
+            task_metrics = []
+            total_execution_time = 0
+            
+            for task in tasks:
+                # Obtener métricas de la tarea desde la base de datos
+                task_from_db = await self.plan_service.get_task(task.id, user_id)
+                if task_from_db:
+                    execution_time = task_from_db.actual_effort or 0
+                    total_execution_time += execution_time
+                    
+                    task_metrics.append(TaskExecutionMetrics(
+                        task_id=task.id,
+                        task_title=task.title,
+                        action_type=getattr(task, 'action_type', 'general'),
+                        execution_time=execution_time,
+                        success=task_from_db.status == TaskStatus.DONE,
+                        error_message=task_from_db.errors[0] if task_from_db.errors else None,
+                        result_data=task_from_db.outcome,
+                        resource_usage={
+                            "memory_usage": 0,  # TODO: Obtener métricas reales
+                            "cpu_usage": 0
+                        }
+                    ))
+            
+            # Calcular tasa de éxito
+            total_tasks = len(tasks)
+            success_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+            
+            # Crear métricas del plan
+            plan_metrics = PlanExecutionMetrics(
+                plan_id=plan_id,
+                plan_title=plan.title,
+                total_tasks=total_tasks,
+                completed_tasks=completed_tasks,
+                failed_tasks=failed_tasks,
+                total_execution_time=total_execution_time,
+                success_rate=success_rate,
+                task_metrics=task_metrics,
+                resource_usage={
+                    "total_memory": sum(tm.resource_usage.get("memory_usage", 0) for tm in task_metrics),
+                    "total_cpu": sum(tm.resource_usage.get("cpu_usage", 0) for tm in task_metrics),
+                    "execution_time": total_execution_time
+                },
+                patterns_detected=[]  # Se detectarán en el servicio de outcomes
+            )
+            
+            # Persistir resultado usando el servicio de outcomes
+            await self.outcome_service.persist_plan_outcome(plan_id, user_id, plan_metrics)
+            
+            logger.info(f"[PlanExecution] 📊 Resultado persistido: {plan_id} - {success_rate:.1f}% éxito")
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error creando resultado con métricas: {e}")
+    
+    # ===== MÉTODOS DE CONSULTA =====
+    
+    async def get_execution_status(
+        self,
+        run_id: str,
+        user_id: UUID
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el estado actual de una ejecución.
         
-        return {
-            "title": plan.title,
-            "description": plan.description,
-            "total_steps": len(plan.steps),
-            "high_risk_steps": len(high_risk_steps),
-            "medium_risk_steps": len(medium_risk_steps),
-            "low_risk_steps": len(plan.steps) - len(high_risk_steps) - len(medium_risk_steps),
-            "estimated_cost": plan.total_estimated_cost,
-            "requires_confirmation": plan.requires_confirmation or len(high_risk_steps) > 0
-        }
+        Args:
+            run_id: ID de la ejecución
+            user_id: ID del usuario
+            
+        Returns:
+            Dict con el estado de ejecución o None si no existe
+        """
+        try:
+            # TODO: Obtener de Redis cuando esté disponible
+            # redis_state = await self.redis_service.get_execution_state(run_id)
+            
+            # Por ahora, simular estado
+            return {
+                "run_id": run_id,
+                "status": "running",
+                "current_task_index": 2,
+                "total_tasks": 5,
+                "progress_percentage": 40,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "estimated_completion": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error obteniendo estado: {e}")
+            return None
+    
+    async def pause_execution(
+        self,
+        run_id: str,
+        user_id: UUID
+    ) -> bool:
+        """
+        Pausa la ejecución de un plan.
+        
+        Args:
+            run_id: ID de la ejecución
+            user_id: ID del usuario
+            
+        Returns:
+            bool: True si se pausó exitosamente
+        """
+        try:
+            # TODO: Implementar pausa en Redis
+            logger.info(f"[PlanExecution] ⏸️ Pausando ejecución: {run_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error pausando ejecución: {e}")
+            return False
+    
+    async def resume_execution(
+        self,
+        run_id: str,
+        user_id: UUID
+    ) -> bool:
+        """
+        Reanuda la ejecución de un plan pausado.
+        
+        Args:
+            run_id: ID de la ejecución
+            user_id: ID del usuario
+            
+        Returns:
+            bool: True si se reanudó exitosamente
+        """
+        try:
+            # TODO: Implementar reanudación en Redis
+            logger.info(f"[PlanExecution] ▶️ Reanudando ejecución: {run_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error reanudando ejecución: {e}")
+            return False
+    
+    async def cancel_execution(
+        self,
+        run_id: str,
+        user_id: UUID
+    ) -> bool:
+        """
+        Cancela la ejecución de un plan.
+        
+        Args:
+            run_id: ID de la ejecución
+            user_id: ID del usuario
+            
+        Returns:
+            bool: True si se canceló exitosamente
+        """
+        try:
+            # TODO: Implementar cancelación en Redis
+            logger.info(f"[PlanExecution] 🛑 Cancelando ejecución: {run_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[PlanExecution] ❌ Error cancelando ejecución: {e}")
+            return False

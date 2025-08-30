@@ -101,6 +101,15 @@ class AIServicesFactory(BaseServiceFactory):
             logger.error(f"[AIServicesFactory] ❌ Error obteniendo SmartRephraseService: {e}")
             return None
     
+    def get_smart_ai_orchestrator(self):
+        """Obtiene el orquestador de Smart AI"""
+        try:
+            from app.services.ai.smart_ai_orchestrator import SmartAIOrchestrator
+            return self._get_or_create_service(SmartAIOrchestrator, "smart_ai_orchestrator")
+        except Exception as e:
+            logger.error(f"[AIServicesFactory] ❌ Error obteniendo SmartAIOrchestrator: {e}")
+            return None
+    
     def get_execution_planner_service(self):
         """Obtiene el servicio de planificación de ejecución"""
         try:

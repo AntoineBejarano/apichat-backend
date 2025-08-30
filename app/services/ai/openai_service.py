@@ -20,7 +20,7 @@ from app.schemas.chat_schema import ChatMessage
 from app.schemas.chat_history_schema import ChatHistoryOut
 from app.models.function_model import Function
 from app.utils.text import truncate_words
-from app.schemas.plan_schema import PlanModel  # ✅ evitar ciclos
+from app.schemas.plan_schema import UserPlanOut  # ✅ evitar ciclos
 from app.utils.performance_monitor import monitor_performance
 
 if TYPE_CHECKING:
@@ -104,7 +104,7 @@ PROMPT_SUFFIX=(
 "NUNCA escribas JSON directamente en el contenido del mensaje.\n"
 "NUNCA escribas texto explicativo sin usar la función.\n\n"
 "📋 ESQUEMA REQUERIDO para return_plan:\n"
-f"{json.dumps(PlanModel.model_json_schema(), default=_json_default, indent=2)}\n\n"
+        f"{json.dumps(UserPlanOut.model_json_schema(), default=_json_default, indent=2)}\n\n"
 "✅ EJEMPLO CORRECTO: Usar function_call con return_plan\n"
 "❌ EJEMPLO INCORRECTO: Escribir JSON en el contenido\n"
 "🔒 OBLIGATORIO: Solo function_call, nada más."
@@ -148,7 +148,7 @@ class OpenAIService:
     RETURN_PLAN_FUNC: Dict[str, Any] = {
         "name": "return_plan",
         "description": "Devuelve un plan de acciones para resolver la consulta del usuario",
-        "parameters": PlanModel.model_json_schema(),
+        "parameters": UserPlanOut.model_json_schema(),
     }
 
     def __init__(self, factory: "ServiceFactory") -> None:
@@ -159,7 +159,7 @@ class OpenAIService:
         )
         self.model = settings.OPENAI_MODEL
         self.history_service = factory.get_chat_history_service()
-        self.parser = PydanticOutputParser(pydantic_object=PlanModel)
+        self.parser = PydanticOutputParser(pydantic_object=UserPlanOut)
         
         # Cache de prompts para optimizar
         self._prompt_cache = {}

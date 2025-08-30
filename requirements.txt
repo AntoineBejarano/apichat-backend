@@ -37,6 +37,12 @@ redis>=5.0.0                    # Para cache distribuido
 # celery>=5.3.0                   # Para tareas asíncronas
 
 # =============================================================================
+# Vector Database & Embeddings (NUEVO - SISTEMA EXTENSIBLE)
+# =============================================================================
+pgvector>=0.4.0                 # Para vector store en PostgreSQL
+qdrant-client>=1.15.0           # Para Qdrant como vector store alternativo
+
+# =============================================================================
 # System Monitoring
 # =============================================================================
 psutil>=5.9.0

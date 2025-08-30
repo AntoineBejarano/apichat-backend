@@ -29,16 +29,16 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Relación con Plan (opcional)
-    plan_id = Column(ForeignKey("plans.id"), nullable=True)
-    plan = relationship("Plan")
+    # Relación con Plan (obsoleta - usar user_plans)
+    # plan_id = Column(ForeignKey("plans.id"), nullable=True)
+    # plan = relationship("Plan")
 
     # Relaciones 1:N
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     apps = relationship("App", back_populates="user", cascade="all, delete-orphan")
     databases = relationship("DatabaseConnection", back_populates="user", cascade="all, delete-orphan")
     schema_pipelines = relationship("SchemaPipeline", back_populates="user", cascade="all, delete-orphan")
-    schema_graphs = relationship("SchemaGraph", back_populates="user", cascade="all, delete-orphan")
+    # schema_graphs = relationship("SchemaGraph", back_populates="user", cascade="all, delete-orphan")  # Temporalmente comentado
     strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
     integrations = relationship("Integration", back_populates="user", cascade="all, delete-orphan")
     oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")
@@ -48,6 +48,8 @@ class User(Base):
     llm_runs = relationship("LLMRun", back_populates="user", cascade="all, delete-orphan")
     subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
     openapi_integrations = relationship("OpenAPIIntegration", back_populates="user", cascade="all, delete-orphan")
+    api_triggering_configs = relationship("APITriggeringConfig", back_populates="user", cascade="all, delete-orphan")
+    user_plans = relationship("UserPlan", back_populates="user", cascade="all, delete-orphan", lazy="select")
     proxies = relationship("Proxy", back_populates="user", cascade="all, delete-orphan")
 
     # Relaciones N:M

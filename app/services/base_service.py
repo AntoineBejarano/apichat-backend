@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.subscription_model import Subscription
-from app.models.plan_model import Plan
+from app.models.plan_model import UserPlan
 
 class BaseService:
     def __init__(self, factory, user=None):
@@ -26,7 +26,7 @@ class BaseService:
             # Fallback: intentar acceder directamente si existe
             self.db = getattr(self.factory, "db", None)
 
-    def get_active_plan(self) -> Plan:
+    def get_active_plan(self) -> UserPlan:
         """
         Devuelve el plan activo del usuario o lanza un error si no tiene ninguno.
         """

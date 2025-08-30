@@ -146,7 +146,7 @@ class ChatAskRequest(BaseModel):
     
     class Config:
         """Configuración del schema"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query": "Cuenta cuántos usuarios activos hay en la tabla users",
                 "db_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -230,7 +230,7 @@ class ChatAskResponse(BaseModel):
     
     class Config:
         """Configuración del schema de respuesta"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "status": "completed",

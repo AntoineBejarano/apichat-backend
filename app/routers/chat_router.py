@@ -77,6 +77,7 @@ async def send_message(
     app_ids: Optional[List[UUID]] = None,
     explorer: bool = False,
     iterative_rag: bool = False,
+    show_rephrase: bool = False,  # 🔄 NUEVO: Mostrar rephrase al usuario
     factory: ServiceFactory = Depends(get_factory),
 ):
     """
@@ -90,6 +91,7 @@ async def send_message(
     - app_ids: Lista de IDs de aplicaciones para contexto (opcional)
     - explorer: Modo explorador (opcional, default: False)
     - iterative_rag: Usar flujo RAG iterativo (opcional, default: False)
+    - show_rephrase: Mostrar rephrase al usuario (opcional, default: False)
     """
     try:
         # Si no se proporciona chat_id, usar el chat más reciente o crear uno nuevo
@@ -127,6 +129,30 @@ async def send_message(
                 message=message,
             )
 
+        # 🔄 NUEVO: Procesar rephrase si se solicita
+        rephrase_info = None
+        if show_rephrase:
+            try:
+                smart_ai_orchestrator = factory.get_smart_ai_orchestrator()
+                if smart_ai_orchestrator:
+                    rephrase_result = await smart_ai_orchestrator.process_query_intelligently(
+                        query=message.content,
+                        user_id=factory.user.id if factory.user else None,
+                        language="auto",
+                        domain="general"
+                    )
+                    if "rephrase_result" in rephrase_result:
+                        rephrase_data = rephrase_result["rephrase_result"]
+                        rephrase_info = {
+                            "normalized_query": rephrase_data.get("normalized_query"),
+                            "confidence_score": rephrase_data.get("confidence_score"),
+                            "language_detected": rephrase_data.get("language"),
+                            "domain": rephrase_data.get("domain"),
+                            "processing_time_ms": rephrase_data.get("processing_time_ms")
+                        }
+            except Exception as e:
+                logger.warning(f"[ChatRouter] ⚠️ Error en rephrase: {e}")
+        
         # Preparar respuesta
         result = {
             "success": True,
@@ -140,6 +166,11 @@ async def send_message(
         if iterative_rag:
             result["iterative_rag"] = True
             result["iterations_used"] = response.get("iterations_used", 0)
+        
+        # 🔄 NUEVO: Agregar información de rephrase si se solicitó
+        if show_rephrase and rephrase_info:
+            result["rephrase_info"] = rephrase_info
+            result["original_query"] = message.content
         
         return result
 
@@ -200,13 +231,78 @@ async def send_message_to_chat(
         )
 
 @router.post(
+    "/rephrase",
+    summary="🔄 Rephrase inteligente de consultas",
+    description="Normaliza y estandariza consultas del usuario para mejorar comprensión y cache hit",
+)
+async def rephrase_query(
+    request: ChatMessage,
+    language: str = "auto",
+    domain: str = "general",
+    show_rephrase: bool = True,
+    factory: ServiceFactory = Depends(get_factory),
+):
+    """
+    Rephrase inteligente de consultas del usuario.
+    
+    Args:
+        request: Mensaje del usuario a rephrasear
+        language: Idioma (es, en, auto)
+        domain: Dominio (general, database, api, business, technical)
+        show_rephrase: Si mostrar el rephrase al usuario
+    """
+    try:
+        smart_ai_orchestrator = factory.get_smart_ai_orchestrator()
+        if not smart_ai_orchestrator:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Servicio de rephrase no disponible"
+            )
+        
+        # Procesar con Smart AI Orchestrator
+        result = await smart_ai_orchestrator.process_query_intelligently(
+            query=request.content,
+            user_id=factory.user.id if factory.user else None,
+            language=language,
+            domain=domain
+        )
+        
+        response = {
+            "success": True,
+            "original_query": request.content,
+            "rephrase_result": result,
+            "show_rephrase": show_rephrase
+        }
+        
+        # Si se solicita mostrar el rephrase, agregarlo a la respuesta
+        if show_rephrase and "rephrase_result" in result:
+            rephrase_data = result["rephrase_result"]
+            response["rephrase_info"] = {
+                "normalized_query": rephrase_data.get("normalized_query"),
+                "confidence_score": rephrase_data.get("confidence_score"),
+                "language_detected": rephrase_data.get("language"),
+                "domain": rephrase_data.get("domain"),
+                "processing_time_ms": rephrase_data.get("processing_time_ms")
+            }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"[ChatRouter] ❌ Error en rephrase: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error procesando rephrase: {str(e)}"
+        )
+
+
+@router.post(
     "/ask",
     summary="🧠 Chat inteligente con grounding → plan → SQL → validación → ejecución",
     description="Nuevo endpoint que implementa el flujo completo de la Fase 5: intención → grounding → plan → SQL → validación → ejecución",
 )
 async def chat_ask(
     request: ChatAskRequest,
-    factory: ServiceFactory = Depends(get_factory_full),  # 🔧 Necesita todas las fases
+    factory: ServiceFactory = Depends(get_factory),  # 🔧 Necesita todas las fases
 ):
     """
     🧠 Chat inteligente con flujo completo de la Fase 5:

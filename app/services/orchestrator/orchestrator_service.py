@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.chat_schema import ChatMessage
 from app.schemas.chat_history_schema import ChatHistoryCreate, ChatHistoryOut
-from app.schemas.plan_schema import PlanModel
+from app.schemas.plan_schema import UserPlanOut
 from app.utils.performance_monitor import monitor_performance, performance_context
 from app.utils.profiler import profile_function, profile_context, memory_profiler
 from app.core.database import SessionLocal

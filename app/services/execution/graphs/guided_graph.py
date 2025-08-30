@@ -3,7 +3,7 @@ from uuid import UUID
 
 from langgraph.graph import StateGraph, END
 from app.core.service_factory import ServiceFactory
-from app.schemas.plan_schema import PlanModel
+from app.schemas.plan_schema import UserPlanOut
 from app.schemas.chat_schema import ChatMessage
 from app.models.function_model import Function
 from app.services.context.intent_classifier_service import IntentType
@@ -43,7 +43,7 @@ class GuidedState(TypedDict, total=False):
     requires_resources: Optional[bool]
     
     # Salidas
-    plan: Optional[PlanModel]
+    plan: Optional[UserPlanOut]
     assistant_response: Optional[str]
     error: Optional[str]
     
@@ -389,7 +389,7 @@ class GuidedGraph:
 
                     # Procesar resultado
                     if result.get("actions"):
-                        plan = PlanModel.model_validate(result)
+                        plan = UserPlanOut.model_validate(result)
                         
                         # 🔧 NUEVO: Validar plan antes de la ejecución
                         validation_result = self._validate_plan_for_chat_safety(plan)
@@ -532,7 +532,7 @@ class GuidedGraph:
     # ──────────────────────────────────────────────────────
     #   NUEVO: Validación y corrección de placeholders del plan
     # ──────────────────────────────────────────────────────
-    def _validate_plan_placeholders(self, plan: PlanModel, template: str) -> Dict[str, Any]:
+    def _validate_plan_placeholders(self, plan: UserPlanOut, template: str) -> Dict[str, Any]:
         """
         Valida que todos los placeholders en el template correspondan a variables
         generadas por las acciones del plan.
@@ -592,7 +592,7 @@ class GuidedGraph:
             "placeholders_checked": placeholders
         }
 
-    def _apply_plan_fixes(self, plan: PlanModel, issues: List[str]) -> PlanModel:
+    def _apply_plan_fixes(self, plan: UserPlanOut, issues: List[str]) -> UserPlanOut:
         """
         Aplica correcciones automáticas al plan para resolver placeholders inválidos.
         Por ahora, solo registra los problemas para debugging.
@@ -635,7 +635,7 @@ class GuidedGraph:
             logger.exception(f"[GuidedGraph] ❌ Error validando recursos: {e}")
             return False
 
-    def _validate_plan_for_chat_safety(self, plan: PlanModel) -> Dict[str, Any]:
+    def _validate_plan_for_chat_safety(self, plan: UserPlanOut) -> Dict[str, Any]:
         """
         Valida que el plan sea seguro para chat antes de ejecutarlo.
         Verifica que no genere respuestas inapropiadas o volcados masivos de datos.
@@ -701,7 +701,7 @@ class GuidedGraph:
             "action_count": len(plan.actions)
         }
 
-    def _apply_chat_safety_fixes(self, plan: PlanModel, issues: List[str]) -> PlanModel:
+    def _apply_chat_safety_fixes(self, plan: UserPlanOut, issues: List[str]) -> UserPlanOut:
         """
         Aplica correcciones automáticas al plan para resolver problemas de seguridad para chat.
         """

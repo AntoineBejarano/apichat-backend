@@ -1,6 +1,6 @@
 from typing import Dict, Any, List, Optional, TypedDict
 from app.schemas.chat_schema import ChatMessage
-from app.schemas.plan_schema import PlanModel
+from app.schemas.plan_schema import UserPlanOut
 from app.models.app_model import App
 from app.models.function_model import Function
 
@@ -41,7 +41,7 @@ class ExplorationState(TypedDict, total=False):
     smart_ai_cache_info: Optional[Dict[str, Any]]  # Información del cache
 
     # Salidas posibles
-    plan: PlanModel
+    plan: UserPlanOut
     assistant_response: str
     error: str
     

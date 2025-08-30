@@ -32,3 +32,10 @@ class Mode(str, Enum):
     EXPLORER = "explorer"
     GUIDED = "guided"
     FAST_SCHEMA = "fast_schema"
+
+
+class EmbeddingResourceType(str, Enum):
+    """Tipos de recursos para embeddings."""
+    DATABASE = "database"
+    API = "api"
+    STRATEGY = "strategy"
